@@ -1,0 +1,335 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Logicalis - SOC Report Generator</title>
+  <link rel="icon" type="image/x-icon" href="/static/favicon.ico">
+  <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+    :root {
+      --bg-base: #F8FAFC; --bg-surface: #FFFFFF; --bg-raised: #F1F5F9;
+      --border: #E2E8F0; --text-primary: #1E293B; --text-muted: #64748B;
+      --accent: #2563EB; --accent-hover: #1D4ED8; --accent-light: #DBEAFE;
+      --success: #16A34A; --danger: #DC2626; --danger-light: #FEE2E2;
+      --purple: #7C3AED; --purple-hover: #6D28D9;
+      --shadow: 0 1px 3px rgba(0,0,0,0.08), 0 1px 2px rgba(0,0,0,0.06);
+      --radius: 8px; --radius-sm: 6px;
+    }
+    [data-theme="dark"] {
+      --bg-base: #1A1A2E; --bg-surface: #25253E; --bg-raised: #32324E;
+      --border: #3A3A5C; --text-primary: #E8E8F0; --text-muted: #9CA3C2;
+      --accent: #7C3AED; --accent-hover: #6D28D9; --accent-light: #2D2050;
+      --success: #34D399; --danger: #F87171; --danger-light: #3A1A1A;
+      --purple: #A78BFA; --purple-hover: #8B5CF6;
+      --shadow: 0 1px 3px rgba(0,0,0,0.3), 0 1px 2px rgba(0,0,0,0.2);
+    }
+
+    body {
+      min-height: 100vh; background: var(--bg-base);
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', system-ui, sans-serif;
+      font-size: 15px; color: var(--text-primary);
+      transition: background 0.2s ease, color 0.2s ease;
+    }
+
+    .header {
+      background: var(--bg-surface); border-bottom: 1px solid var(--border);
+      padding: 12px 24px; display: flex; align-items: center; justify-content: space-between;
+      box-shadow: var(--shadow); position: sticky; top: 0; z-index: 100;
+    }
+    .header-left { display: flex; align-items: center; gap: 12px; }
+    .header-left img { height: 32px; transition: filter 0.2s ease; }
+    [data-theme="dark"] .header-left img { filter: brightness(0) invert(1); }
+    .header-left h1 { font-size: 18px; font-weight: 700; }
+    .header-right { display: flex; align-items: center; gap: 16px; }
+    .header-nav a {
+      color: var(--text-muted); text-decoration: none; font-size: 14px; font-weight: 500;
+      padding: 6px 12px; border-radius: var(--radius-sm); transition: all 0.2s;
+    }
+    .header-nav a:hover { color: var(--accent); background: var(--accent-light); }
+
+    .theme-toggle {
+      background: var(--bg-raised); border: 1px solid var(--border); border-radius: 20px;
+      padding: 4px; cursor: pointer; display: flex; align-items: center; gap: 4px;
+    }
+    .theme-toggle span {
+      display: flex; align-items: center; justify-content: center;
+      width: 28px; height: 28px; border-radius: 50%; font-size: 14px; transition: all 0.2s;
+    }
+    .theme-toggle span.active { background: var(--accent); color: #fff; }
+
+    .btn-logout {
+      background: none; border: 1px solid var(--border); color: var(--text-muted);
+      padding: 6px 14px; border-radius: var(--radius-sm); font-size: 13px; cursor: pointer;
+      transition: all 0.2s;
+    }
+    .btn-logout:hover { color: var(--danger); border-color: var(--danger); }
+
+    .main { max-width: 1000px; margin: 32px auto; padding: 0 24px; }
+
+    .card {
+      background: var(--bg-surface); border: 1px solid var(--border); border-radius: var(--radius);
+      box-shadow: var(--shadow); padding: 24px; margin-bottom: 24px;
+    }
+    .card h2 { font-size: 18px; font-weight: 600; margin-bottom: 4px; }
+    .card .subtitle { font-size: 13px; color: var(--text-muted); margin-bottom: 20px; }
+
+    .btn {
+      display: inline-flex; align-items: center; gap: 6px; padding: 10px 20px;
+      border-radius: var(--radius-sm); font-size: 14px; font-weight: 600;
+      cursor: pointer; border: none; transition: all 0.2s;
+    }
+    .btn-primary { background: var(--accent); color: #fff; }
+    .btn-primary:hover { background: var(--accent-hover); }
+    .btn-secondary { background: var(--bg-raised); color: var(--text-primary); border: 1px solid var(--border); }
+    .btn-secondary:hover { background: var(--border); }
+    .btn-danger { background: var(--danger); color: #fff; }
+    .btn-danger:hover { opacity: 0.9; }
+    .btn-success { background: var(--success); color: #fff; }
+    .btn-success:hover { opacity: 0.9; }
+    .btn-purple { background: var(--purple); color: #fff; }
+    .btn-purple:hover { background: var(--purple-hover); }
+    .btn-sm { padding: 6px 12px; font-size: 12px; }
+
+    .report-table { width: 100%; border-collapse: collapse; }
+    .report-table th, .report-table td {
+      padding: 12px 14px; text-align: left; border-bottom: 1px solid var(--border); font-size: 14px;
+    }
+    .report-table th { font-size: 12px; font-weight: 600; color: var(--text-muted); text-transform: uppercase; letter-spacing: 0.4px; }
+    .report-table tr:hover td { background: var(--bg-raised); }
+    .report-actions { display: flex; gap: 6px; }
+
+    .empty-state { text-align: center; padding: 48px 24px; color: var(--text-muted); }
+
+    /* Report viewer modal */
+    .modal-overlay {
+      display: none; position: fixed; top: 0; left: 0; right: 0; bottom: 0;
+      background: rgba(0,0,0,0.4); z-index: 200; align-items: flex-start; justify-content: center;
+      overflow-y: auto; padding: 40px 24px;
+    }
+    .modal-overlay.active { display: flex; }
+    .modal {
+      background: var(--bg-surface); border-radius: var(--radius); padding: 32px;
+      width: 100%; max-width: 900px; box-shadow: 0 8px 24px rgba(0,0,0,0.2);
+    }
+    .modal-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 20px; }
+    .modal-header h3 { font-size: 18px; }
+    .modal-close {
+      background: none; border: none; font-size: 24px; cursor: pointer; color: var(--text-muted);
+      padding: 4px 8px; border-radius: 4px;
+    }
+    .modal-close:hover { background: var(--bg-raised); }
+    .modal-meta { font-size: 13px; color: var(--text-muted); margin-bottom: 20px; padding-bottom: 16px; border-bottom: 1px solid var(--border); }
+    .modal-meta span { margin-right: 16px; }
+
+    .report-content { line-height: 1.7; }
+    .report-content h1, .report-content h2, .report-content h3, .report-content h4 { color: var(--accent); margin-top: 1.4em; margin-bottom: 0.5em; }
+    .report-content h2 { font-size: 20px; border-bottom: 1px solid var(--border); padding-bottom: 6px; }
+    .report-content h3 { font-size: 16px; }
+    .report-content table { border-collapse: collapse; width: 100%; margin: 1em 0; font-size: 13px; }
+    .report-content th, .report-content td { border: 1px solid var(--border); padding: 8px 12px; text-align: left; }
+    .report-content th { background: var(--accent-light); color: var(--accent); font-weight: 600; }
+    .report-content tr:nth-child(even) td { background: var(--bg-raised); }
+    .report-content blockquote { border-left: 3px solid var(--accent); padding-left: 16px; color: var(--text-muted); margin: 1em 0; }
+    .report-content code { background: var(--bg-raised); padding: 2px 6px; border-radius: 3px; font-size: 13px; }
+    .report-content ul, .report-content ol { padding-left: 1.5em; }
+    .report-content li { margin: 0.3em 0; }
+
+    .export-bar { display: flex; gap: 10px; margin-top: 20px; padding-top: 20px; border-top: 1px solid var(--border); }
+  </style>
+</head>
+<body>
+  <div class="header">
+    <div class="header-left">
+      <img src="/static/Logo.webp" alt="Logicalis">
+      <h1>Report History</h1>
+    </div>
+    <div class="header-right">
+      <nav class="header-nav">
+        <a href="/reports/">Home</a>
+        <a href="/admin/customers">Manage Customers</a>
+        <a href="/admin/history" class="active">Report History</a>
+        <a href="/admin/schedules">Schedules</a>
+      </nav>
+      <div class="theme-toggle" onclick="toggleTheme()">
+        <span id="lightIcon" class="active">&#9788;</span>
+        <span id="darkIcon">&#9790;</span>
+      </div>
+      <form action="/auth/logout" method="POST" style="margin:0;">
+        <button type="submit" class="btn-logout">Sign Out</button>
+      </form>
+    </div>
+  </div>
+
+  <div class="main">
+    <div class="card">
+      <h2>Generated Reports</h2>
+      <p class="subtitle">View, export, or delete previously generated reports</p>
+      <div id="reportList">
+        <div class="empty-state">Loading...</div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Report Viewer Modal -->
+  <div class="modal-overlay" id="viewerModal">
+    <div class="modal">
+      <div class="modal-header">
+        <h3 id="viewerTitle"></h3>
+        <button class="modal-close" onclick="closeViewer()">&times;</button>
+      </div>
+      <div class="modal-meta" id="viewerMeta"></div>
+      <div class="report-content" id="viewerContent"></div>
+      <div class="export-bar">
+        <button class="btn btn-danger btn-sm" onclick="exportViewed('pdf')">Export PDF</button>
+        <button class="btn btn-primary btn-sm" onclick="exportViewed('docx')">Export Word</button>
+        <button class="btn btn-purple btn-sm" onclick="exportViewed('xlsx')">Export Excel</button>
+        <button class="btn btn-secondary btn-sm" onclick="exportViewed('pptx')">Export PPTX</button>
+      </div>
+    </div>
+  </div>
+
+  <script>
+    let viewedReport = null;
+
+    function initTheme() {
+      const saved = localStorage.getItem('soc-theme');
+      if (saved === 'dark') {
+        document.documentElement.setAttribute('data-theme', 'dark');
+        document.getElementById('darkIcon').classList.add('active');
+        document.getElementById('lightIcon').classList.remove('active');
+      }
+    }
+    function toggleTheme() {
+      const isDark = document.documentElement.getAttribute('data-theme') === 'dark';
+      if (isDark) {
+        document.documentElement.removeAttribute('data-theme');
+        localStorage.setItem('soc-theme', 'light');
+        document.getElementById('lightIcon').classList.add('active');
+        document.getElementById('darkIcon').classList.remove('active');
+      } else {
+        document.documentElement.setAttribute('data-theme', 'dark');
+        localStorage.setItem('soc-theme', 'dark');
+        document.getElementById('darkIcon').classList.add('active');
+        document.getElementById('lightIcon').classList.remove('active');
+      }
+    }
+
+    async function loadReports() {
+      const r = await fetch('/reports/api/reports');
+      const reports = await r.json();
+      const list = document.getElementById('reportList');
+
+      if (!reports.length) {
+        list.innerHTML = '<div class="empty-state">No reports generated yet. Go to the <a href="/reports/" style="color:var(--accent);">Report Generator</a> to create one.</div>';
+        return;
+      }
+
+      list.innerHTML = `
+        <table class="report-table">
+          <thead>
+            <tr>
+              <th>Customer</th>
+              <th>Report Type</th>
+              <th>Date Range</th>
+              <th>Generated</th>
+              <th>Actions</th>
+            </tr>
+          </thead>
+          <tbody>
+            ${reports.map(r => `
+              <tr>
+                <td><strong>${r.customer_name}</strong></td>
+                <td>${r.report_type}</td>
+                <td>${r.start_date} to ${r.end_date}</td>
+                <td>${r.generated_at}</td>
+                <td>
+                  <div class="report-actions">
+                    <button class="btn btn-primary btn-sm" onclick="viewReport('${r.id}')">View</button>
+                    <button class="btn btn-danger btn-sm" onclick="deleteReport('${r.id}', '${r.customer_name.replace(/'/g, "\\'")}')">Delete</button>
+                  </div>
+                </td>
+              </tr>
+            `).join('')}
+          </tbody>
+        </table>
+      `;
+    }
+
+    async function viewReport(id) {
+      const r = await fetch('/reports/api/reports/' + id);
+      if (!r.ok) { alert('Failed to load report.'); return; }
+      viewedReport = await r.json();
+
+      document.getElementById('viewerTitle').textContent = `${viewedReport.customer_name} - ${viewedReport.report_type}`;
+      document.getElementById('viewerMeta').innerHTML = `
+        <span>Period: ${viewedReport.start_date} to ${viewedReport.end_date}</span>
+        <span>Generated: ${viewedReport.generated_at}</span>
+      `;
+      document.getElementById('viewerContent').innerHTML = marked.parse(viewedReport.markdown);
+      document.getElementById('viewerModal').classList.add('active');
+    }
+
+    function closeViewer() {
+      document.getElementById('viewerModal').classList.remove('active');
+      viewedReport = null;
+    }
+
+    async function deleteReport(id, name) {
+      if (!confirm(`Delete report for "${name}"? This cannot be undone.`)) return;
+      await fetch('/reports/api/reports/' + id, { method: 'DELETE' });
+      loadReports();
+    }
+
+    async function exportViewed(format) {
+      if (!viewedReport) return;
+
+      const customer_name = viewedReport.customer_name;
+      const report_date = viewedReport.start_date + ' to ' + viewedReport.end_date;
+      let url, body, filename;
+
+      if (format === 'xlsx') {
+        url = '/exports/xlsx';
+        body = JSON.stringify({ job_id: viewedReport.id, customer_name });
+        filename = `soc-report-${customer_name.toLowerCase().replace(/\s+/g, '-')}.xlsx`;
+      } else if (format === 'pptx') {
+        url = '/exports/pptx';
+        body = JSON.stringify({
+          markdown: viewedReport.markdown,
+          customer_name,
+          report_date,
+          customer_logo: viewedReport.customer_logo || '',
+          job_id: viewedReport.id,
+        });
+        filename = `soc-report-${customer_name.toLowerCase().replace(/\s+/g, '-')}.pptx`;
+      } else {
+        url = format === 'pdf' ? '/exports/pdf' : '/exports/docx';
+        body = JSON.stringify({
+          markdown: viewedReport.markdown,
+          customer_name,
+          report_date,
+          customer_logo: viewedReport.customer_logo || '',
+          job_id: viewedReport.id,
+        });
+        filename = `soc-report-${customer_name.toLowerCase().replace(/\s+/g, '-')}.${format}`;
+      }
+
+      try {
+        const r = await fetch(url, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body });
+        if (!r.ok) { const err = await r.json(); alert(err.error || 'Export failed.'); return; }
+        const blob = await r.blob();
+        const a = document.createElement('a');
+        a.href = URL.createObjectURL(blob);
+        a.download = filename;
+        a.click();
+        URL.revokeObjectURL(a.href);
+      } catch (e) { alert('Export failed: ' + e.message); }
+    }
+
+    initTheme();
+    loadReports();
+  </script>
+</body>
+</html>

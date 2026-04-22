@@ -1,0 +1,362 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Logicalis - SOC Report Generator</title>
+  <link rel="icon" type="image/x-icon" href="/static/favicon.ico">
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+    :root {
+      --bg-base: #F8FAFC; --bg-surface: #FFFFFF; --bg-raised: #F1F5F9;
+      --border: #E2E8F0; --text-primary: #1E293B; --text-muted: #64748B;
+      --accent: #2563EB; --accent-hover: #1D4ED8; --accent-light: #DBEAFE;
+      --success: #16A34A; --danger: #DC2626; --danger-light: #FEE2E2;
+      --shadow: 0 1px 3px rgba(0,0,0,0.08), 0 1px 2px rgba(0,0,0,0.06);
+      --radius: 8px; --radius-sm: 6px;
+    }
+    [data-theme="dark"] {
+      --bg-base: #1A1A2E; --bg-surface: #25253E; --bg-raised: #32324E;
+      --border: #3A3A5C; --text-primary: #E8E8F0; --text-muted: #9CA3C2;
+      --accent: #7C3AED; --accent-hover: #6D28D9; --accent-light: #2D2050;
+      --success: #34D399; --danger: #F87171; --danger-light: #3A1A1A;
+      --shadow: 0 1px 3px rgba(0,0,0,0.3), 0 1px 2px rgba(0,0,0,0.2);
+    }
+
+    body {
+      min-height: 100vh; background: var(--bg-base);
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', system-ui, sans-serif;
+      font-size: 15px; color: var(--text-primary);
+      transition: background 0.2s ease, color 0.2s ease;
+    }
+
+    .header {
+      background: var(--bg-surface); border-bottom: 1px solid var(--border);
+      padding: 12px 24px; display: flex; align-items: center; justify-content: space-between;
+      box-shadow: var(--shadow); position: sticky; top: 0; z-index: 100;
+    }
+    .header-left { display: flex; align-items: center; gap: 12px; }
+    .header-left img { height: 32px; transition: filter 0.2s ease; }
+    [data-theme="dark"] .header-left img { filter: brightness(0) invert(1); }
+    .header-left h1 { font-size: 18px; font-weight: 700; }
+    .header-right { display: flex; align-items: center; gap: 16px; }
+    .header-nav a {
+      color: var(--text-muted); text-decoration: none; font-size: 14px; font-weight: 500;
+      padding: 6px 12px; border-radius: var(--radius-sm); transition: all 0.2s;
+    }
+    .header-nav a:hover { color: var(--accent); background: var(--accent-light); }
+
+    .theme-toggle {
+      background: var(--bg-raised); border: 1px solid var(--border); border-radius: 20px;
+      padding: 4px; cursor: pointer; display: flex; align-items: center; gap: 4px;
+    }
+    .theme-toggle span {
+      display: flex; align-items: center; justify-content: center;
+      width: 28px; height: 28px; border-radius: 50%; font-size: 14px; transition: all 0.2s;
+    }
+    .theme-toggle span.active { background: var(--accent); color: #fff; }
+
+    .btn-logout {
+      background: none; border: 1px solid var(--border); color: var(--text-muted);
+      padding: 6px 14px; border-radius: var(--radius-sm); font-size: 13px; cursor: pointer;
+      transition: all 0.2s;
+    }
+    .btn-logout:hover { color: var(--danger); border-color: var(--danger); }
+
+    .main { max-width: 900px; margin: 32px auto; padding: 0 24px; }
+
+    .card {
+      background: var(--bg-surface); border: 1px solid var(--border); border-radius: var(--radius);
+      box-shadow: var(--shadow); padding: 24px; margin-bottom: 24px;
+    }
+    .card h2 { font-size: 18px; font-weight: 600; margin-bottom: 4px; }
+    .card .subtitle { font-size: 13px; color: var(--text-muted); margin-bottom: 20px; }
+
+    .form-group { margin-bottom: 16px; }
+    .form-group label {
+      display: block; font-size: 13px; font-weight: 600; color: var(--text-muted);
+      text-transform: uppercase; letter-spacing: 0.4px; margin-bottom: 6px;
+    }
+    .form-group input[type="text"], .form-group select {
+      width: 100%; padding: 10px 14px; background: var(--bg-raised);
+      border: 1px solid var(--border); border-radius: var(--radius-sm);
+      color: var(--text-primary); font-size: 14px; outline: none; transition: border-color 0.2s;
+    }
+    .form-group input:focus { border-color: var(--accent); }
+    .form-row { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
+
+    .btn {
+      display: inline-flex; align-items: center; gap: 6px; padding: 10px 20px;
+      border-radius: var(--radius-sm); font-size: 14px; font-weight: 600;
+      cursor: pointer; border: none; transition: all 0.2s;
+    }
+    .btn-primary { background: var(--accent); color: #fff; }
+    .btn-primary:hover { background: var(--accent-hover); }
+    .btn-secondary { background: var(--bg-raised); color: var(--text-primary); border: 1px solid var(--border); }
+    .btn-secondary:hover { background: var(--border); }
+    .btn-danger { background: var(--danger); color: #fff; }
+    .btn-danger:hover { opacity: 0.9; }
+    .btn-sm { padding: 6px 12px; font-size: 12px; }
+
+    .customer-list { margin-top: 16px; }
+    .customer-row {
+      display: flex; align-items: center; justify-content: space-between;
+      padding: 14px 18px; border-bottom: 1px solid var(--border);
+      transition: background 0.2s;
+    }
+    .customer-row:hover { background: var(--bg-raised); }
+    .customer-row:last-child { border-bottom: none; }
+    .customer-info { display: flex; align-items: center; gap: 12px; }
+    .customer-info img { width: 32px; height: 32px; border-radius: 6px; object-fit: contain; background: var(--bg-raised); }
+    .customer-info .placeholder-icon {
+      width: 32px; height: 32px; border-radius: 6px; background: var(--accent-light);
+      display: flex; align-items: center; justify-content: center;
+      font-weight: 700; font-size: 14px; color: var(--accent);
+    }
+    .customer-name { font-weight: 600; }
+    .customer-meta { font-size: 12px; color: var(--text-muted); margin-top: 2px; }
+    .customer-actions { display: flex; gap: 8px; }
+
+    .backup-bar { display: flex; gap: 10px; margin-top: 20px; padding-top: 16px; border-top: 1px solid var(--border); }
+
+    .modal-overlay {
+      display: none; position: fixed; top: 0; left: 0; right: 0; bottom: 0;
+      background: rgba(0,0,0,0.4); z-index: 200; align-items: center; justify-content: center;
+    }
+    .modal-overlay.active { display: flex; }
+    .modal {
+      background: var(--bg-surface); border-radius: var(--radius); padding: 28px;
+      width: 100%; max-width: 500px; box-shadow: 0 8px 24px rgba(0,0,0,0.2);
+    }
+    .modal h3 { margin-bottom: 16px; }
+    .modal-actions { display: flex; gap: 10px; justify-content: flex-end; margin-top: 20px; }
+  </style>
+</head>
+<body>
+  <div class="header">
+    <div class="header-left">
+      <img src="/static/Logo.webp" alt="Logicalis">
+      <h1>Manage Customers</h1>
+    </div>
+    <div class="header-right">
+      <nav class="header-nav">
+        <a href="/reports/">Home</a>
+        <a href="/admin/history">Report History</a>
+        <a href="/admin/schedules">Schedules</a>
+      </nav>
+      <div class="theme-toggle" onclick="toggleTheme()">
+        <span id="lightIcon" class="active">&#9788;</span>
+        <span id="darkIcon">&#9790;</span>
+      </div>
+      <form action="/auth/logout" method="POST" style="margin:0;">
+        <button type="submit" class="btn-logout">Sign Out</button>
+      </form>
+    </div>
+  </div>
+
+  <div class="main">
+    <!-- Add Customer -->
+    <div class="card">
+      <h2>Add New Customer</h2>
+      <p class="subtitle">Onboard a new customer for report generation</p>
+      <form id="addForm" onsubmit="addCustomer(event)">
+        <div class="form-group">
+          <label>Customer Name</label>
+          <input type="text" id="addName" placeholder="e.g. Chartered Asset Management" required>
+        </div>
+        <div class="form-row">
+          <div class="form-group">
+            <label>Short Name</label>
+            <input type="text" id="addShort" placeholder="e.g. CAM" required>
+          </div>
+          <div class="form-group">
+            <label>Jira Project Key</label>
+            <input type="text" id="addJiraKey" placeholder="e.g. CAM">
+          </div>
+        </div>
+        <div class="form-group">
+          <label>Logo (optional)</label>
+          <input type="file" id="addLogo" accept=".png,.jpg,.jpeg,.webp" style="font-size:13px; color:var(--text-muted);">
+        </div>
+        <button type="submit" class="btn btn-primary">Add Customer</button>
+      </form>
+    </div>
+
+    <!-- Customer List -->
+    <div class="card">
+      <h2>Customers</h2>
+      <p class="subtitle">Manage existing customers</p>
+      <div class="customer-list" id="customerList">
+        <div style="color:var(--text-muted); text-align:center; padding:24px;">Loading...</div>
+      </div>
+      <div class="backup-bar">
+        <a href="/admin/admin/api/customers/export" class="btn btn-secondary btn-sm">Download Backup</a>
+        <label class="btn btn-secondary btn-sm" style="cursor:pointer;">
+          Restore Backup
+          <input type="file" accept=".zip" style="display:none;" onchange="importBackup(this)">
+        </label>
+      </div>
+    </div>
+  </div>
+
+  <!-- Edit Modal -->
+  <div class="modal-overlay" id="editModal">
+    <div class="modal">
+      <h3>Edit Customer</h3>
+      <input type="hidden" id="editId">
+      <div class="form-group">
+        <label>Customer Name</label>
+        <input type="text" id="editName">
+      </div>
+      <div class="form-row">
+        <div class="form-group">
+          <label>Short Name</label>
+          <input type="text" id="editShort">
+        </div>
+        <div class="form-group">
+          <label>Jira Project Key</label>
+          <input type="text" id="editJiraKey">
+        </div>
+      </div>
+      <div class="form-group">
+        <label>New Logo (optional)</label>
+        <input type="file" id="editLogo" accept=".png,.jpg,.jpeg,.webp" style="font-size:13px; color:var(--text-muted);">
+      </div>
+      <div class="modal-actions">
+        <button class="btn btn-secondary" onclick="closeEditModal()">Cancel</button>
+        <button class="btn btn-primary" onclick="saveEdit()">Save</button>
+      </div>
+    </div>
+  </div>
+
+  <script>
+    function initTheme() {
+      const saved = localStorage.getItem('soc-theme');
+      if (saved === 'dark') {
+        document.documentElement.setAttribute('data-theme', 'dark');
+        document.getElementById('darkIcon').classList.add('active');
+        document.getElementById('lightIcon').classList.remove('active');
+      }
+    }
+    function toggleTheme() {
+      const isDark = document.documentElement.getAttribute('data-theme') === 'dark';
+      if (isDark) {
+        document.documentElement.removeAttribute('data-theme');
+        localStorage.setItem('soc-theme', 'light');
+        document.getElementById('lightIcon').classList.add('active');
+        document.getElementById('darkIcon').classList.remove('active');
+      } else {
+        document.documentElement.setAttribute('data-theme', 'dark');
+        localStorage.setItem('soc-theme', 'dark');
+        document.getElementById('darkIcon').classList.add('active');
+        document.getElementById('lightIcon').classList.remove('active');
+      }
+    }
+
+    async function loadCustomers() {
+      const r = await fetch('/admin/api/customers');
+      const customers = await r.json();
+      const list = document.getElementById('customerList');
+
+      if (!customers.length) {
+        list.innerHTML = '<div style="color:var(--text-muted); text-align:center; padding:24px;">No customers yet. Add one above.</div>';
+        return;
+      }
+
+      list.innerHTML = customers.map(c => `
+        <div class="customer-row">
+          <div class="customer-info">
+            ${c.logo
+              ? `<img src="/${c.logo}" alt="${c.short_name}">`
+              : `<div class="placeholder-icon">${c.short_name.charAt(0)}</div>`}
+            <div>
+              <div class="customer-name">${c.name}</div>
+              <div class="customer-meta">${c.short_name} | Jira: ${c.jira_project_key || 'N/A'} | Added: ${c.created_at || 'N/A'}</div>
+            </div>
+          </div>
+          <div class="customer-actions">
+            <button class="btn btn-secondary btn-sm" onclick="openEditModal('${c.id}', '${c.name.replace(/'/g, "\\'")}', '${c.short_name}', '${c.jira_project_key || ''}')">Edit</button>
+            <button class="btn btn-danger btn-sm" onclick="deleteCustomer('${c.id}', '${c.name.replace(/'/g, "\\'")}')">Delete</button>
+          </div>
+        </div>
+      `).join('');
+    }
+
+    async function addCustomer(e) {
+      e.preventDefault();
+      const fd = new FormData();
+      fd.append('name', document.getElementById('addName').value.trim());
+      fd.append('short_name', document.getElementById('addShort').value.trim());
+      fd.append('jira_project_key', document.getElementById('addJiraKey').value.trim());
+      const logo = document.getElementById('addLogo');
+      if (logo.files.length) fd.append('logo', logo.files[0]);
+
+      const r = await fetch('/admin/api/customers', { method: 'POST', body: fd });
+      if (!r.ok) {
+        const err = await r.json();
+        alert(err.error || 'Failed to add customer.');
+        return;
+      }
+      document.getElementById('addForm').reset();
+      loadCustomers();
+    }
+
+    async function deleteCustomer(id, name) {
+      if (!confirm(`Delete customer "${name}"? This cannot be undone.`)) return;
+      await fetch(`/admin/api/customers/${id}`, { method: 'DELETE' });
+      loadCustomers();
+    }
+
+    function openEditModal(id, name, short, jiraKey) {
+      document.getElementById('editId').value = id;
+      document.getElementById('editName').value = name;
+      document.getElementById('editShort').value = short;
+      document.getElementById('editJiraKey').value = jiraKey;
+      document.getElementById('editLogo').value = '';
+      document.getElementById('editModal').classList.add('active');
+    }
+    function closeEditModal() {
+      document.getElementById('editModal').classList.remove('active');
+    }
+
+    async function saveEdit() {
+      const id = document.getElementById('editId').value;
+      const fd = new FormData();
+      fd.append('name', document.getElementById('editName').value.trim());
+      fd.append('short_name', document.getElementById('editShort').value.trim());
+      fd.append('jira_project_key', document.getElementById('editJiraKey').value.trim());
+      const logo = document.getElementById('editLogo');
+      if (logo.files.length) fd.append('logo', logo.files[0]);
+
+      const r = await fetch(`/admin/api/customers/${id}`, { method: 'PUT', body: fd });
+      if (!r.ok) {
+        const err = await r.json();
+        alert(err.error || 'Failed to update.');
+        return;
+      }
+      closeEditModal();
+      loadCustomers();
+    }
+
+    async function importBackup(input) {
+      if (!input.files.length) return;
+      if (!confirm('This will overwrite existing customer data. Continue?')) { input.value = ''; return; }
+      const fd = new FormData();
+      fd.append('backup', input.files[0]);
+      const r = await fetch('/admin/admin/admin/api/customers/import', { method: 'POST', body: fd });
+      const data = await r.json();
+      if (r.ok) {
+        alert(`Restored ${data.count} customers.`);
+        loadCustomers();
+      } else {
+        alert(data.error || 'Import failed.');
+      }
+      input.value = '';
+    }
+
+    initTheme();
+    loadCustomers();
+  </script>
+</body>
+</html>

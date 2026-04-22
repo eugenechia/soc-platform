@@ -1,0 +1,1103 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Logicalis - SOC Report Generator</title>
+  <link rel="icon" type="image/x-icon" href="/static/favicon.ico">
+  <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+    :root {
+      --bg-base: #F8FAFC;
+      --bg-surface: #FFFFFF;
+      --bg-raised: #F1F5F9;
+      --border: #E2E8F0;
+      --text-primary: #1E293B;
+      --text-muted: #64748B;
+      --accent: #2563EB;
+      --accent-hover: #1D4ED8;
+      --accent-light: #DBEAFE;
+      --success: #16A34A;
+      --success-light: #DCFCE7;
+      --danger: #DC2626;
+      --danger-light: #FEE2E2;
+      --info: #2563EB;
+      --purple: #7C3AED;
+      --purple-hover: #6D28D9;
+      --shadow: 0 1px 3px rgba(0,0,0,0.08), 0 1px 2px rgba(0,0,0,0.06);
+      --shadow-md: 0 4px 6px rgba(0,0,0,0.07), 0 2px 4px rgba(0,0,0,0.06);
+      --radius: 8px;
+      --radius-sm: 6px;
+    }
+
+    [data-theme="dark"] {
+      --bg-base: #1A1A2E;
+      --bg-surface: #25253E;
+      --bg-raised: #32324E;
+      --border: #3A3A5C;
+      --text-primary: #E8E8F0;
+      --text-muted: #9CA3C2;
+      --accent: #7C3AED;
+      --accent-hover: #6D28D9;
+      --accent-light: #2D2050;
+      --success: #34D399;
+      --success-light: #1A3A2A;
+      --danger: #F87171;
+      --danger-light: #3A1A1A;
+      --info: #818CF8;
+      --purple: #A78BFA;
+      --purple-hover: #8B5CF6;
+      --shadow: 0 1px 3px rgba(0,0,0,0.3), 0 1px 2px rgba(0,0,0,0.2);
+      --shadow-md: 0 4px 6px rgba(0,0,0,0.3), 0 2px 4px rgba(0,0,0,0.2);
+    }
+
+    body {
+      min-height: 100vh;
+      background: var(--bg-base);
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', system-ui, sans-serif;
+      font-size: 15px;
+      color: var(--text-primary);
+      transition: background 0.2s ease, color 0.2s ease;
+    }
+
+    /* Header */
+    .header {
+      background: var(--bg-surface);
+      border-bottom: 1px solid var(--border);
+      padding: 12px 24px;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      box-shadow: var(--shadow);
+      position: sticky;
+      top: 0;
+      z-index: 100;
+    }
+    .header-left { display: flex; align-items: center; gap: 12px; }
+    .header-left img { height: 32px; transition: filter 0.2s ease; }
+    [data-theme="dark"] .header-left img { filter: brightness(0) invert(1); }
+    .header-left h1 { font-size: 18px; font-weight: 700; }
+    .header-right { display: flex; align-items: center; gap: 16px; }
+    .header-nav a {
+      color: var(--text-muted);
+      text-decoration: none;
+      font-size: 14px;
+      font-weight: 500;
+      padding: 6px 12px;
+      border-radius: var(--radius-sm);
+      transition: all 0.2s;
+    }
+    .header-nav a:hover { color: var(--accent); background: var(--accent-light); }
+
+    /* Theme toggle */
+    .theme-toggle {
+      background: var(--bg-raised);
+      border: 1px solid var(--border);
+      border-radius: 20px;
+      padding: 4px;
+      cursor: pointer;
+      display: flex;
+      align-items: center;
+      gap: 4px;
+    }
+    .theme-toggle span {
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      width: 28px;
+      height: 28px;
+      border-radius: 50%;
+      font-size: 14px;
+      transition: all 0.2s;
+    }
+    .theme-toggle span.active {
+      background: var(--accent);
+      color: #fff;
+    }
+
+    .btn-logout {
+      background: none;
+      border: 1px solid var(--border);
+      color: var(--text-muted);
+      padding: 6px 14px;
+      border-radius: var(--radius-sm);
+      font-size: 13px;
+      cursor: pointer;
+      transition: all 0.2s;
+    }
+    .btn-logout:hover { color: var(--danger); border-color: var(--danger); }
+
+    /* Main content */
+    .main { max-width: 900px; margin: 32px auto; padding: 0 24px; }
+
+    /* Wizard */
+    .wizard-steps {
+      display: flex;
+      gap: 8px;
+      margin-bottom: 32px;
+      padding: 0 4px;
+    }
+    .wizard-step {
+      flex: 1;
+      text-align: center;
+      padding: 10px 4px;
+      font-size: 13px;
+      font-weight: 500;
+      color: var(--text-muted);
+      border-bottom: 3px solid var(--border);
+      transition: all 0.2s;
+      cursor: pointer;
+    }
+    .wizard-step.active {
+      color: var(--accent);
+      border-bottom-color: var(--accent);
+    }
+    .wizard-step.done {
+      color: var(--success);
+      border-bottom-color: var(--success);
+    }
+
+    .step-panel { display: none; }
+    .step-panel.active { display: block; }
+
+    .card {
+      background: var(--bg-surface);
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      box-shadow: var(--shadow);
+      padding: 24px;
+      margin-bottom: 24px;
+    }
+    .card h2 {
+      font-size: 18px;
+      font-weight: 600;
+      margin-bottom: 4px;
+    }
+    .card .subtitle {
+      font-size: 13px;
+      color: var(--text-muted);
+      margin-bottom: 20px;
+    }
+
+    /* Form elements */
+    .form-group { margin-bottom: 16px; }
+    .form-group label {
+      display: block;
+      font-size: 13px;
+      font-weight: 600;
+      color: var(--text-muted);
+      text-transform: uppercase;
+      letter-spacing: 0.4px;
+      margin-bottom: 6px;
+    }
+    .form-group input[type="text"],
+    .form-group input[type="date"],
+    .form-group select {
+      width: 100%;
+      padding: 10px 14px;
+      background: var(--bg-raised);
+      border: 1px solid var(--border);
+      border-radius: var(--radius-sm);
+      color: var(--text-primary);
+      font-size: 14px;
+      outline: none;
+      transition: border-color 0.2s;
+    }
+    .form-group input:focus, .form-group select:focus {
+      border-color: var(--accent);
+    }
+    .form-row { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
+
+    /* Buttons */
+    .btn {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      padding: 10px 20px;
+      border-radius: var(--radius-sm);
+      font-size: 14px;
+      font-weight: 600;
+      cursor: pointer;
+      border: none;
+      transition: all 0.2s;
+    }
+    .btn-primary { background: var(--accent); color: #fff; }
+    .btn-primary:hover { background: var(--accent-hover); }
+    .btn-secondary { background: var(--bg-raised); color: var(--text-primary); border: 1px solid var(--border); }
+    .btn-secondary:hover { background: var(--border); }
+    .btn-success { background: var(--success); color: #fff; }
+    .btn-success:hover { opacity: 0.9; }
+    .btn-purple { background: var(--purple); color: #fff; }
+    .btn-purple:hover { background: var(--purple-hover); }
+    .btn-danger { background: var(--danger); color: #fff; }
+    .btn-danger:hover { opacity: 0.9; }
+    .btn-pink { background: #DB2777; color: #fff; }
+    .btn-pink:hover { opacity: 0.9; }
+    .btn:disabled { opacity: 0.5; cursor: not-allowed; }
+
+    .btn-row { display: flex; justify-content: space-between; margin-top: 24px; }
+
+    /* Checkboxes and toggles */
+    .source-grid {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 12px;
+    }
+    .section-grid {
+      display: flex;
+      flex-direction: column;
+    }
+    .source-item, .section-item {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      padding: 12px 16px;
+      background: var(--bg-raised);
+      border: 1px solid var(--border);
+      border-radius: var(--radius-sm);
+      cursor: pointer;
+      transition: all 0.2s;
+      font-size: 14px;
+    }
+    .source-item:hover, .section-item:hover { border-color: var(--accent); }
+    .csv-upload-label {
+      display: block;
+      padding: 12px 16px;
+      border: 2px dashed var(--border);
+      border-radius: 6px;
+      cursor: pointer;
+      text-align: center;
+      color: var(--text-muted);
+      transition: all 0.2s;
+    }
+    .csv-upload-label:hover { border-color: var(--accent); color: var(--text-primary); }
+    .csv-upload-label.has-file { border-color: var(--success); color: var(--success); border-style: solid; }
+    .source-item.disabled { opacity: 0.4; cursor: not-allowed; }
+    .source-item.disabled:hover { border-color: var(--border); }
+    .section-item input[type="checkbox"], .source-item input[type="checkbox"] {
+      accent-color: var(--accent);
+      width: 16px;
+      height: 16px;
+    }
+    .section-item .badge {
+      font-size: 10px;
+      padding: 2px 6px;
+      border-radius: 10px;
+      background: var(--accent-light);
+      color: var(--accent);
+      margin-left: auto;
+    }
+    .section-group-heading {
+      display: flex;
+      align-items: center;
+      font-size: 13px;
+      font-weight: 700;
+      color: var(--accent);
+      text-transform: uppercase;
+      letter-spacing: 0.5px;
+      padding: 8px 0 4px;
+      margin-top: 12px;
+      border-bottom: 1px solid var(--border);
+    }
+    .section-group-heading:first-child { margin-top: 0; }
+    .section-subgrid {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 10px;
+      margin-top: 8px;
+      margin-bottom: 8px;
+    }
+    .select-btns { margin-bottom: 12px; display: flex; gap: 8px; }
+
+    /* Loading */
+    .loading { text-align: center; padding: 48px 24px; }
+    .spinner {
+      width: 40px;
+      height: 40px;
+      border: 3px solid var(--border);
+      border-top-color: var(--accent);
+      border-radius: 50%;
+      animation: spin 0.8s linear infinite;
+      margin: 0 auto 16px;
+    }
+    @keyframes spin { to { transform: rotate(360deg); } }
+    .elapsed { font-size: 13px; color: var(--text-muted); margin-top: 8px; }
+
+    /* Report preview */
+    .report-preview {
+      background: var(--bg-surface);
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      box-shadow: var(--shadow);
+      padding: 32px;
+      margin-top: 24px;
+      line-height: 1.7;
+    }
+    .report-preview h1, .report-preview h2, .report-preview h3, .report-preview h4 {
+      color: var(--accent);
+      margin-top: 1.4em;
+      margin-bottom: 0.5em;
+    }
+    .report-preview h2 { font-size: 20px; border-bottom: 1px solid var(--border); padding-bottom: 6px; }
+    .report-preview h3 { font-size: 16px; }
+    .report-preview table {
+      border-collapse: collapse;
+      width: 100%;
+      margin: 1em 0;
+      font-size: 13px;
+    }
+    .report-preview th, .report-preview td {
+      border: 1px solid var(--border);
+      padding: 8px 12px;
+      text-align: left;
+    }
+    .report-preview th {
+      background: var(--accent-light);
+      color: var(--accent);
+      font-weight: 600;
+    }
+    .report-preview tr:nth-child(even) td { background: var(--bg-raised); }
+    .report-preview blockquote {
+      border-left: 3px solid var(--accent);
+      padding-left: 16px;
+      color: var(--text-muted);
+      margin: 1em 0;
+    }
+    .report-preview code {
+      background: var(--bg-raised);
+      padding: 2px 6px;
+      border-radius: 3px;
+      font-size: 13px;
+    }
+    .report-preview ul, .report-preview ol { padding-left: 1.5em; }
+    .report-preview li { margin: 0.3em 0; }
+
+    .export-bar {
+      display: flex;
+      gap: 10px;
+      margin-top: 20px;
+      padding-top: 20px;
+      border-top: 1px solid var(--border);
+    }
+
+    /* Summary step */
+    .summary-table {
+      width: 100%;
+      border-collapse: collapse;
+    }
+    .summary-table td {
+      padding: 10px 14px;
+      border-bottom: 1px solid var(--border);
+      font-size: 14px;
+    }
+    .summary-table td:first-child {
+      font-weight: 600;
+      color: var(--text-muted);
+      width: 180px;
+    }
+
+    /* Error */
+    .error-box {
+      background: var(--danger-light);
+      border: 1px solid var(--danger);
+      color: var(--danger);
+      padding: 14px 18px;
+      border-radius: var(--radius-sm);
+      margin-top: 16px;
+      font-size: 14px;
+    }
+
+    @media (max-width: 600px) {
+      .form-row, .source-grid, .section-subgrid { grid-template-columns: 1fr; }
+      .wizard-steps { font-size: 11px; }
+    }
+  </style>
+</head>
+<body>
+  <div class="header">
+    <div class="header-left">
+      <a href="/reports/" style="display:flex; align-items:center; gap:12px; text-decoration:none; color:var(--text-primary);">
+        <img src="/static/Logo.webp" alt="Logicalis">
+        <h1>SOC Report Generator</h1>
+      </a>
+    </div>
+    <div class="header-right">
+      <nav class="header-nav">
+        <a href="/reports/">Home</a>
+        <a href="/admin/history">Report History</a>
+        <a href="/admin/customers">Manage Customers</a>
+        <a href="/admin/schedules">Schedules</a>
+      </nav>
+      <div class="theme-toggle" onclick="toggleTheme()">
+        <span id="lightIcon" class="active">&#9788;</span>
+        <span id="darkIcon">&#9790;</span>
+      </div>
+      <form action="/auth/logout" method="POST" style="margin:0;">
+        <button type="submit" class="btn-logout">Sign Out</button>
+      </form>
+    </div>
+  </div>
+
+  <div class="main">
+    <div class="wizard-steps">
+      <div class="wizard-step active" data-step="1" onclick="goToStep(1)">1. Customer</div>
+      <div class="wizard-step" data-step="2" onclick="goToStep(2)">2. Report Config</div>
+      <div class="wizard-step" data-step="3" onclick="goToStep(3)">3. Data Sources</div>
+      <div class="wizard-step" data-step="4" onclick="goToStep(4)">4. Sections</div>
+      <div class="wizard-step" data-step="5" onclick="goToStep(5)">5. Generate</div>
+    </div>
+
+    <!-- Step 1: Customer -->
+    <div class="step-panel active" id="step1">
+      <div class="card">
+        <h2>Select Customer</h2>
+        <p class="subtitle">Choose an existing customer or add a new one</p>
+        <div class="form-group">
+          <label>Customer</label>
+          <select id="customerSelect" onchange="onCustomerChange()">
+            <option value="">-- Select a customer --</option>
+            <option value="__new__">+ Add New Customer</option>
+          </select>
+        </div>
+        <div id="newCustomerForm" style="display:none; margin-top:16px; padding-top:16px; border-top:1px solid var(--border);">
+          <div class="form-group">
+            <label>Customer Name</label>
+            <input type="text" id="newCustName" placeholder="e.g. Chartered Asset Management">
+          </div>
+          <div class="form-row">
+            <div class="form-group">
+              <label>Short Name</label>
+              <input type="text" id="newCustShort" placeholder="e.g. CAM">
+            </div>
+            <div class="form-group">
+              <label>Jira Project Key</label>
+              <input type="text" id="newCustJiraKey" placeholder="e.g. CAM">
+            </div>
+          </div>
+          <div class="form-group">
+            <label>Logo (optional)</label>
+            <input type="file" id="newCustLogo" accept=".png,.jpg,.jpeg,.webp"
+                   style="font-size:13px; color:var(--text-muted);">
+          </div>
+          <button class="btn btn-primary" onclick="createCustomer()" style="margin-top:8px;">Save Customer</button>
+        </div>
+        <div class="btn-row">
+          <div></div>
+          <button class="btn btn-primary" onclick="nextStep()" id="step1Next" disabled>Next</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- Step 2: Report Config -->
+    <div class="step-panel" id="step2">
+      <div class="card">
+        <h2>Report Configuration</h2>
+        <p class="subtitle">Set the report type and date range</p>
+        <div class="form-group">
+          <label>Report Type</label>
+          <div class="source-grid" id="reportTypeGrid">
+            <label class="source-item">
+              <input type="checkbox" data-rtype="Monthly SOC Report" onchange="onReportTypeChange()">
+              <span>Monthly SOC Report</span>
+            </label>
+            <label class="source-item">
+              <input type="checkbox" data-rtype="Incident Report" onchange="onReportTypeChange()">
+              <span>Incident Report</span>
+            </label>
+            <label class="source-item">
+              <input type="checkbox" data-rtype="Vulnerability Report" onchange="onReportTypeChange()">
+              <span>Vulnerability Report</span>
+            </label>
+            <label class="source-item">
+              <input type="checkbox" data-rtype="Quarterly Report" onchange="onReportTypeChange()">
+              <span>Quarterly Report</span>
+            </label>
+          </div>
+        </div>
+        <!-- Quarterly picker (shown only when Quarterly Report is selected) -->
+        <div class="form-row" id="quarterlyPicker" style="display:none;">
+          <div class="form-group">
+            <label>Quarter</label>
+            <select id="quarterSelect" onchange="computeQuarterDates()">
+              <option value="1">Q1 (Jan–Mar)</option>
+              <option value="2">Q2 (Apr–Jun)</option>
+              <option value="3">Q3 (Jul–Sep)</option>
+              <option value="4">Q4 (Oct–Dec)</option>
+            </select>
+          </div>
+          <div class="form-group">
+            <label>Year</label>
+            <input type="number" id="quarterYear" min="2020" max="2099" value="" onchange="computeQuarterDates()" style="padding:9px 12px;border:1px solid var(--border);border-radius:6px;font-size:14px;background:var(--bg-surface);color:var(--text-primary);width:100%;">
+          </div>
+        </div>
+        <div class="form-row" id="standardDatePicker">
+          <div class="form-group">
+            <label>Start Date</label>
+            <input type="date" id="startDate">
+          </div>
+          <div class="form-group">
+            <label>End Date</label>
+            <input type="date" id="endDate">
+          </div>
+        </div>
+        <div class="btn-row">
+          <button class="btn btn-secondary" onclick="prevStep()">Back</button>
+          <button class="btn btn-primary" onclick="nextStep()">Next</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- Step 3: Data Sources -->
+    <div class="step-panel" id="step3">
+      <div class="card">
+        <h2>Data Sources</h2>
+        <p class="subtitle">Select which data sources to pull from</p>
+        <div class="source-grid">
+          <label class="source-item">
+            <input type="checkbox" id="srcJira" checked>
+            <span>Jira</span>
+          </label>
+          <label class="source-item">
+            <input type="checkbox" id="srcSplunk">
+            <span>Splunk</span>
+          </label>
+          <label class="source-item">
+            <input type="checkbox" id="srcSentinel">
+            <span>Microsoft Sentinel</span>
+          </label>
+          <label class="source-item">
+            <input type="checkbox" id="srcSocradar">
+            <span>SOCRadar Threat Intel</span>
+          </label>
+        </div>
+
+        <div id="jiraSourceOptions" style="margin-top: 16px;">
+          <p style="font-weight: 600; margin-bottom: 8px;">Jira Data Source</p>
+          <div style="display: flex; gap: 16px; margin-bottom: 12px;">
+            <label style="display: flex; align-items: center; gap: 6px; cursor: pointer;">
+              <input type="radio" name="jiraSource" value="api" checked onchange="toggleCsvUpload()">
+              <span>Pull from Jira API</span>
+            </label>
+            <label style="display: flex; align-items: center; gap: 6px; cursor: pointer;">
+              <input type="radio" name="jiraSource" value="csv" onchange="toggleCsvUpload()">
+              <span>Upload CSV file</span>
+            </label>
+          </div>
+          <div id="csvUploadArea" style="display: none;">
+            <label for="csvFileInput" class="csv-upload-label">
+              <span id="csvFileName">Choose a Jira CSV export file...</span>
+              <input type="file" id="csvFileInput" accept=".csv" onchange="updateCsvFileName(this)" style="display: none;">
+            </label>
+          </div>
+        </div>
+
+        <div class="btn-row">
+          <button class="btn btn-secondary" onclick="prevStep()">Back</button>
+          <button class="btn btn-primary" onclick="nextStep()">Next</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- Step 4: Sections -->
+    <div class="step-panel" id="step4">
+      <div class="card">
+        <h2>Report Sections</h2>
+        <p class="subtitle">Toggle sections to include in the report</p>
+        <div class="select-btns">
+          <button class="btn btn-secondary" onclick="selectAllSections(true)" style="padding:6px 12px; font-size:12px;">Select All</button>
+          <button class="btn btn-secondary" onclick="selectAllSections(false)" style="padding:6px 12px; font-size:12px;">Deselect All</button>
+        </div>
+        <div class="section-grid" id="sectionGrid"></div>
+        <div class="btn-row">
+          <button class="btn btn-secondary" onclick="prevStep()">Back</button>
+          <button class="btn btn-primary" onclick="nextStep()">Next</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- Step 5: Generate -->
+    <div class="step-panel" id="step5">
+      <div class="card">
+        <h2>Generate Report</h2>
+        <p class="subtitle">Review your selections and generate</p>
+        <table class="summary-table" id="summaryTable"></table>
+        <div class="btn-row">
+          <button class="btn btn-secondary" onclick="prevStep()">Back</button>
+          <button class="btn btn-success" onclick="generateReport()" id="generateBtn">Generate Report</button>
+        </div>
+      </div>
+
+      <div id="loadingArea" style="display:none;">
+        <div class="card loading">
+          <div class="spinner"></div>
+          <div id="progressMsg">Generating your report...</div>
+          <div class="elapsed" id="elapsedTime">0s elapsed</div>
+        </div>
+      </div>
+
+      <div id="errorArea" style="display:none;"></div>
+
+      <div id="reportArea" style="display:none;">
+        <div class="report-preview" id="reportContent"></div>
+        <div class="export-bar" id="exportBar">
+          <button class="btn btn-pink" onclick="exportReport('pdf')">Export PDF</button>
+          <button class="btn btn-primary" onclick="exportReport('docx')">Export Word</button>
+          <button class="btn btn-success" onclick="exportReport('xlsx')">Export Excel</button>
+          <button class="btn btn-danger" onclick="exportReport('pptx')">Export PPTX</button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <script>
+    let currentStep = 1;
+    let customers = [];
+    let sections = [];
+    let selectedCustomer = null;
+    let currentJobId = null;
+    let reportMarkdown = '';
+    let pollTimer = null;
+    let elapsedTimer = null;
+    let elapsedSec = 0;
+
+    // Theme
+    function initTheme() {
+      const saved = localStorage.getItem('soc-theme');
+      if (saved === 'dark') {
+        document.documentElement.setAttribute('data-theme', 'dark');
+        document.getElementById('darkIcon').classList.add('active');
+        document.getElementById('lightIcon').classList.remove('active');
+      }
+    }
+    function toggleTheme() {
+      const isDark = document.documentElement.getAttribute('data-theme') === 'dark';
+      if (isDark) {
+        document.documentElement.removeAttribute('data-theme');
+        localStorage.setItem('soc-theme', 'light');
+        document.getElementById('lightIcon').classList.add('active');
+        document.getElementById('darkIcon').classList.remove('active');
+      } else {
+        document.documentElement.setAttribute('data-theme', 'dark');
+        localStorage.setItem('soc-theme', 'dark');
+        document.getElementById('darkIcon').classList.add('active');
+        document.getElementById('lightIcon').classList.remove('active');
+      }
+    }
+
+    // Default dates to previous month
+    function setDefaultDates() {
+      const now = new Date();
+      const firstOfMonth = new Date(now.getFullYear(), now.getMonth(), 1);
+      const lastOfPrevMonth = new Date(firstOfMonth - 1);
+      const firstOfPrevMonth = new Date(lastOfPrevMonth.getFullYear(), lastOfPrevMonth.getMonth(), 1);
+      document.getElementById('startDate').value = firstOfPrevMonth.toISOString().split('T')[0];
+      document.getElementById('endDate').value = lastOfPrevMonth.toISOString().split('T')[0];
+      // Default quarterly year to current year
+      document.getElementById('quarterYear').value = now.getFullYear();
+    }
+
+    function onReportTypeChange() {
+      const isQuarterly = !!document.querySelector('#reportTypeGrid input[data-rtype="Quarterly Report"]:checked');
+      document.getElementById('quarterlyPicker').style.display = isQuarterly ? 'grid' : 'none';
+      document.getElementById('standardDatePicker').style.display = isQuarterly ? 'none' : 'grid';
+      if (isQuarterly) computeQuarterDates();
+    }
+
+    function computeQuarterDates() {
+      const q = parseInt(document.getElementById('quarterSelect').value);
+      const year = parseInt(document.getElementById('quarterYear').value) || new Date().getFullYear();
+      const monthStart = (q - 1) * 3;
+      const startDate = new Date(year, monthStart, 1);
+      const endDate = new Date(year, monthStart + 3, 0); // last day of last month in quarter
+      document.getElementById('startDate').value = startDate.toISOString().split('T')[0];
+      document.getElementById('endDate').value = endDate.toISOString().split('T')[0];
+    }
+
+    // Load data
+    async function loadCustomers() {
+      const r = await fetch('/admin/api/customers');
+      customers = await r.json();
+      const sel = document.getElementById('customerSelect');
+      sel.innerHTML = '<option value="">-- Select a customer --</option><option value="__new__">+ Add New Customer</option>';
+      customers.forEach(c => {
+        const opt = document.createElement('option');
+        opt.value = c.id;
+        opt.textContent = `${c.name} (${c.short_name})`;
+        sel.insertBefore(opt, sel.lastElementChild);
+      });
+    }
+
+    async function loadSections() {
+      const r = await fetch('/reports/api/sections');
+      sections = await r.json();
+      renderSections();
+    }
+
+    function renderSections() {
+      const grid = document.getElementById('sectionGrid');
+      grid.innerHTML = '';
+      const defaults = selectedCustomer ? selectedCustomer.default_sections : [
+        'introduction', 'incident_overview', 'incident_severity',
+        'incident_status', 'incident_details', 'pending_tickets',
+        'monitoring_scope', 'recommendations'
+      ];
+
+      const sourceLabels = {
+        jira: 'Jira',
+        splunk: 'Splunk',
+        sentinel: 'Microsoft Sentinel'
+      };
+      const sourceOrder = ['jira', 'splunk', 'sentinel'];
+      const grouped = {};
+      sections.forEach(s => {
+        const src = s.source || 'other';
+        if (!grouped[src]) grouped[src] = [];
+        grouped[src].push(s);
+      });
+
+      sourceOrder.forEach(src => {
+        const items = grouped[src];
+        if (!items || !items.length) return;
+
+        const heading = document.createElement('div');
+        heading.className = 'section-group-heading';
+        heading.innerHTML = `<span>${sourceLabels[src] || src}</span>`;
+        grid.appendChild(heading);
+
+        const subgrid = document.createElement('div');
+        subgrid.className = 'section-subgrid';
+        items.forEach(s => {
+          const checked = defaults.includes(s.id);
+          const item = document.createElement('label');
+          item.className = 'section-item';
+          item.innerHTML = `
+            <input type="checkbox" data-section="${s.id}" ${checked ? 'checked' : ''}>
+            <span>${s.label}</span>
+          `;
+          subgrid.appendChild(item);
+        });
+        grid.appendChild(subgrid);
+      });
+    }
+
+    function selectAllSections(checked) {
+      document.querySelectorAll('#sectionGrid input[type="checkbox"]:not(:disabled)').forEach(cb => {
+        cb.checked = checked;
+      });
+    }
+
+    // Customer selection
+    function onCustomerChange() {
+      const val = document.getElementById('customerSelect').value;
+      const form = document.getElementById('newCustomerForm');
+      const nextBtn = document.getElementById('step1Next');
+
+      if (val === '__new__') {
+        form.style.display = 'block';
+        selectedCustomer = null;
+        nextBtn.disabled = true;
+      } else if (val) {
+        form.style.display = 'none';
+        selectedCustomer = customers.find(c => c.id === val);
+        nextBtn.disabled = false;
+        renderSections();
+      } else {
+        form.style.display = 'none';
+        selectedCustomer = null;
+        nextBtn.disabled = true;
+      }
+    }
+
+    async function createCustomer() {
+      const name = document.getElementById('newCustName').value.trim();
+      const short_name = document.getElementById('newCustShort').value.trim();
+      const jira_key = document.getElementById('newCustJiraKey').value.trim();
+      const logoInput = document.getElementById('newCustLogo');
+
+      if (!name || !short_name) { alert('Name and short name are required.'); return; }
+
+      const fd = new FormData();
+      fd.append('name', name);
+      fd.append('short_name', short_name);
+      fd.append('jira_project_key', jira_key);
+      if (logoInput.files.length) fd.append('logo', logoInput.files[0]);
+
+      const r = await fetch('/admin/api/customers', { method: 'POST', body: fd });
+      const result = await r.json();
+      if (!r.ok) {
+        alert(result.error || 'Failed to create customer.');
+        return;
+      }
+
+      await loadCustomers();
+      document.getElementById('customerSelect').value = result.id || short_name.toLowerCase().replace(' ', '-');
+      onCustomerChange();
+      document.getElementById('newCustomerForm').style.display = 'none';
+      document.getElementById('newCustName').value = '';
+      document.getElementById('newCustShort').value = '';
+      document.getElementById('newCustJiraKey').value = '';
+      logoInput.value = '';
+    }
+
+    // Wizard navigation
+    function goToStep(step) {
+      if (step > currentStep + 1) return;
+      currentStep = step;
+      updateWizard();
+    }
+    function nextStep() { currentStep = Math.min(currentStep + 1, 5); updateWizard(); }
+    function prevStep() { currentStep = Math.max(currentStep - 1, 1); updateWizard(); }
+
+    function updateWizard() {
+      document.querySelectorAll('.step-panel').forEach(p => p.classList.remove('active'));
+      document.getElementById('step' + currentStep).classList.add('active');
+
+      document.querySelectorAll('.wizard-step').forEach(s => {
+        const n = parseInt(s.dataset.step);
+        s.classList.remove('active', 'done');
+        if (n === currentStep) s.classList.add('active');
+        else if (n < currentStep) s.classList.add('done');
+      });
+
+      if (currentStep === 5) buildSummary();
+    }
+
+    function toggleCsvUpload() {
+      const source = document.querySelector('input[name="jiraSource"]:checked').value;
+      document.getElementById('csvUploadArea').style.display = source === 'csv' ? 'block' : 'none';
+    }
+
+    function updateCsvFileName(input) {
+      const label = document.getElementById('csvFileName');
+      const uploadLabel = input.closest('.csv-upload-label');
+      if (input.files.length > 0) {
+        label.textContent = input.files[0].name;
+        uploadLabel.classList.add('has-file');
+      } else {
+        label.textContent = 'Choose a Jira CSV export file...';
+        uploadLabel.classList.remove('has-file');
+      }
+    }
+
+    function getSelectedReportTypes() {
+      return Array.from(document.querySelectorAll('#reportTypeGrid input[type="checkbox"]:checked'))
+        .map(cb => cb.dataset.rtype);
+    }
+
+    function getSelectedSections() {
+      return Array.from(document.querySelectorAll('#sectionGrid input[type="checkbox"]:checked'))
+        .map(cb => cb.dataset.section);
+    }
+
+    function buildSummary() {
+      const table = document.getElementById('summaryTable');
+      const selSections = getSelectedSections();
+      const sectionLabels = selSections.map(id => {
+        const s = sections.find(x => x.id === id);
+        return s ? s.label : id;
+      });
+
+      table.innerHTML = `
+        <tr><td>Customer</td><td>${selectedCustomer ? selectedCustomer.name : 'N/A'}</td></tr>
+        <tr><td>Report Type</td><td>${getSelectedReportTypes().join(', ') || 'None selected'}</td></tr>
+        <tr><td>Date Range</td><td>${document.getElementById('startDate').value} to ${document.getElementById('endDate').value}</td></tr>
+        <tr><td>Data Sources</td><td>${[
+          document.getElementById('srcJira').checked ? 'Jira (' + document.querySelector('input[name="jiraSource"]:checked').value.toUpperCase() + ')' : '',
+          document.getElementById('srcSentinel').checked ? 'Microsoft Sentinel' : '',
+          document.getElementById('srcSplunk').checked ? 'Splunk' : '',
+          document.getElementById('srcSocradar') && document.getElementById('srcSocradar').checked ? 'SOCRadar' : '',
+        ].filter(Boolean).join(', ') || 'None'}</td></tr>
+        <tr><td>Sections (${selSections.length})</td><td>${sectionLabels.join(', ')}</td></tr>
+      `;
+    }
+
+    // Report generation
+    async function generateReport() {
+      const btn = document.getElementById('generateBtn');
+      btn.disabled = true;
+
+      document.getElementById('loadingArea').style.display = 'block';
+      document.getElementById('errorArea').style.display = 'none';
+      document.getElementById('reportArea').style.display = 'none';
+
+      elapsedSec = 0;
+      elapsedTimer = setInterval(() => {
+        elapsedSec++;
+        document.getElementById('elapsedTime').textContent = elapsedSec + 's elapsed';
+      }, 1000);
+
+      const jiraSource = document.querySelector('input[name="jiraSource"]:checked').value;
+      const csvFileInput = document.getElementById('csvFileInput');
+
+      if (jiraSource === 'csv' && (!csvFileInput.files || csvFileInput.files.length === 0)) {
+        showError('Please select a CSV file to upload.');
+        return;
+      }
+
+      let fetchOptions;
+      const useSentinel = document.getElementById('srcSentinel').checked;
+      const useSplunk = document.getElementById('srcSplunk').checked;
+      const useSocradar = document.getElementById('srcSocradar') ? document.getElementById('srcSocradar').checked : false;
+      const reportType = getSelectedReportTypes().join(', ') || 'Monthly SOC Report';
+      const isQuarterly = reportType === 'Quarterly Report';
+      const q = document.getElementById('quarterSelect') ? document.getElementById('quarterSelect').value : '';
+      const qYear = document.getElementById('quarterYear') ? document.getElementById('quarterYear').value : '';
+      const quarterLabel = isQuarterly ? `Q${q} ${qYear}` : '';
+
+      if (jiraSource === 'csv') {
+        const formData = new FormData();
+        formData.append('customer_name', selectedCustomer ? selectedCustomer.name : '');
+        formData.append('customer_id', selectedCustomer ? selectedCustomer.id : '');
+        formData.append('jira_project_key', selectedCustomer ? selectedCustomer.jira_project_key : '');
+        formData.append('report_type', reportType);
+        formData.append('start_date', document.getElementById('startDate').value);
+        formData.append('end_date', document.getElementById('endDate').value);
+        formData.append('quarter_label', quarterLabel);
+        formData.append('sections', JSON.stringify(getSelectedSections()));
+        formData.append('customer_logo', selectedCustomer ? selectedCustomer.logo : '');
+        formData.append('jira_source', 'csv');
+        formData.append('use_sentinel', useSentinel ? 'true' : 'false');
+        formData.append('use_splunk', useSplunk ? 'true' : 'false');
+        formData.append('use_socradar', useSocradar ? 'true' : 'false');
+        formData.append('csv_file', csvFileInput.files[0]);
+        fetchOptions = { method: 'POST', body: formData };
+      } else {
+        const payload = {
+          customer_name: selectedCustomer ? selectedCustomer.name : '',
+          customer_id: selectedCustomer ? selectedCustomer.id : '',
+          jira_project_key: selectedCustomer ? selectedCustomer.jira_project_key : '',
+          report_type: reportType,
+          start_date: document.getElementById('startDate').value,
+          end_date: document.getElementById('endDate').value,
+          quarter_label: quarterLabel,
+          sections: getSelectedSections(),
+          customer_logo: selectedCustomer ? selectedCustomer.logo : '',
+          jira_source: 'api',
+          use_sentinel: useSentinel,
+          use_splunk: useSplunk,
+          use_socradar: useSocradar,
+        };
+        fetchOptions = {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(payload),
+        };
+      }
+
+      try {
+        const r = await fetch('/reports/api/generate', fetchOptions);
+        const data = await r.json();
+        if (data.error) throw new Error(data.error);
+
+        currentJobId = data.job_id;
+        pollTimer = setInterval(() => pollJob(), 1000);
+      } catch (e) {
+        showError(e.message);
+      }
+    }
+
+    async function pollJob() {
+      try {
+        const r = await fetch('/reports/api/generate-poll/' + currentJobId);
+        const data = await r.json();
+
+        if (data.progress) {
+          document.getElementById('progressMsg').textContent = data.progress;
+        }
+
+        if (data.status === 'done') {
+          clearInterval(pollTimer);
+          clearInterval(elapsedTimer);
+          document.getElementById('loadingArea').style.display = 'none';
+          document.getElementById('generateBtn').disabled = false;
+
+          reportMarkdown = data.text;
+          document.getElementById('reportContent').innerHTML = marked.parse(reportMarkdown);
+          document.getElementById('reportArea').style.display = 'block';
+        } else if (data.status === 'error') {
+          clearInterval(pollTimer);
+          clearInterval(elapsedTimer);
+          document.getElementById('loadingArea').style.display = 'none';
+          document.getElementById('generateBtn').disabled = false;
+          showError(data.error || 'Report generation failed.');
+        }
+      } catch (e) {
+        clearInterval(pollTimer);
+        clearInterval(elapsedTimer);
+        showError('Connection lost: ' + e.message);
+      }
+    }
+
+    function showError(msg) {
+      document.getElementById('loadingArea').style.display = 'none';
+      document.getElementById('generateBtn').disabled = false;
+      document.getElementById('errorArea').innerHTML = `<div class="error-box">${msg}</div>`;
+      document.getElementById('errorArea').style.display = 'block';
+      clearInterval(elapsedTimer);
+    }
+
+    // Export
+    async function exportReport(format) {
+      const customer_name = selectedCustomer ? selectedCustomer.name : 'Client';
+      const report_date = document.getElementById('startDate').value + ' to ' + document.getElementById('endDate').value;
+
+      let url, body, filename;
+
+      if (format === 'xlsx') {
+        url = '/exports/xlsx';
+        body = JSON.stringify({ job_id: currentJobId, customer_name });
+        filename = `soc-report-${customer_name.toLowerCase().replace(/\s+/g, '-')}.xlsx`;
+      } else if (format === 'pptx') {
+        url = '/exports/pptx';
+        body = JSON.stringify({
+          markdown: reportMarkdown,
+          customer_name,
+          report_date,
+          customer_logo: selectedCustomer ? selectedCustomer.logo : '',
+          job_id: currentJobId,
+        });
+        filename = `soc-report-${customer_name.toLowerCase().replace(/\s+/g, '-')}.pptx`;
+      } else {
+        url = format === 'pdf' ? '/exports/pdf' : '/exports/docx';
+        body = JSON.stringify({
+          markdown: reportMarkdown,
+          customer_name,
+          report_date,
+          customer_logo: selectedCustomer ? selectedCustomer.logo : '',
+          job_id: currentJobId,
+        });
+        filename = `soc-report-${customer_name.toLowerCase().replace(/\s+/g, '-')}.${format}`;
+      }
+
+      try {
+        const r = await fetch(url, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body,
+        });
+        if (!r.ok) {
+          const err = await r.json();
+          alert(err.error || 'Export failed.');
+          return;
+        }
+        const blob = await r.blob();
+        const a = document.createElement('a');
+        a.href = URL.createObjectURL(blob);
+        a.download = filename;
+        a.click();
+        URL.revokeObjectURL(a.href);
+      } catch (e) {
+        alert('Export failed: ' + e.message);
+      }
+    }
+
+    // Init
+    initTheme();
+    setDefaultDates();
+    loadCustomers();
+    loadSections();
+  </script>
+</body>
+</html>

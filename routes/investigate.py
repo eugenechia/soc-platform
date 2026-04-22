@@ -26,6 +26,8 @@ from urllib.parse import urlencode
 import httpx
 from flask import Blueprint, jsonify, redirect, render_template, request, session
 
+import os
+
 from routes.auth import require_login
 from tools.secrets import get_secret
 from tools.socradar_mcp import build_mcp_tools, register_dynamic_client
@@ -34,6 +36,8 @@ from tools.tavily_client import fetch_web_context
 log = logging.getLogger(__name__)
 
 investigate_bp = Blueprint("investigate", __name__)
+
+_INVESTIGATE_MODEL = os.environ.get("INVESTIGATE_MODEL", "gpt-4.1-mini")
 
 # Investigate jobs live in-process. Single-replica Container App means this is
 # acceptable; we just accept that jobs in flight during a restart are lost.
@@ -145,7 +149,7 @@ def _run_streaming_job(job_id: str, user_message: str, mcp_tools: list) -> None:
     try:
         client = OpenAI(api_key=get_secret("OPENAI_API_KEY"))
         stream = client.responses.create(
-            model="gpt-4o",
+            model=_INVESTIGATE_MODEL,
             instructions=SYSTEM_PROMPT,
             input=[{"role": "user", "content": user_message}],
             tools=mcp_tools,
