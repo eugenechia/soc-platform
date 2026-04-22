@@ -13,7 +13,7 @@ from io import BytesIO
 import zipfile
 
 from flask import Blueprint, render_template, session, request, jsonify, Response, send_file
-from agents import Agent, Runner
+from openai import AsyncAzureOpenAI
 
 from routes.auth import require_login
 from tools.jira_client import (fetch_incidents_for_report, fetch_incidents_from_csv,
@@ -656,6 +656,15 @@ def _build_unified_toc(content: str) -> str:
     return "\n".join(toc_lines) + "\n\n" + content
 
 
+def _azure_openai_client() -> AsyncAzureOpenAI:
+    from tools.secrets import get_secret
+    return AsyncAzureOpenAI(
+        azure_endpoint=os.environ.get("AZURE_OPENAI_ENDPOINT", ""),
+        api_key=get_secret("AZURE_OPENAI_API_KEY"),
+        api_version=os.environ.get("AZURE_OPENAI_API_VERSION", "2024-10-21"),
+    )
+
+
 async def _generate_group(group_sections: list, data_subset: dict, ctx: dict, config: dict) -> str:
     if not group_sections:
         return ""
@@ -677,13 +686,16 @@ async def _generate_group(group_sections: list, data_subset: dict, ctx: dict, co
         report_year=ctx["report_year"],
     )
 
-    agent = Agent(
-        name="SOC Report Writer",
-        instructions=prompt,
+    client = _azure_openai_client()
+    response = await client.chat.completions.create(
         model=_LLM_MODEL,
+        messages=[
+            {"role": "system", "content": prompt},
+            {"role": "user", "content": "Generate the assigned report sections now."},
+        ],
+        max_tokens=16000,
     )
-    result = await Runner.run(agent, "Generate the assigned report sections now.")
-    return result.final_output
+    return (response.choices[0].message.content or "").strip()
 
 
 async def _run_report_agent(data: dict, config: dict) -> str:
