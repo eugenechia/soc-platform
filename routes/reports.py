@@ -160,11 +160,12 @@ Otherwise: Table showing top alerts with count, sorted by frequency.
 
 **### 1.8. Total Assets Under Monitoring** (if "total_assets" is selected, REQUIRES SENTINEL)
 If Microsoft Sentinel is NOT connected, show the placeholder block. If connected but no data for the period, write a brief note stating no activity was recorded.
-Otherwise: Total asset count, breakdown by type.
+Otherwise: State total asset count. Note: asset data may come from Microsoft Defender for Endpoint (DeviceInfo table) or CrowdStrike (CrowdStrikeHosts table) depending on the EDR deployed for this customer.
 
 **### 1.9. Managed Assets by Sensor Health State** (if "sensor_health" is selected, REQUIRES SENTINEL)
 If Microsoft Sentinel is NOT connected, show the placeholder block. If connected but no data for the period, write a brief note stating no activity was recorded.
-Otherwise: Table of devices with columns: Device Name | First Seen | Last Update | OS Platform | Exposure Level | Health Status.
+Otherwise: Table of devices with columns: Device Name | Last Update | OS Platform | Exposure Level | Health Status.
+Note: if data comes from CrowdStrike (fields DeviceName, OnboardingStatus, HealthStatus, OSPlatform, ExposureLevel, LastSeen), map them directly. HealthStatus values are "Active" (seen within 7 days) or "Inactive".
 
 **### 1.10. Vulnerability Details** (if "vulnerability_details" is selected, REQUIRES SENTINEL)
 If Microsoft Sentinel is NOT connected, show the placeholder block. If connected but no data for the period, write a brief note stating no activity was recorded.

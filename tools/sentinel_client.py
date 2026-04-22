@@ -118,20 +118,39 @@ SecurityAlert
 | top 15 by Count desc
 """, timespan)
 
-    # 3. Total assets under monitoring (most recent snapshot — no timespan filter)
+    # 3. Total assets under monitoring — try MDE DeviceInfo first, fall back to CrowdStrike
     assets_rows = _safe_kql(token, """
 DeviceInfo
 | summarize arg_max(TimeGenerated, *) by DeviceName
 | count
 """)
+    if not assets_rows or int(assets_rows[0].get("Count", 0)) == 0:
+        assets_rows = _safe_kql(token, """
+CrowdStrikeHosts
+| summarize arg_max(TimeGenerated, *) by Hostname
+| count
+""")
     total_assets = int(assets_rows[0].get("Count", 0)) if assets_rows else 0
 
-    # 4. Per-device sensor health state (latest record per device)
+    # 4. Per-device sensor health state — try MDE DeviceInfo first, fall back to CrowdStrike
     health_rows = _safe_kql(token, """
 DeviceInfo
 | summarize arg_max(TimeGenerated, *) by DeviceName
 | project DeviceName, OnboardingStatus, HealthStatus, OSPlatform, ExposureLevel,
           LastSeen = TimeGenerated
+| order by HealthStatus asc
+""")
+    if not health_rows:
+        health_rows = _safe_kql(token, """
+CrowdStrikeHosts
+| summarize arg_max(TimeGenerated, *) by Hostname
+| extend
+    DeviceName = Hostname,
+    OnboardingStatus = iff(isnotempty(AgentVersion), "Onboarded", "Not onboarded"),
+    HealthStatus = iff(LastSeen > ago(7d), "Active", "Inactive"),
+    OSPlatform = OsProductName,
+    ExposureLevel = iff(isnotempty(InternetExposure), InternetExposure, "Unknown")
+| project DeviceName, OnboardingStatus, HealthStatus, OSPlatform, ExposureLevel, LastSeen
 | order by HealthStatus asc
 """)
 
