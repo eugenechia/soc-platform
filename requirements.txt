@@ -1,0 +1,34 @@
+flask>=3.0.0
+gunicorn>=22.0.0
+python-dotenv>=1.0.0
+httpx>=0.27.0
+
+# LLM SDKs (both — openai-agents for report gen, openai for MCP Responses API)
+openai-agents>=0.0.7
+openai>=1.68.0
+
+# Export formats
+weasyprint>=60.0
+python-docx>=1.1.0
+openpyxl>=3.1.0
+python-pptx>=0.6.23
+Markdown>=3.5
+beautifulsoup4>=4.12.0
+Pillow>=10.0.0
+
+# Charts
+matplotlib>=3.8.0
+python-dateutil>=2.8.0
+
+# Scheduling
+APScheduler>=3.10.0
+
+# Auth — Entra ID
+msal>=1.28.0
+
+# Web intelligence for Investigate mode
+tavily-python>=0.5.0
+
+# Azure — Managed Identity + Key Vault (prod only; harmless in dev)
+azure-identity>=1.15.0
+azure-keyvault-secrets>=4.8.0

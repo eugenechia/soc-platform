@@ -1,0 +1,12 @@
+services:
+  soc-platform:
+    build: .
+    ports:
+      - "5060:5060"
+    env_file: .env
+    volumes:
+      - soc-platform-data:/app/data
+    restart: unless-stopped
+
+volumes:
+  soc-platform-data:

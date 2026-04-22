@@ -1,0 +1,164 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>{% block title %}Logicalis SOC Platform{% endblock %}</title>
+  <link rel="icon" type="image/x-icon" href="/static/favicon.ico">
+  <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+    :root {
+      --bg-base: #F8FAFC;
+      --bg-surface: #FFFFFF;
+      --bg-raised: #F1F5F9;
+      --border: #E2E8F0;
+      --text-primary: #1E293B;
+      --text-muted: #64748B;
+      --accent: #2563EB;
+      --accent-hover: #1D4ED8;
+      --accent-light: #DBEAFE;
+      --danger: #DC2626;
+      --shadow: 0 1px 3px rgba(0,0,0,0.08);
+      --radius: 8px;
+    }
+
+    [data-theme="dark"] {
+      --bg-base: #1A1A2E;
+      --bg-surface: #25253E;
+      --bg-raised: #32324E;
+      --border: #3A3A5C;
+      --text-primary: #E8E8F0;
+      --text-muted: #9CA3C2;
+      --accent: #7C3AED;
+      --accent-hover: #6D28D9;
+      --accent-light: #2D2050;
+      --danger: #F87171;
+      --shadow: 0 1px 3px rgba(0,0,0,0.3);
+    }
+
+    body {
+      min-height: 100vh;
+      background: var(--bg-base);
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', system-ui, sans-serif;
+      font-size: 15px;
+      color: var(--text-primary);
+      transition: background 0.2s, color 0.2s;
+    }
+
+    /* Header */
+    .app-header {
+      background: var(--bg-surface);
+      border-bottom: 1px solid var(--border);
+      padding: 10px 24px;
+      display: flex;
+      align-items: center;
+      gap: 24px;
+      box-shadow: var(--shadow);
+      position: sticky;
+      top: 0;
+      z-index: 100;
+    }
+    .brand {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      font-weight: 600;
+    }
+    .brand img {
+      height: 28px;
+      transition: filter 0.2s;
+    }
+    [data-theme="dark"] .brand img { filter: brightness(0) invert(1); }
+
+    /* Two-mode nav */
+    nav.mode-tabs {
+      display: flex;
+      gap: 4px;
+      flex: 1;
+    }
+    nav.mode-tabs a {
+      padding: 8px 16px;
+      border-radius: var(--radius);
+      color: var(--text-muted);
+      text-decoration: none;
+      font-weight: 500;
+      font-size: 14px;
+      transition: background 0.15s, color 0.15s;
+    }
+    nav.mode-tabs a:hover {
+      background: var(--bg-raised);
+      color: var(--text-primary);
+    }
+    nav.mode-tabs a.active {
+      background: var(--accent-light);
+      color: var(--accent);
+    }
+
+    /* User chip + logout */
+    .user-chip {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      font-size: 14px;
+      color: var(--text-muted);
+    }
+    .user-chip .email {
+      color: var(--text-primary);
+      font-weight: 500;
+    }
+    .logout-btn {
+      background: none;
+      border: 1px solid var(--border);
+      color: var(--text-muted);
+      padding: 6px 12px;
+      border-radius: var(--radius);
+      font-size: 13px;
+      cursor: pointer;
+      text-decoration: none;
+      transition: background 0.15s, color 0.15s;
+    }
+    .logout-btn:hover {
+      background: var(--bg-raised);
+      color: var(--danger);
+    }
+
+    .content {
+      padding: 24px;
+      max-width: 1400px;
+      margin: 0 auto;
+    }
+  </style>
+  {% block head_extra %}{% endblock %}
+</head>
+<body>
+  <header class="app-header">
+    <div class="brand">
+      <img src="/static/Logo.webp" alt="Logicalis">
+      <span>SOC Platform</span>
+    </div>
+
+    <nav class="mode-tabs">
+      <a href="/reports/"     class="{% if active_mode == 'reports' %}active{% endif %}">Generate Report</a>
+      <a href="/investigate/" class="{% if active_mode == 'investigate' %}active{% endif %}">Investigate</a>
+      <a href="/admin/customers" class="{% if active_mode == 'admin' %}active{% endif %}">Customers</a>
+      <a href="/admin/history"   class="{% if active_mode == 'history' %}active{% endif %}">History</a>
+      <a href="/admin/schedules" class="{% if active_mode == 'schedules' %}active{% endif %}">Schedules</a>
+    </nav>
+
+    {% if user %}
+    <div class="user-chip">
+      <span class="email">{{ user.email }}</span>
+      <a href="/auth/logout" class="logout-btn">Log out</a>
+    </div>
+    {% endif %}
+  </header>
+
+  <main class="content">
+    {% block content %}{% endblock %}
+  </main>
+
+  {% block scripts %}{% endblock %}
+</body>
+</html>
