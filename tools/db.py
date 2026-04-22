@@ -16,9 +16,9 @@ from datetime import datetime
 
 logger = logging.getLogger(__name__)
 
-_DB_PATH = os.path.join(
-    os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
-    "data", "soc_platform.db"
+_DB_PATH = os.environ.get(
+    "DB_PATH",
+    os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "data", "soc_platform.db"),
 )
 
 _REPORTS_DIR = os.path.join(
