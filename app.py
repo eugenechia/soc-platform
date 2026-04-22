@@ -15,7 +15,7 @@ import secrets as pysecrets
 from dotenv import load_dotenv
 load_dotenv()  # must precede any tools import that reads env at module level
 
-from flask import Flask, redirect, request, session
+from flask import Flask, redirect, render_template, request, session
 
 from tools import db
 from tools import scheduler
@@ -60,11 +60,10 @@ def create_app() -> Flask:
         if not session.get("user"):
             return redirect("/auth/login")
 
-    # Root → default to Generate Report mode
     @app.route("/")
     @require_login
     def index():
-        return redirect("/reports/")
+        return render_template("home.html", user=session.get("user", {}))
 
     # Warn loudly if gunicorn is running with multiple workers (breaks APScheduler)
     workers = int(os.environ.get("WEB_CONCURRENCY", "1"))
