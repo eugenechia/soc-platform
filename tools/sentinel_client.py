@@ -5,35 +5,37 @@ import httpx
 
 logger = logging.getLogger(__name__)
 
-TENANT_ID = os.environ.get("SENTINEL_TENANT_ID", "")
-CLIENT_ID = os.environ.get("SENTINEL_CLIENT_ID", "")
-CLIENT_SECRET = os.environ.get("SENTINEL_CLIENT_SECRET", "")
 WORKSPACE_ID = os.environ.get("SENTINEL_WORKSPACE_ID", "")
 
 _LOG_ANALYTICS_SCOPE = "https://api.loganalytics.io/.default"
 
 
 def _get_access_token() -> str:
-    # In Azure, use Managed Identity (no credentials needed).
-    # Fall back to client_credentials for local dev.
-    try:
-        from azure.identity import DefaultAzureCredential
-        cred = DefaultAzureCredential(exclude_interactive_browser_credential=True)
-        token = cred.get_token(_LOG_ANALYTICS_SCOPE)
-        return token.token
-    except Exception:
-        pass
+    # Resolve credentials at call time so Key Vault secrets are available.
+    from tools.secrets import get_secret
+    tenant_id = get_secret("SENTINEL_TENANT_ID")
+    client_id = get_secret("SENTINEL_CLIENT_ID")
+    client_secret = get_secret("SENTINEL_CLIENT_SECRET")
 
-    # Local dev fallback: client_credentials
-    url = f"https://login.microsoftonline.com/{TENANT_ID}/oauth2/v2.0/token"
-    r = httpx.post(url, data={
-        "grant_type": "client_credentials",
-        "client_id": CLIENT_ID,
-        "client_secret": CLIENT_SECRET,
-        "scope": _LOG_ANALYTICS_SCOPE,
-    }, timeout=30)
-    r.raise_for_status()
-    return r.json()["access_token"]
+    # If explicit service principal credentials are configured, use them directly.
+    # Required when Sentinel lives in a different tenant from the Container App's
+    # Managed Identity — DefaultAzureCredential would get a token for the wrong tenant.
+    if all([tenant_id, client_id, client_secret]):
+        url = f"https://login.microsoftonline.com/{tenant_id}/oauth2/v2.0/token"
+        r = httpx.post(url, data={
+            "grant_type": "client_credentials",
+            "client_id": client_id,
+            "client_secret": client_secret,
+            "scope": _LOG_ANALYTICS_SCOPE,
+        }, timeout=30)
+        r.raise_for_status()
+        return r.json()["access_token"]
+
+    # Fallback: same-tenant Managed Identity (no explicit credentials configured)
+    from azure.identity import DefaultAzureCredential
+    cred = DefaultAzureCredential(exclude_interactive_browser_credential=True)
+    token = cred.get_token(_LOG_ANALYTICS_SCOPE)
+    return token.token
 
 
 def _run_kql(token: str, query: str, timespan: str | None = None) -> list[dict]:
@@ -48,6 +50,12 @@ def _run_kql(token: str, query: str, timespan: str | None = None) -> list[dict]:
         json=body,
         timeout=60,
     )
+
+    if r.status_code in (401, 403):
+        # Auth failure — raise so the caller marks Sentinel as disconnected
+        raise PermissionError(
+            f"Sentinel auth denied ({r.status_code}): {r.text[:300]}"
+        )
 
     if r.status_code in (400, 404):
         # Table may not exist in this workspace — treat as empty
@@ -70,6 +78,8 @@ def _run_kql(token: str, query: str, timespan: str | None = None) -> list[dict]:
 def _safe_kql(token: str, query: str, timespan: str | None = None) -> list[dict]:
     try:
         return _run_kql(token, query, timespan)
+    except PermissionError:
+        raise  # auth failures must propagate so the caller treats Sentinel as disconnected
     except Exception as e:
         logger.warning(f"KQL query skipped ({type(e).__name__}): {e}")
         return []
@@ -77,7 +87,9 @@ def _safe_kql(token: str, query: str, timespan: str | None = None) -> list[dict]
 
 def fetch_data(config: dict, start_date: str, end_date: str) -> dict:
     """Fetch security data from Microsoft Sentinel / Log Analytics."""
-    if not all([TENANT_ID, CLIENT_ID, CLIENT_SECRET, WORKSPACE_ID]):
+    from tools.secrets import get_secret
+    if not all([get_secret("SENTINEL_TENANT_ID"), get_secret("SENTINEL_CLIENT_ID"),
+                get_secret("SENTINEL_CLIENT_SECRET"), WORKSPACE_ID]):
         raise ValueError(
             "Sentinel credentials incomplete. Check SENTINEL_TENANT_ID, "
             "SENTINEL_CLIENT_ID, SENTINEL_CLIENT_SECRET, SENTINEL_WORKSPACE_ID."
