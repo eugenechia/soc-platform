@@ -1110,7 +1110,7 @@
       };
       document.querySelectorAll('#sectionGrid .section-item').forEach(item => {
         const src = item.dataset.source;
-        const active = sourceMap[src] !== false && sourceMap[src] !== undefined ? sourceMap[src] : true;
+        const active = src in sourceMap ? sourceMap[src] : true;
         const cb = item.querySelector('input[type="checkbox"]');
         if (!active) {
           item.classList.add('source-disabled');
