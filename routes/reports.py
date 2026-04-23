@@ -155,7 +155,14 @@ IMPORTANT rules for this table:
 
 **### 1.6. Sentinel Monthly Utilization** (if "sentinel_utilization" is selected, REQUIRES SENTINEL)
 If Microsoft Sentinel is NOT connected, show the placeholder block. If connected but no data for the period, write a brief note stating no activity was recorded.
-Otherwise: Total utilisation in GB, average daily utilisation, trend vs previous month.
+Otherwise:
+- State the total ingestion for the period (in GB) and the average daily ingestion (in GB/day).
+- Then render the daily ingestion breakdown as a markdown table with these exact columns:
+  Date | Ingested (GB)
+  - Date: format as YYYY-MM-DD (use the TimeGenerated value from the daily_breakdown rows)
+  - Ingested (GB): the TotalGB value rounded to 2 decimal places
+  - Sort rows by date ascending
+- If daily_breakdown is empty, state "No daily utilization data was recorded for this period."
 
 **### 1.7. Top Alert Triggered on Sentinel** (if "top_alerts_sentinel" is selected, REQUIRES SENTINEL)
 If Microsoft Sentinel is NOT connected, show the placeholder block. If connected but no data for the period, write a brief note stating no activity was recorded.
@@ -533,10 +540,16 @@ def _collect_report_data(config: dict) -> dict:
         for key, err in fetch_errors.items():
             result[f"{key}_error"] = err
 
-        # Replace monthly_trend with full 12-month counts so the chart spans a year
+        # Merge 12-month counts into monthly_trend so the chart spans a full year.
+        # Take the max per month so accurate counts from the fetched incidents are
+        # never overwritten by a stale or undercount from the API query.
         trend_12m = fetch_results.get("monthly_trend_12m")
         if trend_12m and result.get("stats"):
-            result["stats"]["monthly_trend"] = trend_12m
+            existing = result["stats"].get("monthly_trend", {})
+            merged = dict(trend_12m)
+            for k, v in existing.items():
+                merged[k] = max(merged.get(k, 0), v)
+            result["stats"]["monthly_trend"] = merged
 
         if industry and "industry_threat_intel" in sections:
             result["industry_intel"] = {

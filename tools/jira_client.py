@@ -336,19 +336,25 @@ def fetch_change_requests(project_key: str, start_date: str, end_date: str) -> d
 def _jira_count_total(jql: str) -> int:
     """Return the total issue count for a JQL query using the classic search endpoint.
 
-    Uses /rest/api/3/search with maxResults=0 — this endpoint always returns
-    a reliable `total` field, unlike the cursor-based /search/jql endpoint.
+    Uses /rest/api/3/search with maxResults=1 — this endpoint always returns
+    a reliable `total` field. maxResults=1 (not 0) is used for broadest
+    Jira Cloud compatibility; only the count field is consumed.
     """
     r = httpx.get(
         f"{JIRA_URL}/rest/api/3/search",
         headers=_jira_headers(),
-        params={"jql": jql, "maxResults": 0},
+        params={"jql": jql, "maxResults": 1, "fields": "id"},
         timeout=30,
     )
     if r.status_code >= 400:
         logger.warning("_jira_count_total HTTP %s for: %s", r.status_code, jql[:120])
         return 0
-    return r.json().get("total", 0)
+    data = r.json()
+    total = data.get("total")
+    if total is not None:
+        return int(total)
+    # Fallback: the response might list issues without a total
+    return len(data.get("issues", []))
 
 
 def fetch_monthly_counts_12m(project_key: str, end_date: str) -> dict:
