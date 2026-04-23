@@ -347,21 +347,36 @@
     }
     .report-preview h2 { font-size: 20px; border-bottom: 1px solid var(--border); padding-bottom: 6px; }
     .report-preview h3 { font-size: 16px; }
-    .report-preview table {
-      border-collapse: collapse;
-      width: 100%;
+    .report-preview .table-scroll {
+      overflow-x: auto;
+      -webkit-overflow-scrolling: touch;
       margin: 1em 0;
+      border: 1px solid var(--border);
+      border-radius: var(--radius-sm);
+    }
+    .report-preview .table-scroll table {
+      border-collapse: collapse;
+      min-width: 100%;
+      width: max-content;
+      margin: 0;
       font-size: 13px;
     }
     .report-preview th, .report-preview td {
       border: 1px solid var(--border);
       padding: 8px 12px;
       text-align: left;
+      vertical-align: top;
     }
     .report-preview th {
       background: var(--accent-light);
       color: var(--accent);
       font-weight: 600;
+      white-space: nowrap;
+    }
+    .report-preview td {
+      word-break: break-word;
+      overflow-wrap: break-word;
+      max-width: 320px;
     }
     .report-preview tr:nth-child(even) td { background: var(--bg-raised); }
     .report-preview blockquote {
@@ -1039,6 +1054,12 @@
 
           reportMarkdown = data.text;
           document.getElementById('reportContent').innerHTML = marked.parse(reportMarkdown);
+          document.querySelectorAll('#reportContent table').forEach(tbl => {
+            const wrap = document.createElement('div');
+            wrap.className = 'table-scroll';
+            tbl.parentNode.insertBefore(wrap, tbl);
+            wrap.appendChild(tbl);
+          });
           document.getElementById('reportArea').style.display = 'block';
         } else if (data.status === 'error') {
           clearInterval(pollTimer);
