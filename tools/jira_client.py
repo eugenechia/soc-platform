@@ -333,36 +333,13 @@ def fetch_change_requests(project_key: str, start_date: str, end_date: str) -> d
         return {"items": [], "stats": {}, "unavailable": True}
 
 
-def _jira_count_total(jql: str) -> int:
-    """Return the total issue count for a JQL query using the classic search endpoint.
-
-    Uses /rest/api/3/search with maxResults=1 — this endpoint always returns
-    a reliable `total` field. maxResults=1 (not 0) is used for broadest
-    Jira Cloud compatibility; only the count field is consumed.
-    """
-    r = httpx.get(
-        f"{JIRA_URL}/rest/api/3/search",
-        headers=_jira_headers(),
-        params={"jql": jql, "maxResults": 1, "fields": "id"},
-        timeout=30,
-    )
-    if r.status_code >= 400:
-        logger.warning("_jira_count_total HTTP %s for: %s", r.status_code, jql[:120])
-        return 0
-    data = r.json()
-    total = data.get("total")
-    if total is not None:
-        return int(total)
-    # Fallback: the response might list issues without a total
-    return len(data.get("issues", []))
-
-
 def fetch_monthly_counts_12m(project_key: str, end_date: str) -> dict:
     """Fetch incident counts per month for the 12 months ending at end_date.
 
-    Makes one lightweight JQL query per month using the classic /rest/api/3/search
-    endpoint with maxResults=0 — this always returns a reliable `total` count.
-    Returns {"YYYY-MM": count} for all 12 months.
+    Issues one query covering the full 12-month window using the same cursor-based
+    endpoint that works for incident fetching.  Only the `created` field is requested
+    to minimise payload.  Counts are aggregated per YYYY-MM in Python, so there is no
+    dependency on the `total` field (which cursor-based APIs do not return).
     """
     from dateutil.relativedelta import relativedelta
 
@@ -373,20 +350,62 @@ def fetch_monthly_counts_12m(project_key: str, end_date: str) -> dict:
         return {}
 
     end_month = end_dt.replace(day=1)
-    monthly_counts = {}
+    start_12m = end_month - relativedelta(months=11)
+    month_after_end = end_month + relativedelta(months=1)
 
+    # Build 12-month skeleton — all zero
+    monthly_counts: dict[str, int] = {}
     for i in range(11, -1, -1):
-        month_start = end_month - relativedelta(months=i)
-        month_end = month_start + relativedelta(months=1)
-        month_key = month_start.strftime("%Y-%m")
+        m = end_month - relativedelta(months=i)
+        monthly_counts[m.strftime("%Y-%m")] = 0
 
-        jql = (
-            f'project = "{project_key}" '
-            f'AND "Request Type" = "Report an Incident" '
-            f'AND created >= "{month_start.strftime("%Y-%m-%d")}" '
-            f'AND created < "{month_end.strftime("%Y-%m-%d")}"'
+    jql = (
+        f'project = "{project_key}" '
+        f'AND "Request Type" = "Report an Incident" '
+        f'AND created >= "{start_12m.strftime("%Y-%m-%d")}" '
+        f'AND created < "{month_after_end.strftime("%Y-%m-%d")}" '
+        f'ORDER BY created ASC'
+    )
+
+    next_token = None
+    total_fetched = 0
+    while total_fetched < 10000:
+        params: dict = {
+            "jql": jql,
+            "maxResults": 100,
+            "fields": "created",
+        }
+        if next_token:
+            params["nextPageToken"] = next_token
+
+        r = httpx.get(
+            f"{JIRA_URL}/rest/api/3/search/jql",
+            headers=_jira_headers(),
+            params=params,
+            timeout=30,
         )
-        monthly_counts[month_key] = _jira_count_total(jql)
+        if r.status_code >= 400:
+            logger.warning("fetch_monthly_counts_12m HTTP %s: %s", r.status_code, r.text[:200])
+            break
 
-    logger.info("fetch_monthly_counts_12m(%s): %s", project_key, monthly_counts)
+        data = r.json()
+        issues = data.get("issues", [])
+        if not issues:
+            break
+
+        for issue in issues:
+            created = (issue.get("fields") or {}).get("created", "")
+            dt = _parse_jira_date(created)
+            if dt:
+                month_key = dt.strftime("%Y-%m")
+                if month_key in monthly_counts:
+                    monthly_counts[month_key] += 1
+
+        total_fetched += len(issues)
+        next_token = data.get("nextPageToken")
+        if not next_token or data.get("isLast") is True:
+            break
+
+    logger.info("fetch_monthly_counts_12m(%s): fetched=%d counts=%s",
+                project_key, total_fetched, monthly_counts)
     return monthly_counts
