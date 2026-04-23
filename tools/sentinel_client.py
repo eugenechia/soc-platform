@@ -132,12 +132,18 @@ CrowdStrikeHosts
 """)
     total_assets = int(assets_rows[0].get("Count", 0)) if assets_rows else 0
 
-    # 4. Per-device sensor health state — try MDE DeviceInfo first, fall back to CrowdStrike
+    # 4. Per-device sensor health state — try MDE DeviceInfo first, fall back to CrowdStrike.
+    # Use column_ifexists() for TVM-specific columns that may not exist in all workspaces.
     health_rows = _safe_kql(token, """
 DeviceInfo
 | summarize arg_max(TimeGenerated, *) by DeviceName
-| project DeviceName, OnboardingStatus, HealthStatus, OSPlatform, ExposureLevel,
-          LastSeen = TimeGenerated
+| project
+    DeviceName,
+    OnboardingStatus = column_ifexists("OnboardingStatus", "Unknown"),
+    HealthStatus = column_ifexists("HealthStatus", "Unknown"),
+    OSPlatform = column_ifexists("OSPlatform", "Unknown"),
+    ExposureLevel = column_ifexists("ExposureLevel", "Unknown"),
+    LastSeen = TimeGenerated
 | order by HealthStatus asc
 """)
     if not health_rows:

@@ -333,12 +333,30 @@ def fetch_change_requests(project_key: str, start_date: str, end_date: str) -> d
         return {"items": [], "stats": {}, "unavailable": True}
 
 
+def _jira_count_total(jql: str) -> int:
+    """Return the total issue count for a JQL query using the classic search endpoint.
+
+    Uses /rest/api/3/search with maxResults=0 — this endpoint always returns
+    a reliable `total` field, unlike the cursor-based /search/jql endpoint.
+    """
+    r = httpx.get(
+        f"{JIRA_URL}/rest/api/3/search",
+        headers=_jira_headers(),
+        params={"jql": jql, "maxResults": 0},
+        timeout=30,
+    )
+    if r.status_code >= 400:
+        logger.warning("_jira_count_total HTTP %s for: %s", r.status_code, jql[:120])
+        return 0
+    return r.json().get("total", 0)
+
+
 def fetch_monthly_counts_12m(project_key: str, end_date: str) -> dict:
     """Fetch incident counts per month for the 12 months ending at end_date.
 
-    Makes one lightweight JQL query per month (maxResults=1) to read only the
-    total count field — no issue data is downloaded. Returns {"YYYY-MM": count}
-    for all 12 months so the monthly trend chart always has a full year of data.
+    Makes one lightweight JQL query per month using the classic /rest/api/3/search
+    endpoint with maxResults=0 — this always returns a reliable `total` count.
+    Returns {"YYYY-MM": count} for all 12 months.
     """
     from dateutil.relativedelta import relativedelta
 
@@ -362,8 +380,7 @@ def fetch_monthly_counts_12m(project_key: str, end_date: str) -> dict:
             f'AND created >= "{month_start.strftime("%Y-%m-%d")}" '
             f'AND created < "{month_end.strftime("%Y-%m-%d")}"'
         )
-        res = jira_search(jql, max_results=1)
-        monthly_counts[month_key] = res.get("total", 0) if "error" not in res else 0
+        monthly_counts[month_key] = _jira_count_total(jql)
 
     logger.info("fetch_monthly_counts_12m(%s): %s", project_key, monthly_counts)
     return monthly_counts
