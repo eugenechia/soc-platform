@@ -17,7 +17,8 @@ from openai import AsyncAzureOpenAI
 
 from routes.auth import require_login
 from tools.jira_client import (fetch_incidents_for_report, fetch_incidents_from_csv,
-                                fetch_service_requests, fetch_change_requests)
+                                fetch_service_requests, fetch_change_requests,
+                                fetch_monthly_counts_12m)
 from tools.chart_generator import generate_all_charts
 from tools import sentinel_client, splunk_client, socradar_rest as socradar_client, tavily_client
 import tools.db as db
@@ -502,6 +503,11 @@ def _collect_report_data(config: dict) -> dict:
         if config.get("use_socradar"):
             fetch_tasks["industry_socradar"] = lambda: socradar_client.fetch_industry_data(_ind, _sd, _ed)
 
+    # Fetch 12-month incident counts for the monthly trend chart (Jira API mode only)
+    if not csv_path and project_key:
+        _pk, _ed = project_key, end_date
+        fetch_tasks["monthly_trend_12m"] = lambda: fetch_monthly_counts_12m(_pk, _ed)
+
     if fetch_tasks:
         fetch_results: dict = {}
         fetch_errors: dict = {}
@@ -526,6 +532,11 @@ def _collect_report_data(config: dict) -> dict:
         result.update(fetch_results)
         for key, err in fetch_errors.items():
             result[f"{key}_error"] = err
+
+        # Replace monthly_trend with full 12-month counts so the chart spans a year
+        trend_12m = fetch_results.get("monthly_trend_12m")
+        if trend_12m and result.get("stats"):
+            result["stats"]["monthly_trend"] = trend_12m
 
         if industry and "industry_threat_intel" in sections:
             result["industry_intel"] = {

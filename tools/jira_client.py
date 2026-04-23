@@ -331,3 +331,39 @@ def fetch_change_requests(project_key: str, start_date: str, end_date: str) -> d
     except Exception as e:
         logger.warning(f"fetch_change_requests exception: {e}")
         return {"items": [], "stats": {}, "unavailable": True}
+
+
+def fetch_monthly_counts_12m(project_key: str, end_date: str) -> dict:
+    """Fetch incident counts per month for the 12 months ending at end_date.
+
+    Makes one lightweight JQL query per month (maxResults=1) to read only the
+    total count field — no issue data is downloaded. Returns {"YYYY-MM": count}
+    for all 12 months so the monthly trend chart always has a full year of data.
+    """
+    from dateutil.relativedelta import relativedelta
+
+    try:
+        end_dt = datetime.strptime(end_date, "%Y-%m-%d")
+    except ValueError:
+        logger.warning("fetch_monthly_counts_12m: invalid end_date %s", end_date)
+        return {}
+
+    end_month = end_dt.replace(day=1)
+    monthly_counts = {}
+
+    for i in range(11, -1, -1):
+        month_start = end_month - relativedelta(months=i)
+        month_end = month_start + relativedelta(months=1)
+        month_key = month_start.strftime("%Y-%m")
+
+        jql = (
+            f'project = "{project_key}" '
+            f'AND "Request Type" = "Report an Incident" '
+            f'AND created >= "{month_start.strftime("%Y-%m-%d")}" '
+            f'AND created < "{month_end.strftime("%Y-%m-%d")}"'
+        )
+        res = jira_search(jql, max_results=1)
+        monthly_counts[month_key] = res.get("total", 0) if "error" not in res else 0
+
+    logger.info("fetch_monthly_counts_12m(%s): %s", project_key, monthly_counts)
+    return monthly_counts
