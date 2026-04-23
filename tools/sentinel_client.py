@@ -168,13 +168,26 @@ DeviceTvmSoftwareVulnerabilities
 | top 20 by VulnCount desc
 """, timespan)
 
-    # 6. Threat intelligence indicators by observable type
-    # ThreatIntelIndicators is the modern table (replaces ThreatIntelligenceIndicator).
-    # ObservableKey holds the STIX observable type (e.g. "network-traffic:src_ref.value",
-    # "url:value", "file:hashes.MD5").
+    # 6. Threat intelligence indicators by observable type.
+    # Try modern ThreatIntelIndicators (STIX schema) first; fall back to the legacy
+    # ThreatIntelligenceIndicator table (pre-2024 schema) which uses different field names.
     threat_rows = _safe_kql(token, """
 ThreatIntelIndicators
 | where IsActive == true
+| summarize Count = count() by ObservableKey
+| order by Count desc
+""", timespan)
+
+    if not threat_rows:
+        threat_rows = _safe_kql(token, """
+ThreatIntelligenceIndicator
+| where Active == true
+| extend ObservableKey = case(
+    isnotempty(NetworkIP),       "network-traffic:src_ref.value",
+    isnotempty(DomainName),      "domain-name:value",
+    isnotempty(Url),             "url:value",
+    isnotempty(FileHashValue),   strcat("file:hashes.", FileHashType),
+    "other")
 | summarize Count = count() by ObservableKey
 | order by Count desc
 """, timespan)
@@ -185,6 +198,29 @@ ThreatIntelIndicators
 | where IsActive == true
 | project TimeGenerated, Id, ObservableKey, ObservableValue, Pattern,
           Tags, Confidence
+| order by TimeGenerated desc
+| take 50
+""", timespan)
+
+    if not ioc_rows:
+        ioc_rows = _safe_kql(token, """
+ThreatIntelligenceIndicator
+| where Active == true
+| extend
+    ObservableKey = case(
+        isnotempty(NetworkIP),     "network-traffic:src_ref.value",
+        isnotempty(DomainName),    "domain-name:value",
+        isnotempty(Url),           "url:value",
+        isnotempty(FileHashValue), strcat("file:hashes.", FileHashType),
+        "other"),
+    ObservableValue = case(
+        isnotempty(NetworkIP),     NetworkIP,
+        isnotempty(DomainName),    DomainName,
+        isnotempty(Url),           Url,
+        isnotempty(FileHashValue), FileHashValue,
+        "")
+| project TimeGenerated, Id = IndicatorId, ObservableKey, ObservableValue,
+          Pattern = Description, Tags = tostring(Tags), Confidence = ConfidenceScore
 | order by TimeGenerated desc
 | take 50
 """, timespan)
