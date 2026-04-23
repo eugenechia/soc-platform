@@ -19,7 +19,7 @@ from routes.auth import require_login
 from tools.jira_client import (fetch_incidents_for_report, fetch_incidents_from_csv,
                                 fetch_service_requests, fetch_change_requests)
 from tools.chart_generator import generate_all_charts
-from tools import sentinel_client, splunk_client, socradar_rest as socradar_client
+from tools import sentinel_client, splunk_client, socradar_rest as socradar_client, tavily_client
 import tools.db as db
 
 log = logging.getLogger(__name__)
@@ -61,6 +61,7 @@ REPORT_SECTIONS = [
     {"id": "service_requests", "label": "1.17 Service Requests Summary", "source": "jira"},
     {"id": "change_requests", "label": "1.18 Change Requests Summary", "source": "jira"},
     {"id": "socradar_threat_intel", "label": "SOCRadar Threat Intelligence", "source": "socradar"},
+    {"id": "industry_threat_intel", "label": "Industry Threat Landscape", "source": "general"},
 ]
 
 _REPORT_TAIL = """
@@ -94,6 +95,7 @@ CRITICAL RULES:
 
 REPORT CONTEXT:
 - Customer: {customer_name}
+- Customer Industry: {customer_industry}
 - Report Period: {start_date} to {end_date}
 - Report Type: {report_type}
 - Available data sources: {available_sources}
@@ -257,6 +259,17 @@ Otherwise:
 - Present a markdown table: CR ID | Subject | Priority | Status | Created | Assignee
 - Include all items; if empty show "No change requests raised during this period."
 - Provide a 1-paragraph summary noting change volume and any pending/open changes that require attention
+
+**### Industry Threat Landscape** (if "industry_threat_intel" is selected)
+If industry_intel.industry is empty or not provided, write: "The customer's industry has not been configured. Please update the customer profile to enable industry-specific threat intelligence."
+Otherwise, write a current threat intelligence briefing for the {customer_industry} sector. Structure it as follows:
+
+1. **Sector Overview**: 1-2 paragraphs summarising the current cybersecurity threat climate for the {customer_industry} sector, drawing from the web intelligence in industry_intel.web_intel. Focus on the most prominent threat themes from the reporting period.
+2. **Active Threat Actors**: Table with columns: Threat Actor | Origin | TTPs | Notable Activity. Use industry_intel.threat_actors if non-empty; otherwise derive top actors from the web intelligence. Limit to 5-8 actors.
+3. **Key Risks and Vulnerabilities**: 1 paragraph covering the top attack vectors, vulnerabilities, and compliance pressures specific to this sector.
+4. **Defensive Recommendations**: A bulleted list of 3-4 prioritised actions organisations in the {customer_industry} sector should take based on the current threat landscape.
+
+If industry_intel.web_intel contains open-source intelligence, synthesise it throughout — do not fabricate threat actors or CVEs that are not supported by the data provided. If web_intel is absent and threat_actors is empty, write that no current threat intelligence was available for this sector during the period.
 
 IMPORTANT: Do NOT generate a table of contents. Do NOT generate a References section. Do NOT generate a Confidentiality Statement. Only generate the assigned sections listed above. These boilerplate sections will be appended automatically after all sections are combined.
 
@@ -482,6 +495,12 @@ def _collect_report_data(config: dict) -> dict:
         fetch_tasks["service_requests"] = lambda: fetch_service_requests(project_key, start_date, end_date)
     if "change_requests" in sections and project_key:
         fetch_tasks["change_requests"] = lambda: fetch_change_requests(project_key, start_date, end_date)
+    industry = config.get("customer_industry", "")
+    if industry and "industry_threat_intel" in sections:
+        _ind, _sd, _ed = industry, start_date, end_date
+        fetch_tasks["industry_tavily"] = lambda: tavily_client.fetch_industry_threat_intel(_ind, _sd, _ed)
+        if config.get("use_socradar"):
+            fetch_tasks["industry_socradar"] = lambda: socradar_client.fetch_industry_data(_ind, _sd, _ed)
 
     if fetch_tasks:
         fetch_results: dict = {}
@@ -507,6 +526,13 @@ def _collect_report_data(config: dict) -> dict:
         result.update(fetch_results)
         for key, err in fetch_errors.items():
             result[f"{key}_error"] = err
+
+        if industry and "industry_threat_intel" in sections:
+            result["industry_intel"] = {
+                "industry": industry,
+                "threat_actors": (fetch_results.get("industry_socradar") or {}).get("threat_actors", []),
+                "web_intel": fetch_results.get("industry_tavily"),
+            }
 
     return result
 
@@ -624,6 +650,13 @@ def _build_report_context(data: dict, config: dict) -> dict:
             "dark_web_alarms": socradar.get("dark_web_alarms", []),
         }
 
+    industry_intel_raw = data.get("industry_intel", {})
+    industry_intel_data = {
+        "industry": config.get("customer_industry", ""),
+        "threat_actors": industry_intel_raw.get("threat_actors", []),
+        "web_intel": industry_intel_raw.get("web_intel"),
+    }
+
     return {
         "section_meta": section_meta,
         "sections": sections,
@@ -633,6 +666,7 @@ def _build_report_context(data: dict, config: dict) -> dict:
         "sentinel_data": sentinel_data,
         "splunk_data": splunk_data,
         "socradar_data": socradar_data,
+        "industry_intel_data": industry_intel_data,
     }
 
 
@@ -678,6 +712,7 @@ async def _generate_group(group_sections: list, data_subset: dict, ctx: dict, co
 
     prompt = REPORT_SYSTEM_PROMPT.format(
         customer_name=config.get("customer_name", "Client"),
+        customer_industry=config.get("customer_industry", "Not specified"),
         start_date=config.get("start_date", ""),
         end_date=config.get("end_date", ""),
         report_type=config.get("report_type", "Monthly SOC Report"),
@@ -713,11 +748,13 @@ async def _run_report_agent(data: dict, config: dict) -> str:
                                                "recommendations", "service_requests",
                                                "change_requests")]
     socradar_grp = [s for s in sections if section_meta.get(s, {}).get("source") == "socradar"]
+    industry_grp = [s for s in sections if section_meta.get(s, {}).get("source") == "general"]
 
     jira_payload = ctx["jira_data"]
     sentinel_payload = {"sentinel": ctx["sentinel_data"]} if ctx["sentinel_data"] else {}
     splunk_payload = {"splunk": ctx["splunk_data"]} if ctx["splunk_data"] else {}
     socradar_payload = {"socradar": ctx["socradar_data"]} if ctx["socradar_data"] else {}
+    industry_payload = {"industry_intel": ctx["industry_intel_data"]} if industry_grp else {}
 
     groups = [
         (jira_early, jira_payload),
@@ -725,6 +762,7 @@ async def _run_report_agent(data: dict, config: dict) -> str:
         (splunk_grp, splunk_payload),
         (jira_late, jira_payload),
         (socradar_grp, socradar_payload),
+        (industry_grp, industry_payload),
     ]
     active_groups = [(secs, payload) for secs, payload in groups if secs]
 
@@ -825,6 +863,7 @@ def generate():
         use_sentinel = request.form.get("use_sentinel", "false").lower() == "true"
         use_splunk = request.form.get("use_splunk", "false").lower() == "true"
         use_socradar = request.form.get("use_socradar", "false").lower() == "true"
+        customer_industry = request.form.get("customer_industry", "").strip()
         csv_file = request.files.get("csv_file")
     else:
         body = request.json or {}
@@ -841,6 +880,7 @@ def generate():
         use_sentinel = bool(body.get("use_sentinel", False))
         use_splunk = bool(body.get("use_splunk", False))
         use_socradar = bool(body.get("use_socradar", False))
+        customer_industry = body.get("customer_industry", "").strip()
         csv_file = None
 
     if not customer_name:
@@ -874,6 +914,7 @@ def generate():
         "use_sentinel": use_sentinel,
         "use_splunk": use_splunk,
         "use_socradar": use_socradar,
+        "customer_industry": customer_industry,
     }
     jobs[job_id] = {
         "status": "running", "text": "", "data": None,

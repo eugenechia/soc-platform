@@ -122,6 +122,25 @@ def _fetch_dark_web_alarms(company_id: str, start_date: str, end_date: str) -> l
     return []
 
 
+def fetch_industry_data(industry: str, start_date: str, end_date: str) -> dict:
+    """Fetch SOCRadar threat actors targeting a specific industry sector."""
+    if not SOCRADAR_API_KEY:
+        return {"threat_actors": []}
+
+    data = _get("threat/actors", params={"industry": industry, "limit": 15})
+    threat_actors: list = []
+    if data:
+        if isinstance(data, list):
+            threat_actors = data[:15]
+        elif isinstance(data, dict):
+            threat_actors = (
+                data.get("data") or data.get("threat_actors") or data.get("results") or []
+            )[:15]
+
+    logger.info("SOCRadar industry fetch (%s): %d threat actors", industry, len(threat_actors))
+    return {"threat_actors": threat_actors}
+
+
 def fetch_data(config: dict, start_date: str, end_date: str) -> dict:
     """
     Fetch SOCRadar threat intelligence for the report period.

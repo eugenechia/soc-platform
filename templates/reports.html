@@ -482,6 +482,17 @@
             </div>
           </div>
           <div class="form-group">
+            <label>Industry</label>
+            <select id="newCustIndustry">
+              <option value="">-- Select industry --</option>
+              <option value="Healthcare">Healthcare</option>
+              <option value="Financial Services">Financial Services</option>
+              <option value="Academia">Academia</option>
+              <option value="Enterprise">Enterprise</option>
+              <option value="Government">Government</option>
+            </select>
+          </div>
+          <div class="form-group">
             <label>Logo (optional)</label>
             <input type="file" id="newCustLogo" accept=".png,.jpg,.jpeg,.webp"
                    style="font-size:13px; color:var(--text-muted);">
@@ -830,6 +841,7 @@
       fd.append('name', name);
       fd.append('short_name', short_name);
       fd.append('jira_project_key', jira_key);
+      fd.append('industry', document.getElementById('newCustIndustry').value);
       if (logoInput.files.length) fd.append('logo', logoInput.files[0]);
 
       const r = await fetch('/admin/api/customers', { method: 'POST', body: fd });
@@ -846,6 +858,7 @@
       document.getElementById('newCustName').value = '';
       document.getElementById('newCustShort').value = '';
       document.getElementById('newCustJiraKey').value = '';
+      document.getElementById('newCustIndustry').value = '';
       logoInput.value = '';
     }
 
@@ -909,6 +922,7 @@
 
       table.innerHTML = `
         <tr><td>Customer</td><td>${selectedCustomer ? selectedCustomer.name : 'N/A'}</td></tr>
+        <tr><td>Industry</td><td>${selectedCustomer && selectedCustomer.industry ? selectedCustomer.industry : 'Not set'}</td></tr>
         <tr><td>Report Type</td><td>${getSelectedReportTypes().join(', ') || 'None selected'}</td></tr>
         <tr><td>Date Range</td><td>${document.getElementById('startDate').value} to ${document.getElementById('endDate').value}</td></tr>
         <tr><td>Data Sources</td><td>${[
@@ -969,6 +983,7 @@
         formData.append('use_sentinel', useSentinel ? 'true' : 'false');
         formData.append('use_splunk', useSplunk ? 'true' : 'false');
         formData.append('use_socradar', useSocradar ? 'true' : 'false');
+        formData.append('customer_industry', selectedCustomer ? selectedCustomer.industry || '' : '');
         formData.append('csv_file', csvFileInput.files[0]);
         fetchOptions = { method: 'POST', body: formData };
       } else {
@@ -986,6 +1001,7 @@
           use_sentinel: useSentinel,
           use_splunk: useSplunk,
           use_socradar: useSocradar,
+          customer_industry: selectedCustomer ? selectedCustomer.industry || '' : '',
         };
         fetchOptions = {
           method: 'POST',

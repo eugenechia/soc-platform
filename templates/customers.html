@@ -176,6 +176,17 @@
           </div>
         </div>
         <div class="form-group">
+          <label>Industry</label>
+          <select id="addIndustry">
+            <option value="">-- Select industry --</option>
+            <option value="Healthcare">Healthcare</option>
+            <option value="Financial Services">Financial Services</option>
+            <option value="Academia">Academia</option>
+            <option value="Enterprise">Enterprise</option>
+            <option value="Government">Government</option>
+          </select>
+        </div>
+        <div class="form-group">
           <label>Logo (optional)</label>
           <input type="file" id="addLogo" accept=".png,.jpg,.jpeg,.webp" style="font-size:13px; color:var(--text-muted);">
         </div>
@@ -218,6 +229,17 @@
           <label>Jira Project Key</label>
           <input type="text" id="editJiraKey">
         </div>
+      </div>
+      <div class="form-group">
+        <label>Industry</label>
+        <select id="editIndustry">
+          <option value="">-- Select industry --</option>
+          <option value="Healthcare">Healthcare</option>
+          <option value="Financial Services">Financial Services</option>
+          <option value="Academia">Academia</option>
+          <option value="Enterprise">Enterprise</option>
+          <option value="Government">Government</option>
+        </select>
       </div>
       <div class="form-group">
         <label>New Logo (optional)</label>
@@ -272,11 +294,11 @@
               : `<div class="placeholder-icon">${c.short_name.charAt(0)}</div>`}
             <div>
               <div class="customer-name">${c.name}</div>
-              <div class="customer-meta">${c.short_name} | Jira: ${c.jira_project_key || 'N/A'} | Added: ${c.created_at || 'N/A'}</div>
+              <div class="customer-meta">${c.short_name} | Jira: ${c.jira_project_key || 'N/A'} | Industry: ${c.industry || 'N/A'} | Added: ${c.created_at || 'N/A'}</div>
             </div>
           </div>
           <div class="customer-actions">
-            <button class="btn btn-secondary btn-sm" onclick="openEditModal('${c.id}', '${c.name.replace(/'/g, "\\'")}', '${c.short_name}', '${c.jira_project_key || ''}')">Edit</button>
+            <button class="btn btn-secondary btn-sm" onclick="openEditModal('${c.id}', '${c.name.replace(/'/g, "\\'")}', '${c.short_name}', '${c.jira_project_key || ''}', '${c.industry || ''}')">Edit</button>
             <button class="btn btn-danger btn-sm" onclick="deleteCustomer('${c.id}', '${c.name.replace(/'/g, "\\'")}')">Delete</button>
           </div>
         </div>
@@ -289,6 +311,7 @@
       fd.append('name', document.getElementById('addName').value.trim());
       fd.append('short_name', document.getElementById('addShort').value.trim());
       fd.append('jira_project_key', document.getElementById('addJiraKey').value.trim());
+      fd.append('industry', document.getElementById('addIndustry').value);
       const logo = document.getElementById('addLogo');
       if (logo.files.length) fd.append('logo', logo.files[0]);
 
@@ -308,11 +331,12 @@
       loadCustomers();
     }
 
-    function openEditModal(id, name, short, jiraKey) {
+    function openEditModal(id, name, short, jiraKey, industry) {
       document.getElementById('editId').value = id;
       document.getElementById('editName').value = name;
       document.getElementById('editShort').value = short;
       document.getElementById('editJiraKey').value = jiraKey;
+      document.getElementById('editIndustry').value = industry || '';
       document.getElementById('editLogo').value = '';
       document.getElementById('editModal').classList.add('active');
     }
@@ -326,6 +350,7 @@
       fd.append('name', document.getElementById('editName').value.trim());
       fd.append('short_name', document.getElementById('editShort').value.trim());
       fd.append('jira_project_key', document.getElementById('editJiraKey').value.trim());
+      fd.append('industry', document.getElementById('editIndustry').value);
       const logo = document.getElementById('editLogo');
       if (logo.files.length) fd.append('logo', logo.files[0]);
 
