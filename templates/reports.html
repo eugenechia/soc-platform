@@ -276,6 +276,11 @@
     .csv-upload-label.has-file { border-color: var(--success); color: var(--success); border-style: solid; }
     .source-item.disabled { opacity: 0.4; cursor: not-allowed; }
     .source-item.disabled:hover { border-color: var(--border); }
+    .section-item.source-disabled {
+      opacity: 0.35;
+      pointer-events: none;
+    }
+    .section-item.source-disabled input { cursor: not-allowed; }
     .section-item input[type="checkbox"], .source-item input[type="checkbox"] {
       accent-color: var(--accent);
       width: 16px;
@@ -496,7 +501,7 @@
         <h2>Report Configuration</h2>
         <p class="subtitle">Set the report type and date range</p>
         <div class="form-group">
-          <label>Report Type</label>
+          <label>Report Type <span style="font-weight:400; text-transform:none; letter-spacing:0; color:var(--text-muted);">(optional)</span></label>
           <div class="source-grid" id="reportTypeGrid">
             <label class="source-item">
               <input type="checkbox" data-rtype="Monthly SOC Report" onchange="onReportTypeChange()">
@@ -556,19 +561,19 @@
         <p class="subtitle">Select which data sources to pull from</p>
         <div class="source-grid">
           <label class="source-item">
-            <input type="checkbox" id="srcJira" checked>
+            <input type="checkbox" id="srcJira" checked onchange="onSourceChange()">
             <span>Jira</span>
           </label>
           <label class="source-item">
-            <input type="checkbox" id="srcSplunk">
+            <input type="checkbox" id="srcSplunk" onchange="onSourceChange()">
             <span>Splunk</span>
           </label>
           <label class="source-item">
-            <input type="checkbox" id="srcSentinel">
+            <input type="checkbox" id="srcSentinel" onchange="onSourceChange()">
             <span>Microsoft Sentinel</span>
           </label>
           <label class="source-item">
-            <input type="checkbox" id="srcSocradar">
+            <input type="checkbox" id="srcSocradar" onchange="onSourceChange()">
             <span>SOCRadar Threat Intel</span>
           </label>
         </div>
@@ -772,6 +777,7 @@
           const checked = defaults.includes(s.id);
           const item = document.createElement('label');
           item.className = 'section-item';
+          item.dataset.source = src;
           item.innerHTML = `
             <input type="checkbox" data-section="${s.id}" ${checked ? 'checked' : ''}>
             <span>${s.label}</span>
@@ -780,6 +786,8 @@
         });
         grid.appendChild(subgrid);
       });
+
+      updateSectionAvailability();
     }
 
     function selectAllSections(checked) {
@@ -1091,6 +1099,34 @@
       } catch (e) {
         alert('Export failed: ' + e.message);
       }
+    }
+
+    function updateSectionAvailability() {
+      const sourceMap = {
+        jira:     document.getElementById('srcJira').checked,
+        sentinel: document.getElementById('srcSentinel').checked,
+        splunk:   document.getElementById('srcSplunk').checked,
+        socradar: document.getElementById('srcSocradar').checked,
+      };
+      document.querySelectorAll('#sectionGrid .section-item').forEach(item => {
+        const src = item.dataset.source;
+        const active = sourceMap[src] !== false && sourceMap[src] !== undefined ? sourceMap[src] : true;
+        const cb = item.querySelector('input[type="checkbox"]');
+        if (!active) {
+          item.classList.add('source-disabled');
+          cb.disabled = true;
+          cb.checked = false;
+        } else {
+          item.classList.remove('source-disabled');
+          cb.disabled = false;
+        }
+      });
+    }
+
+    function onSourceChange() {
+      document.getElementById('jiraSourceOptions').style.display =
+        document.getElementById('srcJira').checked ? 'block' : 'none';
+      updateSectionAvailability();
     }
 
     // Init
