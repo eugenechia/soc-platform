@@ -133,16 +133,22 @@ CrowdStrikeHosts
     total_assets = int(assets_rows[0].get("Count", 0)) if assets_rows else 0
 
     # 4. Per-device sensor health state — try MDE DeviceInfo first, fall back to CrowdStrike.
-    # Use column_ifexists() for TVM-specific columns that may not exist in all workspaces.
+    # Use extend+column_ifexists (not project+column_ifexists) — the assignment form in project
+    # is not reliably supported by the Log Analytics REST API even though it works in the UI.
     health_rows = _safe_kql(token, """
 DeviceInfo
 | summarize arg_max(TimeGenerated, *) by DeviceName
+| extend
+    _OnboardingStatus = column_ifexists("OnboardingStatus", "Unknown"),
+    _HealthStatus = column_ifexists("HealthStatus", "Unknown"),
+    _OSPlatform = column_ifexists("OSPlatform", "Unknown"),
+    _ExposureLevel = column_ifexists("ExposureLevel", "Unknown")
 | project
     DeviceName,
-    OnboardingStatus = column_ifexists("OnboardingStatus", "Unknown"),
-    HealthStatus = column_ifexists("HealthStatus", "Unknown"),
-    OSPlatform = column_ifexists("OSPlatform", "Unknown"),
-    ExposureLevel = column_ifexists("ExposureLevel", "Unknown"),
+    OnboardingStatus = _OnboardingStatus,
+    HealthStatus = _HealthStatus,
+    OSPlatform = _OSPlatform,
+    ExposureLevel = _ExposureLevel,
     LastSeen = TimeGenerated
 | order by HealthStatus asc
 """)
@@ -161,18 +167,22 @@ CrowdStrikeHosts
 """)
 
     # 5a. Vulnerability severity breakdown
+    # DeviceTvmSoftwareVulnerabilities is a snapshot table — passing timespan excludes all rows
+    # written before the report period even when TVM is active. Use ago(30d) instead.
     vuln_severity_rows = _safe_kql(token, """
 DeviceTvmSoftwareVulnerabilities
+| where TimeGenerated > ago(30d)
 | summarize Count = count() by VulnerabilitySeverityLevel
 | order by Count desc
-""", timespan)
+""")
 
     # 5b. Top exposed devices
     vuln_devices_rows = _safe_kql(token, """
 DeviceTvmSoftwareVulnerabilities
+| where TimeGenerated > ago(30d)
 | summarize VulnCount = count() by DeviceName
 | top 20 by VulnCount desc
-""", timespan)
+""")
 
     # 6. Threat intelligence indicators by observable type.
     # Try modern ThreatIntelIndicators (STIX schema) first; fall back to the legacy
