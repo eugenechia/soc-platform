@@ -19,7 +19,7 @@ from routes.auth import require_login
 from tools.jira_client import (fetch_incidents_for_report, fetch_incidents_from_csv,
                                 fetch_service_requests, fetch_change_requests,
                                 fetch_monthly_counts_12m)
-from tools.chart_generator import generate_all_charts
+from tools.chart_generator import generate_all_charts, generate_sentinel_utilization_chart
 from tools import sentinel_client, splunk_client, socradar_rest as socradar_client, tavily_client
 import tools.db as db
 
@@ -838,6 +838,18 @@ def run_report_job(job_id: str, config: dict) -> None:
                 log.info(f"[{job_id[:8]}] Generated {len(charts)} charts")
             except Exception as e:
                 log.error(f"[{job_id[:8]}] Chart generation failed: {e}")
+
+        sentinel = data.get("sentinel")
+        if sentinel:
+            daily_breakdown = sentinel.get("utilization", {}).get("daily_breakdown", [])
+            try:
+                chart = generate_sentinel_utilization_chart(
+                    daily_breakdown or [], end_date=config.get("end_date", "")
+                )
+                if chart:
+                    charts["sentinel_utilization"] = chart
+            except Exception as e:
+                log.error(f"[{job_id[:8]}] Sentinel utilization chart failed: {e}")
 
         jobs[job_id]["progress"] = "Writing report sections..."
         output = asyncio.run(_run_report_agent(data, config))

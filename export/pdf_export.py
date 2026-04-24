@@ -203,6 +203,7 @@ _CHART_SECTION_MAP = {
     "monthly_trend": "1.2",
     "severity": "1.3",
     "resolution": "1.4",
+    "sentinel_utilization": "1.6",
     "top_alerts": "1.7",
 }
 

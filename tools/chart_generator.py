@@ -239,6 +239,66 @@ def generate_quarterly_chart(monthly_stats: list[dict], quarter_label: str) -> b
     return _to_bytes(fig)
 
 
+def generate_sentinel_utilization_chart(daily_breakdown: list, end_date: str = "") -> bytes:
+    """Bar chart of monthly GB ingestion for the 3 months ending at end_date."""
+    if not daily_breakdown and not end_date:
+        return b""
+
+    from dateutil.parser import parse as _dateparse
+
+    monthly_gb: dict[str, float] = {}
+    for row in daily_breakdown:
+        tg = row.get("TimeGenerated", "")
+        gb = float(row.get("TotalGB") or 0)
+        if not tg:
+            continue
+        try:
+            dt = _dateparse(tg)
+            month_key = dt.strftime("%Y-%m")
+            monthly_gb[month_key] = round(monthly_gb.get(month_key, 0) + gb, 2)
+        except Exception:
+            continue
+
+    try:
+        end_dt = datetime.strptime(end_date, "%Y-%m-%d")
+    except Exception:
+        if monthly_gb:
+            end_dt = datetime.strptime(max(monthly_gb.keys()), "%Y-%m")
+        else:
+            end_dt = datetime.now()
+
+    end_month = end_dt.replace(day=1)
+    months = [
+        (end_month - relativedelta(months=i)).strftime("%Y-%m")
+        for i in range(2, -1, -1)
+    ]
+
+    values = [monthly_gb.get(m, 0) for m in months]
+    display_labels = []
+    for m in months:
+        try:
+            display_labels.append(datetime.strptime(m, "%Y-%m").strftime("%b\n%Y"))
+        except Exception:
+            display_labels.append(m)
+
+    fig, ax = plt.subplots(figsize=(6, 3.5))
+    _setup_style(fig, ax)
+    bars = ax.bar(display_labels, values, color=_BLUE, width=0.5,
+                  edgecolor="white", linewidth=0.5)
+    offset = max(values) * 0.02 if max(values) > 0 else 0.1
+    for bar, val in zip(bars, values):
+        ax.text(bar.get_x() + bar.get_width() / 2, bar.get_height() + offset,
+                f"{val:.2f} GB", ha="center", va="bottom", fontsize=10,
+                fontweight="bold", color=_DARK)
+    ax.set_title("Monthly Log Ingestion (GB) — Past 3 Months",
+                 fontsize=13, fontweight="bold", color=_DARK, pad=12)
+    ax.set_ylabel("Ingested (GB)", fontsize=10, color=_GREY)
+    ax.yaxis.set_major_formatter(ticker.FuncFormatter(lambda x, _: f"{x:.1f}"))
+    ax.yaxis.set_major_locator(ticker.MaxNLocator(nbins=5))
+    fig.tight_layout()
+    return _to_bytes(fig)
+
+
 def generate_all_charts(stats: dict, end_date: str = "") -> dict:
     """Generate all available charts from stats data.
 
