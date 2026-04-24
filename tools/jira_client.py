@@ -342,6 +342,7 @@ def _fetch_month_count(project_key: str, month_start: str, month_end: str) -> in
         f'AND created < "{month_end}" '
         f'ORDER BY created ASC'
     )
+    logger.info("_fetch_month_count JQL: %s", jql)
     count = 0
     next_token = None
     while count < 10000:
@@ -355,7 +356,8 @@ def _fetch_month_count(project_key: str, month_start: str, month_end: str) -> in
             timeout=30,
         )
         if r.status_code >= 400:
-            logger.warning("_fetch_month_count HTTP %s for %s: %s", r.status_code, month_start, r.text[:200])
+            logger.warning("_fetch_month_count HTTP %s for %s — JQL: %s — response: %s",
+                           r.status_code, month_start, jql, r.text[:500])
             break
         data = r.json()
         issues = data.get("issues", [])
@@ -363,6 +365,7 @@ def _fetch_month_count(project_key: str, month_start: str, month_end: str) -> in
         next_token = data.get("nextPageToken")
         if not issues or not next_token or data.get("isLast") is True:
             break
+    logger.info("_fetch_month_count %s: %d issues", month_start, count)
     return count
 
 
