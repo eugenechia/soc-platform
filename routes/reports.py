@@ -46,21 +46,21 @@ REPORT_SECTIONS = [
     {"id": "incident_severity", "label": "1.3 Incident Severity", "source": "jira"},
     {"id": "incident_status", "label": "1.4 Incident Status", "source": "jira"},
     {"id": "incident_details", "label": "1.5 Incident Ticket Details", "source": "jira"},
-    {"id": "sentinel_utilization", "label": "1.6 Sentinel Monthly Utilization", "source": "sentinel"},
-    {"id": "top_alerts_sentinel", "label": "1.7 Top Alert Triggered on Sentinel", "source": "sentinel"},
-    {"id": "total_assets", "label": "1.8 Total Assets Under Monitoring", "source": "sentinel"},
-    {"id": "sensor_health", "label": "1.9 Managed Assets by Sensor Health State", "source": "sentinel"},
-    {"id": "vulnerability_details", "label": "1.10 Vulnerability Details", "source": "sentinel"},
-    {"id": "threat_analytics", "label": "1.11 Threat Analytics Hunting", "source": "sentinel"},
-    {"id": "vulnerability_devices", "label": "1.12 Monthly Vulnerability Exposed Devices", "source": "sentinel"},
-    {"id": "ioc_update", "label": "1.13 Indicators of Compromise (IOC) Update", "source": "sentinel"},
+    {"id": "service_requests", "label": "1.6 Service Requests Summary", "source": "jira"},
+    {"id": "change_requests", "label": "1.7 Change Requests Summary", "source": "jira"},
+    {"id": "sentinel_utilization", "label": "1.8 Sentinel Monthly Utilization", "source": "sentinel"},
+    {"id": "top_alerts_sentinel", "label": "1.9 Top Alert Triggered on Sentinel", "source": "sentinel"},
+    {"id": "total_assets", "label": "1.10 Total Assets Under Monitoring", "source": "sentinel"},
+    {"id": "sensor_health", "label": "1.11 Managed Assets by Sensor Health State", "source": "sentinel"},
+    {"id": "vulnerability_details", "label": "1.12 Vulnerability Details", "source": "sentinel"},
+    {"id": "threat_analytics", "label": "1.13 Threat Analytics Hunting", "source": "sentinel"},
+    {"id": "vulnerability_devices", "label": "1.14 Monthly Vulnerability Exposed Devices", "source": "sentinel"},
+    {"id": "ioc_update", "label": "1.15 Indicators of Compromise (IOC) Update", "source": "sentinel"},
     {"id": "splunk_event_volume", "label": "Splunk Event Volume", "source": "splunk"},
     {"id": "splunk_top_alerts", "label": "Top Alerts from Splunk", "source": "splunk"},
-    {"id": "pending_tickets", "label": "1.14 Pending Tickets", "source": "jira"},
-    {"id": "monitoring_scope", "label": "1.15 GSOC Monitoring Scope", "source": "jira"},
+    {"id": "pending_tickets", "label": "1.16 Pending Tickets", "source": "jira"},
+    {"id": "monitoring_scope", "label": "1.17 GSOC Monitoring Scope", "source": "jira"},
     {"id": "recommendations", "label": "GSOC Recommendation Summary", "source": "jira"},
-    {"id": "service_requests", "label": "1.17 Service Requests Summary", "source": "jira"},
-    {"id": "change_requests", "label": "1.18 Change Requests Summary", "source": "jira"},
     {"id": "socradar_threat_intel", "label": "SOCRadar Threat Intelligence", "source": "socradar"},
     {"id": "industry_threat_intel", "label": "Industry Threat Landscape", "source": "general"},
 ]
@@ -153,7 +153,23 @@ IMPORTANT rules for this table:
 - **TP/FP/BP**: Use the close_justification field exactly (e.g. "Benign Positive", "True Positive", "False Positive")
 - Sort rows by date descending (most recent first)
 
-**### 1.6. Sentinel Monthly Utilization** (if "sentinel_utilization" is selected, REQUIRES SENTINEL)
+**### 1.6. Service Requests Summary** (if "service_requests" is selected)
+If service_requests.unavailable is true, show the placeholder block noting the issue type is not configured in this Jira project.
+Otherwise:
+- State total Service Requests raised during the period
+- Present a markdown table: SR ID | Subject | Priority | Status | Created | Assignee
+- Include all items; if empty show "No service requests raised during this period."
+- Provide a 1-paragraph summary of request trends (most common priority, most common status)
+
+**### 1.7. Change Requests Summary** (if "change_requests" is selected)
+If change_requests.unavailable is true, show the placeholder block noting the issue type is not configured in this Jira project.
+Otherwise:
+- State total Change Requests raised during the period
+- Present a markdown table: CR ID | Subject | Priority | Status | Created | Assignee
+- Include all items; if empty show "No change requests raised during this period."
+- Provide a 1-paragraph summary noting change volume and any pending/open changes that require attention
+
+**### 1.8. Sentinel Monthly Utilization** (if "sentinel_utilization" is selected, REQUIRES SENTINEL)
 If Microsoft Sentinel is NOT connected, show the placeholder block. If connected but no data for the period, write a brief note stating no activity was recorded.
 Otherwise:
 - State the total ingestion for the period (in GB) and the average daily ingestion (in GB/day).
@@ -164,38 +180,38 @@ Otherwise:
   - Sort rows by date ascending
 - If daily_breakdown is empty, state "No daily utilization data was recorded for this period."
 
-**### 1.7. Top Alert Triggered on Sentinel** (if "top_alerts_sentinel" is selected, REQUIRES SENTINEL)
+**### 1.9. Top Alert Triggered on Sentinel** (if "top_alerts_sentinel" is selected, REQUIRES SENTINEL)
 If Microsoft Sentinel is NOT connected, show the placeholder block. If connected but no data for the period, write a brief note stating no activity was recorded.
 Otherwise: Table showing top alerts with count, sorted by frequency.
 
-**### 1.8. Total Assets Under Monitoring** (if "total_assets" is selected, REQUIRES SENTINEL)
+**### 1.10. Total Assets Under Monitoring** (if "total_assets" is selected, REQUIRES SENTINEL)
 If Microsoft Sentinel is NOT connected, show the placeholder block. If connected but no data for the period, write a brief note stating no activity was recorded.
 Otherwise: State total asset count. Note: asset data may come from Microsoft Defender for Endpoint (DeviceInfo table) or CrowdStrike (CrowdStrikeHosts table) depending on the EDR deployed for this customer.
 
-**### 1.9. Managed Assets by Sensor Health State** (if "sensor_health" is selected, REQUIRES SENTINEL)
+**### 1.11. Managed Assets by Sensor Health State** (if "sensor_health" is selected, REQUIRES SENTINEL)
 If Microsoft Sentinel is NOT connected, show the placeholder block. If connected but no data for the period, write a brief note stating no activity was recorded.
 Otherwise: Table of devices with columns: Device Name | Last Update | OS Platform | Exposure Level | Health Status.
 Note: if data comes from CrowdStrike (fields DeviceName, OnboardingStatus, HealthStatus, OSPlatform, ExposureLevel, LastSeen), map them directly. HealthStatus values are "Active" (seen within 7 days) or "Inactive".
 
-**### 1.10. Vulnerability Details** (if "vulnerability_details" is selected, REQUIRES SENTINEL)
+**### 1.12. Vulnerability Details** (if "vulnerability_details" is selected, REQUIRES SENTINEL)
 If Microsoft Sentinel is NOT connected, show the placeholder block. If connected but no data for the period, write a brief note stating no activity was recorded.
 Otherwise: Exposure score explanation, severity breakdown, Microsoft Secure Score details.
 
-**### 1.11. Threat Analytics Hunting** (if "threat_analytics" is selected, REQUIRES SENTINEL)
+**### 1.13. Threat Analytics Hunting** (if "threat_analytics" is selected, REQUIRES SENTINEL)
 If Microsoft Sentinel is NOT connected, show the placeholder block. If connected but no data for the period, write a brief note stating no activity was recorded.
 Otherwise: The data contains threat intelligence indicators grouped by ObservableKey (STIX observable type, e.g. "network-traffic:src_ref.value", "url:value", "domain-name:value", "file:hashes.MD5").
 Present a summary table with columns: Indicator Type | Count. Map STIX keys to human-readable labels (e.g. "network-traffic:src_ref.value" → "IP Address", "url:value" → "URL", "domain-name:value" → "Domain", "file:hashes.MD5" → "File Hash (MD5)", "file:hashes.'SHA-256'" → "File Hash (SHA-256)").
 Follow with 2-3 paragraphs of analysis covering the distribution of indicator types and what they indicate about the threat landscape.
 
-**### 1.12. Monthly Vulnerability Exposed Devices** (if "vulnerability_devices" is selected, REQUIRES SENTINEL)
+**### 1.14. Monthly Vulnerability Exposed Devices** (if "vulnerability_devices" is selected, REQUIRES SENTINEL)
 If Microsoft Sentinel is NOT connected, show the placeholder block. If connected but no data for the period, write a brief note stating no activity was recorded.
 Otherwise: Statistics on exposed devices, recommendation to patch immediately.
 
-**### 1.13. Indicators of Compromise (IOC) Update** (if "ioc_update" is selected, REQUIRES SENTINEL)
+**### 1.15. Indicators of Compromise (IOC) Update** (if "ioc_update" is selected, REQUIRES SENTINEL)
 If Microsoft Sentinel is NOT connected, show the placeholder block. If connected but no data for the period, write a brief note stating no activity was recorded.
 Otherwise: The data contains IOC entries with fields: Id, ObservableKey, ObservableValue, Pattern, Tags, Confidence, TimeGenerated.
 Present a table with columns: Date | Indicator Type | Value | Confidence | Tags.
-- Map ObservableKey to a human-readable Indicator Type (same mapping as 1.11 above)
+- Map ObservableKey to a human-readable Indicator Type (same mapping as 1.13 above)
 - ObservableValue is the actual indicator value (IP, URL, domain, hash, etc.)
 - Confidence is an integer 0-100; display as a percentage
 - Tags is a comma-separated string; show the first 2-3 meaningful tags (skip internal ones like "p:default", "ic:*", "vic:*", "gid:*", "cid:*")
@@ -209,12 +225,12 @@ Otherwise: Total event count ingested during the period, breakdown by index, and
 If Splunk is NOT connected (not listed in available data sources), show the placeholder block. If connected but no data for the period, write a brief note stating no activity was recorded.
 Otherwise: Table showing top Splunk correlation rules / notable events with count, sorted by frequency. Include severity breakdown if available.
 
-**### 1.14. Pending Tickets** (if "pending_tickets" is selected)
+**### 1.16. Pending Tickets** (if "pending_tickets" is selected)
 Present a markdown table with columns: Incident ID | Incident Subject | Severity | Created | Status
 Use the pre-computed `pending_tickets` list from the data — it already contains only non-closed tickets (any status that is not Closed/Resolved). Do NOT re-filter incident_details; use pending_tickets directly.
 If pending_tickets is empty, show a table with a single row: "- | No pending tickets | - | - | -"
 
-**### 1.15. GSOC Monitoring Scope** (if "monitoring_scope" is selected)
+**### 1.17. GSOC Monitoring Scope** (if "monitoring_scope" is selected)
 Write: "Below are the log sources that are onboarded to Microsoft Sentinel SIEM currently for GSOC monitoring."
 Then list common log sources as bullet points. If specific log source data is not available, list typical enterprise sources:
 - Azure Activity, Azure Firewall, Microsoft 365, Microsoft Defender for Cloud Apps, Microsoft Defender for Endpoint, Microsoft Defender for Identity, Microsoft Defender XDR, Microsoft Entra ID, etc.
@@ -252,22 +268,6 @@ Otherwise, write 3-4 paragraphs covering:
 3. **Critical CVEs**: Table with columns: CVE ID | CVSS Score | Affected Products | Exploit Available | Recommendation. List top CVEs from socradar.cve_intel.
 4. **Dark Web Monitoring**: Summary of any dark web mentions, leaked credentials, or mentions of the company domain. If socradar.dark_web_alarms is empty, state "No dark web mentions detected during this period."
 Close with a paragraph of analyst commentary tying SOCRadar intelligence to the observed incident patterns.
-
-**### 1.17. Service Requests Summary** (if "service_requests" is selected)
-If service_requests.unavailable is true, show the placeholder block noting the issue type is not configured in this Jira project.
-Otherwise:
-- State total Service Requests raised during the period
-- Present a markdown table: SR ID | Subject | Priority | Status | Created | Assignee
-- Include all items; if empty show "No service requests raised during this period."
-- Provide a 1-paragraph summary of request trends (most common priority, most common status)
-
-**### 1.18. Change Requests Summary** (if "change_requests" is selected)
-If change_requests.unavailable is true, show the placeholder block noting the issue type is not configured in this Jira project.
-Otherwise:
-- State total Change Requests raised during the period
-- Present a markdown table: CR ID | Subject | Priority | Status | Created | Assignee
-- Include all items; if empty show "No change requests raised during this period."
-- Provide a 1-paragraph summary noting change volume and any pending/open changes that require attention
 
 **### Industry Threat Landscape** (if "industry_threat_intel" is selected)
 If industry_intel.industry is empty or not provided, write: "The customer's industry has not been configured. Please update the customer profile to enable industry-specific threat intelligence."
@@ -774,13 +774,11 @@ async def _run_report_agent(data: dict, config: dict) -> str:
     section_meta = ctx["section_meta"]
 
     jira_early = [s for s in sections if section_meta.get(s, {}).get("source") == "jira"
-                  and s not in ("pending_tickets", "monitoring_scope", "recommendations",
-                                "service_requests", "change_requests")]
+                  and s not in ("pending_tickets", "monitoring_scope", "recommendations")]
     sentinel_grp = [s for s in sections if section_meta.get(s, {}).get("source") == "sentinel"]
     splunk_grp = [s for s in sections if section_meta.get(s, {}).get("source") == "splunk"]
     jira_late = [s for s in sections if s in ("pending_tickets", "monitoring_scope",
-                                               "recommendations", "service_requests",
-                                               "change_requests")]
+                                               "recommendations")]
     socradar_grp = [s for s in sections if section_meta.get(s, {}).get("source") == "socradar"]
     industry_grp = [s for s in sections if section_meta.get(s, {}).get("source") == "general"]
 
