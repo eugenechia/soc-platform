@@ -100,10 +100,18 @@ def fetch_data(config: dict, start_date: str, end_date: str) -> dict:
     # ISO 8601 timespan used as the query time filter
     timespan = f"{start_date}T00:00:00Z/{end_date}T23:59:59Z"
 
-    # 1. Monthly utilization — GB ingested per day
+    # 1. Monthly utilization — GB ingested per day.
+    # Try billable-only first; fall back to all usage if the workspace returns nothing
+    # (e.g. commitment-tier workspaces where IsBillable is not set on all rows).
     utilization_rows = _safe_kql(token, """
 Usage
 | where IsBillable == true
+| summarize TotalGB = round(sum(Quantity) / 1024, 2) by bin(TimeGenerated, 1d)
+| order by TimeGenerated asc
+""", timespan)
+    if not utilization_rows:
+        utilization_rows = _safe_kql(token, """
+Usage
 | summarize TotalGB = round(sum(Quantity) / 1024, 2) by bin(TimeGenerated, 1d)
 | order by TimeGenerated asc
 """, timespan)

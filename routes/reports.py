@@ -211,7 +211,8 @@ Otherwise: Table showing top Splunk correlation rules / notable events with coun
 
 **### 1.14. Pending Tickets** (if "pending_tickets" is selected)
 Present a markdown table with columns: Incident ID | Incident Subject | Severity | Created | Status
-Include only tickets with status "Pending" or "Open". If none, show a table with a single row: "- | No pending tickets | - | - | -"
+Use the pre-computed `pending_tickets` list from the data — it already contains only non-closed tickets (any status that is not Closed/Resolved). Do NOT re-filter incident_details; use pending_tickets directly.
+If pending_tickets is empty, show a table with a single row: "- | No pending tickets | - | - | -"
 
 **### 1.15. GSOC Monitoring Scope** (if "monitoring_scope" is selected)
 Write: "Below are the log sources that are onboarded to Microsoft Sentinel SIEM currently for GSOC monitoring."
@@ -590,6 +591,7 @@ def _build_report_context(data: dict, config: dict) -> dict:
     except Exception:
         report_year = datetime.now().year
 
+    _closed_statuses = {"closed", "resolved", "done", "complete", "completed"}
     jira_data = {
         "total_incidents": data.get("stats", {}).get("total", 0),
         "by_severity": data.get("stats", {}).get("by_severity", {}),
@@ -608,6 +610,14 @@ def _build_report_context(data: dict, config: dict) -> dict:
                 "labels": i["labels"], "category": i.get("incident_type", ""),
             }
             for i in data.get("incidents", [])
+        ],
+        "pending_tickets": [
+            {
+                "key": i["key"], "summary": i["summary"], "severity": i["severity"],
+                "status": i["status"], "created": i["created"],
+            }
+            for i in data.get("incidents", [])
+            if i.get("status", "").strip().lower() not in _closed_statuses
         ],
     }
 
