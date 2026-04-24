@@ -122,6 +122,42 @@ def _fetch_dark_web_alarms(company_id: str, start_date: str, end_date: str) -> l
     return []
 
 
+def check_ioc(value: str, ioc_type: str) -> dict | None:
+    """Look up IOC reputation from SOCRadar.
+
+    ioc_type: "ip" | "domain" | "hash"
+    Returns {"score": int, "verdict": str, "raw": dict} or None on failure.
+
+    Endpoint paths follow SOCRadar REST API conventions — verify against
+    https://platform.socradar.com/docs/api/ if responses are empty.
+    """
+    endpoint_map = {
+        "ip":     f"threat/ip/{value}/report",
+        "domain": f"threat/domain/{value}/report",
+        "hash":   f"threat/hash/{value}/report",
+    }
+    endpoint = endpoint_map.get(ioc_type)
+    if not endpoint:
+        logger.warning("check_ioc: unsupported ioc_type=%s", ioc_type)
+        return None
+
+    data = _get(endpoint)
+    if not data:
+        return None
+
+    try:
+        raw_score = data.get("score") or data.get("risk_score") or data.get("threat_score") or 0
+        score = int(float(raw_score))
+    except (TypeError, ValueError):
+        score = 0
+
+    threshold = int(os.environ.get("MALICIOUS_SCORE_THRESHOLD", "70"))
+    verdict = "malicious" if score >= threshold else "clean"
+
+    logger.info("SOCRadar IOC check: %s (%s) → score=%d verdict=%s", value, ioc_type, score, verdict)
+    return {"score": score, "verdict": verdict, "raw": data}
+
+
 def fetch_industry_data(industry: str, start_date: str, end_date: str) -> dict:
     """Fetch SOCRadar threat actors targeting a specific industry sector."""
     if not SOCRADAR_API_KEY:

@@ -26,6 +26,7 @@ from routes.reports import reports_bp
 from routes.investigate import investigate_bp
 from routes.admin import admin_bp
 from routes.exports import exports_bp
+from routes.webhook import webhook_bp
 
 
 def create_app() -> Flask:
@@ -51,11 +52,13 @@ def create_app() -> Flask:
     app.register_blueprint(investigate_bp,  url_prefix="/investigate")
     app.register_blueprint(admin_bp,        url_prefix="/admin")
     app.register_blueprint(exports_bp,      url_prefix="/exports")
+    app.register_blueprint(webhook_bp,      url_prefix="/webhook")
 
-    # Every request requires an authenticated Entra ID session, except /auth/* and /static/*
+    # Every request requires an authenticated Entra ID session, except:
+    # /auth/* (SSO flow), /static/* (assets), /webhook/* (secret-token auth)
     @app.before_request
     def _enforce_login():
-        if request.path.startswith(("/auth/", "/static/")):
+        if request.path.startswith(("/auth/", "/static/", "/webhook/")):
             return
         if not session.get("user"):
             return redirect("/auth/login")
