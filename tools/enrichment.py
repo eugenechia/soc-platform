@@ -28,7 +28,9 @@ _RE_MD5    = re.compile(r'\b[a-fA-F0-9]{32}\b')
 _RE_IPV4   = re.compile(r'\b(?:\d{1,3}\.){3}\d{1,3}\b')
 _RE_DOMAIN = re.compile(
     r'\b(?:[a-zA-Z0-9](?:[a-zA-Z0-9\-]{0,61}[a-zA-Z0-9])?\.)'
-    r'+(?:com|net|org|io|gov|edu|biz|info|xyz|ru|cn|tk|top|cc|pw|onion)\b',
+    r'+(?:com|net|org|io|gov|edu|biz|info|xyz|ru|cn|tk|top|cc|pw|onion'
+    r'|online|site|live|app|store|shop|tech|club|pro|co|me|us|uk|de|fr'
+    r'|jp|au|nz|sg|my|id|ph|vn|in|br|za)\b',
     re.IGNORECASE,
 )
 
@@ -269,6 +271,36 @@ def post_jira_comment(ticket_key: str, text: str) -> bool:
         return False
 
 
+def add_jira_label(ticket_key: str, label: str) -> bool:
+    """Add a label to a Jira issue without removing existing labels."""
+    if not JIRA_URL:
+        logger.warning("JIRA_URL not set — cannot label %s", ticket_key)
+        return False
+
+    get_url = f"{JIRA_URL}/rest/api/3/issue/{ticket_key}"
+    try:
+        r = httpx.get(get_url, headers=_jira_headers(), timeout=30)
+        if r.status_code >= 400:
+            logger.error("add_jira_label GET %s HTTP %s", ticket_key, r.status_code)
+            return False
+        existing = r.json().get("fields", {}).get("labels", [])
+        if label in existing:
+            return True
+        updated = existing + [label]
+        put_url = f"{JIRA_URL}/rest/api/3/issue/{ticket_key}"
+        r2 = httpx.put(put_url, headers=_jira_headers(),
+                       json={"fields": {"labels": updated}}, timeout=30)
+        if r2.status_code >= 400:
+            logger.error("add_jira_label PUT %s HTTP %s: %s",
+                         ticket_key, r2.status_code, r2.text[:200])
+            return False
+        logger.info("Added label '%s' to %s", label, ticket_key)
+        return True
+    except Exception as e:
+        logger.error("add_jira_label %s failed: %s", ticket_key, e)
+        return False
+
+
 def assign_jira_ticket(ticket_key: str, account_id: str) -> bool:
     """Reassign a Jira ticket to the given Jira account ID."""
     if not JIRA_URL:
@@ -318,16 +350,19 @@ def enrich_ticket(ticket_key: str, summary: str, description_adf) -> dict:
         return {"ticket": ticket_key, "iocs": [], "verdict": "unknown", "action": "none"}
 
     if overall_verdict == "malicious":
-        action_taken = "Ticket escalated — assigned to L1 Lead as potential True Positive."
+        add_jira_label(ticket_key, "Potential-TP")
+        action_taken = "Ticket escalated — labelled Potential-TP as a potential True Positive."
         if l1_id:
             assign_jira_ticket(ticket_key, l1_id)
+            action_taken += " Assigned to L1 Lead."
         else:
             action_taken += " (JIRA_L1_ACCOUNT_ID not configured — assignment skipped)"
             logger.warning("JIRA_L1_ACCOUNT_ID not set — cannot assign %s to L1 lead", ticket_key)
     else:
-        action_taken = "No malicious IOCs detected — assigned to L2 for review."
+        action_taken = "No malicious IOCs detected — no escalation required."
         if l2_id:
             assign_jira_ticket(ticket_key, l2_id)
+            action_taken += " Assigned to L2 for review."
         else:
             action_taken += " (JIRA_L2_ACCOUNT_ID not configured — assignment skipped)"
             logger.warning("JIRA_L2_ACCOUNT_ID not set — cannot assign %s to L2", ticket_key)

@@ -60,10 +60,11 @@ def jira_webhook():
         logger.warning("Jira webhook: missing issue key in payload")
         return jsonify({"status": "ignored", "reason": "no issue key"}), 200
 
-    enrichment_project = os.environ.get("JIRA_ENRICHMENT_PROJECT", "")
-    if enrichment_project:
-        project_key = ticket_key.split("-")[0]
-        if project_key != enrichment_project:
+    enrichment_projects_raw = os.environ.get("JIRA_ENRICHMENT_PROJECT", "")
+    if enrichment_projects_raw:
+        allowed = {p.strip().upper() for p in enrichment_projects_raw.split(",") if p.strip()}
+        project_key = ticket_key.split("-")[0].upper()
+        if project_key not in allowed:
             return jsonify({"status": "ignored", "reason": "project not monitored"}), 200
 
     summary = fields.get("summary", "")
