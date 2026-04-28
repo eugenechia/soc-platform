@@ -156,7 +156,7 @@ def fetch_incidents_for_report(project_key: str, start_date: str, end_date: str)
     for chunk_start, chunk_end in _date_chunks(start_date, end_date):
         jql = (
             f'project = "{project_key}" '
-            f'AND issuetype = "Incident" '
+            f'AND issuetype = "[System] Incident" '
             f'AND created >= "{chunk_start}" '
             f'AND created < "{chunk_end}" '
             f'ORDER BY created DESC'
@@ -337,7 +337,7 @@ def _fetch_month_count(project_key: str, month_start: str, month_end: str) -> in
     """Return the count of incidents for a single month window using cursor pagination."""
     jql = (
         f'project = "{project_key}" '
-        f'AND issuetype = "Incident" '
+        f'AND issuetype = "[System] Incident" '
         f'AND created >= "{month_start}" '
         f'AND created < "{month_end}" '
         f'ORDER BY created ASC'
