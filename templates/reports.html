@@ -497,6 +497,16 @@
             </div>
           </div>
           <div class="form-group">
+            <label>Jira Request Type</label>
+            <input type="text" id="newCustRequestType" placeholder="e.g. Report a Security Incident" value="Report an Incident">
+            <div style="font-size:12px; color:var(--text-muted); margin-top:4px;">The exact request type name used in this customer's Jira project.</div>
+          </div>
+          <div class="form-group">
+            <label>Azure Log Analytics Workspace ID</label>
+            <input type="text" id="newCustSentinelWorkspaceId" placeholder="e.g. xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx">
+            <div style="font-size:12px; color:var(--text-muted); margin-top:4px;">Azure Log Analytics workspace ID for this customer's Microsoft Sentinel. Leave blank to use the global default.</div>
+          </div>
+          <div class="form-group">
             <label>Industry</label>
             <select id="newCustIndustry">
               <option value="">-- Select industry --</option>
@@ -856,6 +866,8 @@
       fd.append('name', name);
       fd.append('short_name', short_name);
       fd.append('jira_project_key', jira_key);
+      fd.append('jira_request_type', document.getElementById('newCustRequestType').value.trim() || 'Report an Incident');
+      fd.append('sentinel_workspace_id', document.getElementById('newCustSentinelWorkspaceId').value.trim());
       fd.append('industry', document.getElementById('newCustIndustry').value);
       if (logoInput.files.length) fd.append('logo', logoInput.files[0]);
 
@@ -873,6 +885,8 @@
       document.getElementById('newCustName').value = '';
       document.getElementById('newCustShort').value = '';
       document.getElementById('newCustJiraKey').value = '';
+      document.getElementById('newCustRequestType').value = 'Report an Incident';
+      document.getElementById('newCustSentinelWorkspaceId').value = '';
       document.getElementById('newCustIndustry').value = '';
       logoInput.value = '';
     }
