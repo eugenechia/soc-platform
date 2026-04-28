@@ -204,7 +204,7 @@ _CHART_SECTION_MAP = {
     "severity": "1.3",
     "resolution": "1.4",
     "sentinel_utilization": "1.10",
-    "top_alerts": "1.11",
+    "sentinel_top_alerts": "1.11",
 }
 
 

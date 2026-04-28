@@ -119,10 +119,19 @@ Usage
     total_gb = round(sum(float(r.get("TotalGB") or 0) for r in utilization_rows), 2)
     avg_daily_gb = round(total_gb / max(len(utilization_rows), 1), 2)
 
-    # 2. Top alerts triggered in the period
+    # 2. Top alerts triggered in the period.
+    # Try SecurityAlert first; fall back to SecurityIncident for workspaces where
+    # incidents are not surfaced as individual alerts (e.g. identity-only tenants).
     alerts_rows = _safe_kql(token, """
 SecurityAlert
 | summarize Count = count() by AlertName
+| top 15 by Count desc
+""", timespan)
+    if not alerts_rows:
+        alerts_rows = _safe_kql(token, """
+SecurityIncident
+| summarize Count = count() by Title
+| project AlertName = Title, Count
 | top 15 by Count desc
 """, timespan)
 
