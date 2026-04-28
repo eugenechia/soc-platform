@@ -999,6 +999,7 @@
         formData.append('use_splunk', useSplunk ? 'true' : 'false');
         formData.append('use_socradar', useSocradar ? 'true' : 'false');
         formData.append('customer_industry', selectedCustomer ? selectedCustomer.industry || '' : '');
+        formData.append('sentinel_workspace_id', selectedCustomer ? selectedCustomer.sentinel_workspace_id || '' : '');
         formData.append('csv_file', csvFileInput.files[0]);
         fetchOptions = { method: 'POST', body: formData };
       } else {
@@ -1017,6 +1018,7 @@
           use_splunk: useSplunk,
           use_socradar: useSocradar,
           customer_industry: selectedCustomer ? selectedCustomer.industry || '' : '',
+          sentinel_workspace_id: selectedCustomer ? selectedCustomer.sentinel_workspace_id || '' : '',
         };
         fetchOptions = {
           method: 'POST',

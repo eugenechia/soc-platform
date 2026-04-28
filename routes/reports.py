@@ -917,6 +917,7 @@ def generate():
         use_socradar = request.form.get("use_socradar", "false").lower() == "true"
         customer_industry = request.form.get("customer_industry", "").strip()
         jira_request_type = request.form.get("jira_request_type", "Report an Incident").strip()
+        sentinel_workspace_id = request.form.get("sentinel_workspace_id", "").strip()
         csv_file = request.files.get("csv_file")
     else:
         body = request.json or {}
@@ -935,6 +936,7 @@ def generate():
         use_socradar = bool(body.get("use_socradar", False))
         customer_industry = body.get("customer_industry", "").strip()
         jira_request_type = body.get("jira_request_type", "Report an Incident").strip()
+        sentinel_workspace_id = body.get("sentinel_workspace_id", "").strip()
         csv_file = None
 
     if not customer_name:
@@ -970,6 +972,7 @@ def generate():
         "use_splunk": use_splunk,
         "use_socradar": use_socradar,
         "customer_industry": customer_industry,
+        "sentinel_workspace_id": sentinel_workspace_id,
     }
     jobs[job_id] = {
         "status": "running", "text": "", "data": None,

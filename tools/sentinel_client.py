@@ -38,8 +38,9 @@ def _get_access_token() -> str:
     return token.token
 
 
-def _run_kql(token: str, query: str, timespan: str | None = None) -> list[dict]:
-    url = f"https://api.loganalytics.io/v1/workspaces/{WORKSPACE_ID}/query"
+def _run_kql(token: str, query: str, timespan: str | None = None,
+             workspace_id: str = "") -> list[dict]:
+    url = f"https://api.loganalytics.io/v1/workspaces/{workspace_id or WORKSPACE_ID}/query"
     body: dict = {"query": query}
     if timespan:
         body["timespan"] = timespan
@@ -75,9 +76,10 @@ def _run_kql(token: str, query: str, timespan: str | None = None) -> list[dict]:
     return [dict(zip(columns, row)) for row in rows]
 
 
-def _safe_kql(token: str, query: str, timespan: str | None = None) -> list[dict]:
+def _safe_kql(token: str, query: str, timespan: str | None = None,
+              workspace_id: str = "") -> list[dict]:
     try:
-        return _run_kql(token, query, timespan)
+        return _run_kql(token, query, timespan, workspace_id)
     except PermissionError:
         raise  # auth failures must propagate so the caller treats Sentinel as disconnected
     except Exception as e:
@@ -88,8 +90,9 @@ def _safe_kql(token: str, query: str, timespan: str | None = None) -> list[dict]
 def fetch_data(config: dict, start_date: str, end_date: str) -> dict:
     """Fetch security data from Microsoft Sentinel / Log Analytics."""
     from tools.secrets import get_secret
+    workspace_id = config.get("sentinel_workspace_id") or WORKSPACE_ID
     if not all([get_secret("SENTINEL_TENANT_ID"), get_secret("SENTINEL_CLIENT_ID"),
-                get_secret("SENTINEL_CLIENT_SECRET"), WORKSPACE_ID]):
+                get_secret("SENTINEL_CLIENT_SECRET"), workspace_id]):
         raise ValueError(
             "Sentinel credentials incomplete. Check SENTINEL_TENANT_ID, "
             "SENTINEL_CLIENT_ID, SENTINEL_CLIENT_SECRET, SENTINEL_WORKSPACE_ID."
@@ -108,13 +111,13 @@ Usage
 | where IsBillable == true
 | summarize TotalGB = round(sum(Quantity) / 1024, 2) by bin(TimeGenerated, 1d)
 | order by TimeGenerated asc
-""", timespan)
+""", timespan, workspace_id)
     if not utilization_rows:
         utilization_rows = _safe_kql(token, """
 Usage
 | summarize TotalGB = round(sum(Quantity) / 1024, 2) by bin(TimeGenerated, 1d)
 | order by TimeGenerated asc
-""", timespan)
+""", timespan, workspace_id)
 
     total_gb = round(sum(float(r.get("TotalGB") or 0) for r in utilization_rows), 2)
     avg_daily_gb = round(total_gb / max(len(utilization_rows), 1), 2)
@@ -126,27 +129,27 @@ Usage
 SecurityAlert
 | summarize Count = count() by AlertName
 | top 15 by Count desc
-""", timespan)
+""", timespan, workspace_id)
     if not alerts_rows:
         alerts_rows = _safe_kql(token, """
 SecurityIncident
 | summarize Count = count() by Title
 | project AlertName = Title, Count
 | top 15 by Count desc
-""", timespan)
+""", timespan, workspace_id)
 
     # 3. Total assets under monitoring — try MDE DeviceInfo first, fall back to CrowdStrike
     assets_rows = _safe_kql(token, """
 DeviceInfo
 | summarize arg_max(TimeGenerated, *) by DeviceName
 | count
-""")
+""", workspace_id=workspace_id)
     if not assets_rows or int(assets_rows[0].get("Count", 0)) == 0:
         assets_rows = _safe_kql(token, """
 CrowdStrikeHosts
 | summarize arg_max(TimeGenerated, *) by Hostname
 | count
-""")
+""", workspace_id=workspace_id)
     total_assets = int(assets_rows[0].get("Count", 0)) if assets_rows else 0
 
     # 4. Per-device sensor health state — try MDE DeviceInfo first, fall back to CrowdStrike.
@@ -168,7 +171,7 @@ DeviceInfo
     ExposureLevel = _ExposureLevel,
     LastSeen = TimeGenerated
 | order by HealthStatus asc
-""")
+""", workspace_id=workspace_id)
     if not health_rows:
         health_rows = _safe_kql(token, """
 CrowdStrikeHosts
@@ -181,7 +184,7 @@ CrowdStrikeHosts
     ExposureLevel = iff(isnotempty(InternetExposure), InternetExposure, "Unknown")
 | project DeviceName, OnboardingStatus, HealthStatus, OSPlatform, ExposureLevel, LastSeen
 | order by HealthStatus asc
-""")
+""", workspace_id=workspace_id)
 
     # 5a. Vulnerability severity breakdown
     # DeviceTvmSoftwareVulnerabilities is a snapshot table — passing timespan excludes all rows
@@ -191,7 +194,7 @@ DeviceTvmSoftwareVulnerabilities
 | where TimeGenerated > ago(30d)
 | summarize Count = count() by VulnerabilitySeverityLevel
 | order by Count desc
-""")
+""", workspace_id=workspace_id)
 
     # 5b. Top exposed devices
     vuln_devices_rows = _safe_kql(token, """
@@ -199,7 +202,7 @@ DeviceTvmSoftwareVulnerabilities
 | where TimeGenerated > ago(30d)
 | summarize VulnCount = count() by DeviceName
 | top 20 by VulnCount desc
-""")
+""", workspace_id=workspace_id)
 
     # 6. Threat intelligence indicators by observable type.
     # Try modern ThreatIntelIndicators (STIX schema) first; fall back to the legacy
@@ -209,7 +212,7 @@ ThreatIntelIndicators
 | where IsActive == true
 | summarize Count = count() by ObservableKey
 | order by Count desc
-""", timespan)
+""", timespan, workspace_id)
 
     if not threat_rows:
         threat_rows = _safe_kql(token, """
@@ -223,7 +226,7 @@ ThreatIntelligenceIndicator
     "other")
 | summarize Count = count() by ObservableKey
 | order by Count desc
-""", timespan)
+""", timespan, workspace_id)
 
     # 7. Recent IOC entries
     ioc_rows = _safe_kql(token, """
@@ -233,7 +236,7 @@ ThreatIntelIndicators
           Tags, Confidence
 | order by TimeGenerated desc
 | take 50
-""", timespan)
+""", timespan, workspace_id)
 
     if not ioc_rows:
         ioc_rows = _safe_kql(token, """
@@ -256,7 +259,7 @@ ThreatIntelligenceIndicator
           Pattern = Description, Tags = tostring(Tags), Confidence = ConfidenceScore
 | order by TimeGenerated desc
 | take 50
-""", timespan)
+""", timespan, workspace_id)
 
     return {
         "utilization": {

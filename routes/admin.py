@@ -87,6 +87,7 @@ def api_customers_create():
     jira_project_key = request.form.get("jira_project_key", "").strip()
     jira_request_type = request.form.get("jira_request_type", "Report an Incident").strip()
     industry = request.form.get("industry", "").strip()
+    sentinel_workspace_id = request.form.get("sentinel_workspace_id", "").strip()
     default_sections = request.form.getlist("default_sections")
 
     if not name or not short_name:
@@ -114,6 +115,7 @@ def api_customers_create():
         "jira_project_key": jira_project_key,
         "jira_request_type": jira_request_type or "Report an Incident",
         "industry": industry,
+        "sentinel_workspace_id": sentinel_workspace_id,
         "logo": logo_path,
         "default_sections": default_sections or [
             "introduction", "incident_overview", "incident_severity",
@@ -146,6 +148,9 @@ def api_customers_update(cid):
         industry_val = request.form.get("industry", None)
         if industry_val is not None:
             customer["industry"] = industry_val.strip()
+        sentinel_workspace_id_val = request.form.get("sentinel_workspace_id", None)
+        if sentinel_workspace_id_val is not None:
+            customer["sentinel_workspace_id"] = sentinel_workspace_id_val.strip()
         default_sections = request.form.getlist("default_sections")
         if default_sections:
             customer["default_sections"] = default_sections
@@ -160,7 +165,7 @@ def api_customers_update(cid):
     else:
         data = request.json or {}
         for key in ("name", "short_name", "jira_project_key", "jira_request_type",
-                    "industry", "default_sections"):
+                    "industry", "sentinel_workspace_id", "default_sections"):
             if key in data:
                 customer[key] = data[key]
 

@@ -181,6 +181,11 @@
           <div style="font-size:12px; color:var(--text-muted); margin-top:4px;">The exact request type name used in this customer's Jira project. Check via the Jira "Create" dialog.</div>
         </div>
         <div class="form-group">
+          <label>Sentinel Workspace ID</label>
+          <input type="text" id="addSentinelWorkspaceId" placeholder="e.g. xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx">
+          <div style="font-size:12px; color:var(--text-muted); margin-top:4px;">Azure Log Analytics workspace ID for this customer's Microsoft Sentinel. Leave blank to use the global default.</div>
+        </div>
+        <div class="form-group">
           <label>Industry</label>
           <select id="addIndustry">
             <option value="">-- Select industry --</option>
@@ -252,6 +257,11 @@
         <div style="font-size:12px; color:var(--text-muted); margin-top:4px;">The exact request type name used in this customer's Jira project.</div>
       </div>
       <div class="form-group">
+        <label>Sentinel Workspace ID</label>
+        <input type="text" id="editSentinelWorkspaceId" placeholder="e.g. xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx">
+        <div style="font-size:12px; color:var(--text-muted); margin-top:4px;">Azure Log Analytics workspace ID for this customer's Microsoft Sentinel.</div>
+      </div>
+      <div class="form-group">
         <label>New Logo (optional)</label>
         <input type="file" id="editLogo" accept=".png,.jpg,.jpeg,.webp" style="font-size:13px; color:var(--text-muted);">
       </div>
@@ -304,11 +314,11 @@
               : `<div class="placeholder-icon">${c.short_name.charAt(0)}</div>`}
             <div>
               <div class="customer-name">${c.name}</div>
-              <div class="customer-meta">${c.short_name} | Jira: ${c.jira_project_key || 'N/A'} | Request type: ${c.jira_request_type || 'Report an Incident'} | Industry: ${c.industry || 'N/A'} | Added: ${c.created_at || 'N/A'}</div>
+              <div class="customer-meta">${c.short_name} | Jira: ${c.jira_project_key || 'N/A'} | Request type: ${c.jira_request_type || 'Report an Incident'} | Industry: ${c.industry || 'N/A'} | Sentinel WS: ${c.sentinel_workspace_id || 'global default'} | Added: ${c.created_at || 'N/A'}</div>
             </div>
           </div>
           <div class="customer-actions">
-            <button class="btn btn-secondary btn-sm" onclick="openEditModal('${c.id}', '${c.name.replace(/'/g, "\\'")}', '${c.short_name}', '${c.jira_project_key || ''}', '${c.industry || ''}', '${(c.jira_request_type || 'Report an Incident').replace(/'/g, "\\'")}')">Edit</button>
+            <button class="btn btn-secondary btn-sm" onclick="openEditModal('${c.id}', '${c.name.replace(/'/g, "\\'")}', '${c.short_name}', '${c.jira_project_key || ''}', '${c.industry || ''}', '${(c.jira_request_type || 'Report an Incident').replace(/'/g, "\\'")}', '${c.sentinel_workspace_id || ''}')">Edit</button>
             <button class="btn btn-danger btn-sm" onclick="deleteCustomer('${c.id}', '${c.name.replace(/'/g, "\\'")}')">Delete</button>
           </div>
         </div>
@@ -322,6 +332,7 @@
       fd.append('short_name', document.getElementById('addShort').value.trim());
       fd.append('jira_project_key', document.getElementById('addJiraKey').value.trim());
       fd.append('jira_request_type', document.getElementById('addRequestType').value.trim() || 'Report an Incident');
+      fd.append('sentinel_workspace_id', document.getElementById('addSentinelWorkspaceId').value.trim());
       fd.append('industry', document.getElementById('addIndustry').value);
       const logo = document.getElementById('addLogo');
       if (logo.files.length) fd.append('logo', logo.files[0]);
@@ -342,13 +353,14 @@
       loadCustomers();
     }
 
-    function openEditModal(id, name, short, jiraKey, industry, requestType) {
+    function openEditModal(id, name, short, jiraKey, industry, requestType, sentinelWorkspaceId) {
       document.getElementById('editId').value = id;
       document.getElementById('editName').value = name;
       document.getElementById('editShort').value = short;
       document.getElementById('editJiraKey').value = jiraKey;
       document.getElementById('editIndustry').value = industry || '';
       document.getElementById('editRequestType').value = requestType || 'Report an Incident';
+      document.getElementById('editSentinelWorkspaceId').value = sentinelWorkspaceId || '';
       document.getElementById('editLogo').value = '';
       document.getElementById('editModal').classList.add('active');
     }
@@ -363,6 +375,7 @@
       fd.append('short_name', document.getElementById('editShort').value.trim());
       fd.append('jira_project_key', document.getElementById('editJiraKey').value.trim());
       fd.append('jira_request_type', document.getElementById('editRequestType').value.trim() || 'Report an Incident');
+      fd.append('sentinel_workspace_id', document.getElementById('editSentinelWorkspaceId').value.trim());
       fd.append('industry', document.getElementById('editIndustry').value);
       const logo = document.getElementById('editLogo');
       if (logo.files.length) fd.append('logo', logo.files[0]);
