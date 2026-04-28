@@ -85,6 +85,7 @@ def api_customers_create():
     name = request.form.get("name", "").strip()
     short_name = request.form.get("short_name", "").strip()
     jira_project_key = request.form.get("jira_project_key", "").strip()
+    jira_request_type = request.form.get("jira_request_type", "Report an Incident").strip()
     industry = request.form.get("industry", "").strip()
     default_sections = request.form.getlist("default_sections")
 
@@ -111,6 +112,7 @@ def api_customers_create():
         "name": name,
         "short_name": short_name,
         "jira_project_key": jira_project_key,
+        "jira_request_type": jira_request_type or "Report an Incident",
         "industry": industry,
         "logo": logo_path,
         "default_sections": default_sections or [
@@ -138,6 +140,9 @@ def api_customers_update(cid):
             val = request.form.get(key, "").strip()
             if val:
                 customer[key] = val
+        jira_request_type_val = request.form.get("jira_request_type", None)
+        if jira_request_type_val is not None:
+            customer["jira_request_type"] = jira_request_type_val.strip() or "Report an Incident"
         industry_val = request.form.get("industry", None)
         if industry_val is not None:
             customer["industry"] = industry_val.strip()
@@ -154,7 +159,8 @@ def api_customers_update(cid):
             customer["logo"] = f"data/logos/{logo_filename}"
     else:
         data = request.json or {}
-        for key in ("name", "short_name", "jira_project_key", "industry", "default_sections"):
+        for key in ("name", "short_name", "jira_project_key", "jira_request_type",
+                    "industry", "default_sections"):
             if key in data:
                 customer[key] = data[key]
 

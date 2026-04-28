@@ -483,7 +483,6 @@ def _collect_report_data(config: dict) -> dict:
     start_date = config.get("start_date", "")
     end_date = config.get("end_date", "")
     csv_path = config.get("csv_path", "")
-
     if csv_path:
         result = fetch_incidents_from_csv(project_key, start_date, end_date, csv_path=csv_path)
     else:
@@ -904,6 +903,7 @@ def generate():
         use_splunk = request.form.get("use_splunk", "false").lower() == "true"
         use_socradar = request.form.get("use_socradar", "false").lower() == "true"
         customer_industry = request.form.get("customer_industry", "").strip()
+        jira_request_type = request.form.get("jira_request_type", "Report an Incident").strip()
         csv_file = request.files.get("csv_file")
     else:
         body = request.json or {}
@@ -921,6 +921,7 @@ def generate():
         use_splunk = bool(body.get("use_splunk", False))
         use_socradar = bool(body.get("use_socradar", False))
         customer_industry = body.get("customer_industry", "").strip()
+        jira_request_type = body.get("jira_request_type", "Report an Incident").strip()
         csv_file = None
 
     if not customer_name:
@@ -944,6 +945,7 @@ def generate():
         "customer_name": customer_name,
         "customer_id": customer_id,
         "jira_project_key": jira_project_key,
+        "jira_request_type": jira_request_type or "Report an Incident",
         "report_type": report_type,
         "start_date": start_date,
         "end_date": end_date,
