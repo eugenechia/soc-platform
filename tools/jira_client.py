@@ -11,13 +11,20 @@ import httpx
 logger = logging.getLogger(__name__)
 
 JIRA_URL = os.environ.get("JIRA_URL", "").rstrip("/")
-JIRA_EMAIL = os.environ.get("JIRA_EMAIL", "")
-JIRA_API_TOKEN = os.environ.get("JIRA_API_TOKEN", "")
 USE_SAMPLE_DATA = os.environ.get("USE_SAMPLE_DATA", "false").lower() == "true"
 
 
 def _jira_headers() -> dict:
-    creds = base64.b64encode(f"{JIRA_EMAIL}:{JIRA_API_TOKEN}".encode()).decode()
+    """Build the Jira REST auth header at call time.
+
+    Resolves email + token via tools.secrets.get_secret so KV-backed
+    deployments work without the credentials being smuggled into the image
+    via .env. Falls back to os.environ for dev/CI where load_dotenv() has
+    populated the process env."""
+    from tools.secrets import get_secret
+    email = get_secret("JIRA_EMAIL") or os.environ.get("JIRA_EMAIL", "")
+    token = get_secret("JIRA_API_TOKEN") or os.environ.get("JIRA_API_TOKEN", "")
+    creds = base64.b64encode(f"{email}:{token}".encode()).decode()
     return {"Authorization": f"Basic {creds}", "Accept": "application/json"}
 
 
@@ -30,6 +37,31 @@ _FIELDS = (
     "customfield_10127,"   # Resolution Summary
     "customfield_10072"    # Tactics List
 )
+
+
+def fetch_issue_by_key(issue_key: str, fields: str = "*all") -> dict | None:
+    """Fetch a single Jira issue by key. Returns the parsed JSON (with `fields`
+    populated) or None on any error. Used by the L1 Triage webhook handler to
+    re-read an issue after a short delay, since Service Desk request forms can
+    populate custom fields after the initial issue_created webhook fires."""
+    if not JIRA_URL:
+        logger.error("fetch_issue_by_key: JIRA_URL not configured")
+        return None
+    try:
+        r = httpx.get(
+            f"{JIRA_URL}/rest/api/3/issue/{issue_key}",
+            headers=_jira_headers(),
+            params={"fields": fields},
+            timeout=30,
+        )
+        if r.status_code >= 400:
+            logger.error("fetch_issue_by_key %s HTTP %s: %s",
+                         issue_key, r.status_code, r.text[:300])
+            return None
+        return r.json()
+    except Exception as e:
+        logger.error("fetch_issue_by_key %s exception: %s", issue_key, e)
+        return None
 
 
 def jira_search(jql: str, max_results: int = 100, next_page_token: str | None = None) -> dict:
@@ -51,6 +83,17 @@ def jira_search(jql: str, max_results: int = 100, next_page_token: str | None = 
         logger.error(f"jira_search HTTP {r.status_code}: {r.text[:500]}")
         return {"error": f"HTTP {r.status_code}", "detail": r.text[:500]}
     return r.json()
+
+
+# Centralised filter used by every code path that counts incidents. Keeping it
+# in one place guarantees the verifier in tools/jira_verifier.py applies the
+# exact same project + issue-type predicate as the primary fetch — otherwise
+# they could disagree purely from drift in two copies of the same string.
+DEFAULT_INCIDENT_ISSUE_TYPE = "[System] Incident"
+
+
+def _incident_jql_filter(project_key: str, issue_type: str) -> str:
+    return f'project = "{project_key}" AND issuetype = "{issue_type or DEFAULT_INCIDENT_ISSUE_TYPE}"'
 
 
 def _parse_jira_date(date_str: str) -> datetime | None:
@@ -146,7 +189,8 @@ def _date_chunks(start_date: str, end_date: str):
         current = next_day
 
 
-def fetch_incidents_for_report(project_key: str, start_date: str, end_date: str) -> dict:
+def fetch_incidents_for_report(project_key: str, start_date: str, end_date: str,
+                               incident_issue_type: str = DEFAULT_INCIDENT_ISSUE_TYPE) -> dict:
     if USE_SAMPLE_DATA:
         return fetch_incidents_from_csv(project_key, start_date, end_date)
 
@@ -155,8 +199,7 @@ def fetch_incidents_for_report(project_key: str, start_date: str, end_date: str)
 
     for chunk_start, chunk_end in _date_chunks(start_date, end_date):
         jql = (
-            f'project = "{project_key}" '
-            f'AND issuetype = "[System] Incident" '
+            f'{_incident_jql_filter(project_key, incident_issue_type)} '
             f'AND created >= "{chunk_start}" '
             f'AND created < "{chunk_end}" '
             f'ORDER BY created DESC'
@@ -315,29 +358,54 @@ def _fetch_jira_by_type(issue_type: str, project_key: str,
     return {"items": items, "stats": stats, "unavailable": False}
 
 
-def fetch_service_requests(project_key: str, start_date: str, end_date: str) -> dict:
-    """Fetch Service Request tickets from Jira for the given project and date range."""
+def fetch_service_requests(project_key: str, start_date: str, end_date: str,
+                           issue_type: str = "Service Request") -> dict:
+    """Fetch Service Request tickets from Jira for the given project and date range.
+
+    The issue_type defaults to the canonical Atlassian/JSM name "Service Request",
+    but customers whose Jira project uses a different label (e.g.
+    "Service Desk Request") can override this per customer in the admin UI."""
     try:
-        return _fetch_jira_by_type("Service Request", project_key, start_date, end_date)
+        return _fetch_jira_by_type(issue_type or "Service Request", project_key,
+                                   start_date, end_date)
     except Exception as e:
         logger.warning(f"fetch_service_requests exception: {e}")
         return {"items": [], "stats": {}, "unavailable": True}
 
 
-def fetch_change_requests(project_key: str, start_date: str, end_date: str) -> dict:
-    """Fetch Change Request tickets from Jira for the given project and date range."""
+def fetch_change_requests(project_key: str, start_date: str, end_date: str,
+                          issue_type: str = "Change") -> dict:
+    """Fetch Change Request tickets from Jira for the given project and date range.
+
+    The issue_type defaults to "Change" (the JSM canonical name); per-customer
+    overrides are supported for projects using alternatives like "RFC" or
+    "Change Management"."""
     try:
-        return _fetch_jira_by_type("Change", project_key, start_date, end_date)
+        return _fetch_jira_by_type(issue_type or "Change", project_key,
+                                   start_date, end_date)
     except Exception as e:
         logger.warning(f"fetch_change_requests exception: {e}")
         return {"items": [], "stats": {}, "unavailable": True}
 
 
-def _fetch_month_count(project_key: str, month_start: str, month_end: str) -> int:
-    """Return the count of incidents for a single month window using cursor pagination."""
+# Sanity bound on the per-month pagination loop. Far above any plausible
+# incident volume — its only job is to prevent a runaway loop if Jira ever
+# misbehaves. NOT a truncation cap on real data.
+_MONTHLY_FETCH_SAFETY_BOUND = 200_000
+
+
+def _fetch_month_count(project_key: str, month_start: str, month_end: str,
+                       issue_type: str = DEFAULT_INCIDENT_ISSUE_TYPE) -> int:
+    """Return the count of incidents for a single month window using cursor pagination.
+
+    Uses full pagination — the loop terminates naturally on `isLast` /
+    missing nextPageToken / empty page. The safety bound only protects
+    against an upstream API bug that would otherwise spin forever; if it is
+    ever hit on real data, that is a data-integrity incident, not a normal
+    truncation, and is logged at WARNING.
+    """
     jql = (
-        f'project = "{project_key}" '
-        f'AND issuetype = "[System] Incident" '
+        f'{_incident_jql_filter(project_key, issue_type)} '
         f'AND created >= "{month_start}" '
         f'AND created < "{month_end}" '
         f'ORDER BY created ASC'
@@ -345,7 +413,7 @@ def _fetch_month_count(project_key: str, month_start: str, month_end: str) -> in
     logger.info("_fetch_month_count JQL: %s", jql)
     count = 0
     next_token = None
-    while count < 10000:
+    while count < _MONTHLY_FETCH_SAFETY_BOUND:
         params: dict = {"jql": jql, "maxResults": 100, "fields": "created"}
         if next_token:
             params["nextPageToken"] = next_token
@@ -365,11 +433,18 @@ def _fetch_month_count(project_key: str, month_start: str, month_end: str) -> in
         next_token = data.get("nextPageToken")
         if not issues or not next_token or data.get("isLast") is True:
             break
+    if count >= _MONTHLY_FETCH_SAFETY_BOUND:
+        logger.warning(
+            "_fetch_month_count hit safety bound %d for %s — month count may be truncated. "
+            "This is unexpected; investigate JIRA volume or pagination behaviour.",
+            _MONTHLY_FETCH_SAFETY_BOUND, month_start,
+        )
     logger.info("_fetch_month_count %s: %d issues", month_start, count)
     return count
 
 
-def fetch_monthly_counts_12m(project_key: str, end_date: str) -> dict:
+def fetch_monthly_counts_12m(project_key: str, end_date: str,
+                             incident_issue_type: str = DEFAULT_INCIDENT_ISSUE_TYPE) -> dict:
     """Fetch incident counts per month for the 12 months ending at end_date.
 
     Queries one month at a time so that months with large issue counts (e.g. 700+)
@@ -393,7 +468,7 @@ def fetch_monthly_counts_12m(project_key: str, end_date: str) -> dict:
         month_key = m.strftime("%Y-%m")
         month_start = m.strftime("%Y-%m-%d")
         month_end = (m + relativedelta(months=1)).strftime("%Y-%m-%d")
-        count = _fetch_month_count(project_key, month_start, month_end)
+        count = _fetch_month_count(project_key, month_start, month_end, issue_type=incident_issue_type)
         monthly_counts[month_key] = count
         logger.info("fetch_monthly_counts_12m(%s): %s = %d", project_key, month_key, count)
 

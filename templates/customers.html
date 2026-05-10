@@ -46,6 +46,7 @@
       padding: 6px 12px; border-radius: var(--radius-sm); transition: all 0.2s;
     }
     .header-nav a:hover { color: var(--accent); background: var(--accent-light); }
+    .header-nav a.active { color: var(--accent); background: var(--accent-light); }
 
     .theme-toggle {
       background: var(--bg-raised); border: 1px solid var(--border); border-radius: 20px;
@@ -78,7 +79,7 @@
       display: block; font-size: 13px; font-weight: 600; color: var(--text-muted);
       text-transform: uppercase; letter-spacing: 0.4px; margin-bottom: 6px;
     }
-    .form-group input[type="text"], .form-group select {
+    .form-group input[type="text"], .form-group input[type="password"], .form-group select {
       width: 100%; padding: 10px 14px; background: var(--bg-raised);
       border: 1px solid var(--border); border-radius: var(--radius-sm);
       color: var(--text-primary); font-size: 14px; outline: none; transition: border-color 0.2s;
@@ -123,25 +124,74 @@
     .modal-overlay {
       display: none; position: fixed; top: 0; left: 0; right: 0; bottom: 0;
       background: rgba(0,0,0,0.4); z-index: 200; align-items: center; justify-content: center;
+      padding: 20px;
     }
     .modal-overlay.active { display: flex; }
     .modal {
       background: var(--bg-surface); border-radius: var(--radius); padding: 28px;
-      width: 100%; max-width: 500px; box-shadow: 0 8px 24px rgba(0,0,0,0.2);
+      width: 100%; max-width: 720px; max-height: 90vh; overflow-y: auto;
+      box-shadow: 0 8px 24px rgba(0,0,0,0.2);
     }
     .modal h3 { margin-bottom: 16px; }
     .modal-actions { display: flex; gap: 10px; justify-content: flex-end; margin-top: 20px; }
+
+    /* Section grid (mirrors reports.html). Used to manage default report sections per customer. */
+    .section-grid { display: flex; flex-direction: column; }
+    .section-group-heading {
+      display: flex; align-items: center;
+      font-size: 13px; font-weight: 700; color: var(--accent);
+      text-transform: uppercase; letter-spacing: 0.5px;
+      padding: 8px 0 4px; margin-top: 12px;
+      border-bottom: 1px solid var(--border);
+    }
+    .section-group-heading:first-child { margin-top: 0; }
+    .section-subgrid {
+      display: grid; grid-template-columns: 1fr;
+      gap: 8px; margin: 8px 0;
+    }
+    .section-item {
+      display: flex; align-items: center; gap: 10px;
+      padding: 10px 14px;
+      background: var(--bg-raised); border: 1px solid var(--border);
+      border-radius: var(--radius-sm);
+      transition: all 0.2s; font-size: 14px;
+    }
+    .section-item:hover { border-color: var(--accent); }
+    .section-item input[type="checkbox"] {
+      accent-color: var(--accent); width: 16px; height: 16px; cursor: pointer;
+    }
+    .section-item .section-label { flex: 1; cursor: pointer; }
+    .section-item .order-buttons { display: flex; gap: 4px; }
+    .section-item .order-btn {
+      background: transparent; border: 1px solid var(--border);
+      color: var(--text-muted); width: 24px; height: 24px;
+      border-radius: 4px; cursor: pointer; font-size: 11px; line-height: 1;
+      display: flex; align-items: center; justify-content: center;
+      transition: all 0.15s;
+    }
+    .section-item .order-btn:hover:not(:disabled) {
+      color: var(--accent); border-color: var(--accent);
+    }
+    .section-item .order-btn:disabled { opacity: 0.3; cursor: not-allowed; }
+    .select-btns { margin-bottom: 12px; display: flex; gap: 8px; flex-wrap: wrap; }
+    .help-hint {
+      font-size: 12px; color: var(--text-muted); margin-bottom: 10px;
+    }
   </style>
 </head>
 <body>
   <div class="header">
     <div class="header-left">
-      <img src="/static/Logo.webp" alt="Logicalis">
-      <h1>Manage Customers</h1>
+      <a href="/reports/" style="display:flex; align-items:center; gap:12px; text-decoration:none; color:var(--text-primary);">
+        <img src="/static/Logo.webp" alt="Logicalis">
+        <h1>Manage Customers</h1>
+      </a>
     </div>
     <div class="header-right">
       <nav class="header-nav">
-        <a href="/reports/">Home</a>
+        <a href="/" title="Switch mode (back to SOC Platform launcher)">← Main</a>
+        <a href="/reports/">Reports</a>
+        <a href="/admin/customers" class="active">Manage Customers</a>
         <a href="/admin/history">Report History</a>
         <a href="/admin/schedules">Schedules</a>
       </nav>
@@ -177,13 +227,45 @@
         </div>
         <div class="form-group">
           <label>Jira Request Type</label>
-          <input type="text" id="addRequestType" placeholder="e.g. Report a Security Incident" value="Report an Incident">
+          <input type="text" id="addRequestType" placeholder="e.g. Report an Incident" value="Report an Incident">
           <div style="font-size:12px; color:var(--text-muted); margin-top:4px;">The exact request type name used in this customer's Jira project. Check via the Jira "Create" dialog.</div>
+        </div>
+        <div class="form-group">
+          <label>Jira Incident Issue Type</label>
+          <input type="text" id="addIncidentIssueType" placeholder="[System] Incident" value="[System] Incident">
+          <div style="font-size:12px; color:var(--text-muted); margin-top:4px;">Issue type label for security incidents in this customer's Jira (e.g. "[System] Incident", "Incident", "Security Incident"). Reports show zero incidents if this doesn't match the project's actual issue type.</div>
+        </div>
+        <div class="form-row">
+          <div class="form-group">
+            <label>Jira Service Request Issue Type</label>
+            <input type="text" id="addSrIssueType" placeholder="Service Request" value="Service Request">
+            <div style="font-size:12px; color:var(--text-muted); margin-top:4px;">Issue type label for service requests in this customer's Jira (e.g. "Service Request", "Service Desk Request"). Defaults to the JSM standard.</div>
+          </div>
+          <div class="form-group">
+            <label>Jira Change Request Issue Type</label>
+            <input type="text" id="addCrIssueType" placeholder="Change" value="Change">
+            <div style="font-size:12px; color:var(--text-muted); margin-top:4px;">Issue type label for change requests (e.g. "Change", "Change Management", "RFC"). Defaults to the JSM standard.</div>
+          </div>
         </div>
         <div class="form-group">
           <label>Sentinel Workspace ID</label>
           <input type="text" id="addSentinelWorkspaceId" placeholder="e.g. xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx">
-          <div style="font-size:12px; color:var(--text-muted); margin-top:4px;">Azure Log Analytics workspace ID for this customer's Microsoft Sentinel. Leave blank to use the global default.</div>
+          <div style="font-size:12px; color:var(--text-muted); margin-top:4px;">Azure Log Analytics workspace ID for this customer's Microsoft Sentinel.</div>
+        </div>
+        <div class="form-group">
+          <label>Sentinel Tenant ID</label>
+          <input type="text" id="addSentinelTenantId" placeholder="e.g. xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx">
+          <div style="font-size:12px; color:var(--text-muted); margin-top:4px;">Customer's Azure AD tenant where the Sentinel workspace lives.</div>
+        </div>
+        <div class="form-group">
+          <label>Sentinel Client ID</label>
+          <input type="text" id="addSentinelClientId" placeholder="e.g. xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx">
+          <div style="font-size:12px; color:var(--text-muted); margin-top:4px;">Application (client) ID of the SP the customer registered for SOC report access.</div>
+        </div>
+        <div class="form-group">
+          <label>Sentinel Client Secret</label>
+          <input type="password" id="addSentinelClientSecret" autocomplete="new-password" placeholder="Paste the secret value">
+          <div style="font-size:12px; color:var(--text-muted); margin-top:4px;">Stored in Azure Key Vault. Never displayed back after save.</div>
         </div>
         <div class="form-group">
           <label>Industry</label>
@@ -194,11 +276,26 @@
             <option value="Academia">Academia</option>
             <option value="Enterprise">Enterprise</option>
             <option value="Government">Government</option>
+            <option value="Information Technology">Information Technology</option>
           </select>
         </div>
         <div class="form-group">
           <label>Logo (optional)</label>
           <input type="file" id="addLogo" accept=".png,.jpg,.jpeg,.webp" style="font-size:13px; color:var(--text-muted);">
+        </div>
+        <div class="form-group">
+          <label>Default Report Sections</label>
+          <div class="help-hint">
+            Sections pre-ticked when this customer is selected for report generation. Use the up/down arrows to reorder sections within a source group. Operator can still override per-report.
+          </div>
+          <div class="select-btns">
+            <button type="button" class="btn btn-secondary btn-sm" onclick="selectAllCustomerSections('add', true)">Select All</button>
+            <button type="button" class="btn btn-secondary btn-sm" onclick="selectAllCustomerSections('add', false)">Deselect All</button>
+            <button type="button" class="btn btn-secondary btn-sm" onclick="resetCustomerSections('add')">Reset to System Defaults</button>
+          </div>
+          <div class="section-grid" id="addSectionGrid">
+            <div style="color:var(--text-muted); font-size:13px;">Loading sections...</div>
+          </div>
         </div>
         <button type="submit" class="btn btn-primary">Add Customer</button>
       </form>
@@ -249,12 +346,30 @@
           <option value="Academia">Academia</option>
           <option value="Enterprise">Enterprise</option>
           <option value="Government">Government</option>
+          <option value="Information Technology">Information Technology</option>
         </select>
       </div>
       <div class="form-group">
         <label>Jira Request Type</label>
-        <input type="text" id="editRequestType" placeholder="e.g. Report a Security Incident">
+        <input type="text" id="editRequestType" placeholder="e.g. Report an Incident">
         <div style="font-size:12px; color:var(--text-muted); margin-top:4px;">The exact request type name used in this customer's Jira project.</div>
+      </div>
+      <div class="form-group">
+        <label>Jira Incident Issue Type</label>
+        <input type="text" id="editIncidentIssueType" placeholder="[System] Incident">
+        <div style="font-size:12px; color:var(--text-muted); margin-top:4px;">Issue type label for security incidents (e.g. "[System] Incident", "Incident", "Security Incident"). Reports show zero incidents if this doesn't match.</div>
+      </div>
+      <div class="form-row">
+        <div class="form-group">
+          <label>Jira Service Request Issue Type</label>
+          <input type="text" id="editSrIssueType" placeholder="Service Request">
+          <div style="font-size:12px; color:var(--text-muted); margin-top:4px;">Issue type label for service requests (e.g. "Service Request", "Service Desk Request").</div>
+        </div>
+        <div class="form-group">
+          <label>Jira Change Request Issue Type</label>
+          <input type="text" id="editCrIssueType" placeholder="Change">
+          <div style="font-size:12px; color:var(--text-muted); margin-top:4px;">Issue type label for change requests (e.g. "Change", "Change Management", "RFC").</div>
+        </div>
       </div>
       <div class="form-group">
         <label>Sentinel Workspace ID</label>
@@ -262,8 +377,37 @@
         <div style="font-size:12px; color:var(--text-muted); margin-top:4px;">Azure Log Analytics workspace ID for this customer's Microsoft Sentinel.</div>
       </div>
       <div class="form-group">
+        <label>Sentinel Tenant ID</label>
+        <input type="text" id="editSentinelTenantId" placeholder="e.g. xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx">
+        <div style="font-size:12px; color:var(--text-muted); margin-top:4px;">Customer's Azure AD tenant where the Sentinel workspace lives.</div>
+      </div>
+      <div class="form-group">
+        <label>Sentinel Client ID</label>
+        <input type="text" id="editSentinelClientId" placeholder="e.g. xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx">
+        <div style="font-size:12px; color:var(--text-muted); margin-top:4px;">Application (client) ID of the SP the customer registered for SOC report access.</div>
+      </div>
+      <div class="form-group">
+        <label>Sentinel Client Secret</label>
+        <input type="password" id="editSentinelClientSecret" autocomplete="new-password" placeholder="••••• (already set — leave blank to keep)">
+        <div style="font-size:12px; color:var(--text-muted); margin-top:4px;">Type a new value to rotate. Leave blank to keep the existing Key Vault secret untouched.</div>
+      </div>
+      <div class="form-group">
         <label>New Logo (optional)</label>
         <input type="file" id="editLogo" accept=".png,.jpg,.jpeg,.webp" style="font-size:13px; color:var(--text-muted);">
+      </div>
+      <div class="form-group">
+        <label>Default Report Sections</label>
+        <div class="help-hint">
+          Sections pre-ticked when this customer is selected for report generation. Use the up/down arrows to reorder sections within a source group. Operator can still override per-report.
+        </div>
+        <div class="select-btns">
+          <button type="button" class="btn btn-secondary btn-sm" onclick="selectAllCustomerSections('edit', true)">Select All</button>
+          <button type="button" class="btn btn-secondary btn-sm" onclick="selectAllCustomerSections('edit', false)">Deselect All</button>
+          <button type="button" class="btn btn-secondary btn-sm" onclick="resetCustomerSections('edit')">Reset to System Defaults</button>
+        </div>
+        <div class="section-grid" id="editSectionGrid">
+          <div style="color:var(--text-muted); font-size:13px;">Loading sections...</div>
+        </div>
       </div>
       <div class="modal-actions">
         <button class="btn btn-secondary" onclick="closeEditModal()">Cancel</button>
@@ -296,17 +440,58 @@
       }
     }
 
+    // Cached state. Both populated on page load, refreshed on customer changes.
+    let allCustomers = [];
+    let allSections = [];
+
+    // Same baseline list used by the Generate Report wizard's system fallback
+    // and by the backend create handler. Keep these three in sync.
+    const SYSTEM_DEFAULT_SECTIONS = [
+      'introduction', 'incident_overview', 'incident_severity',
+      'incident_status', 'incident_details',
+      'service_requests', 'change_requests',
+      'pending_tickets', 'monitoring_scope', 'recommendations',
+      'industry_threat_intel'
+    ];
+
+    const SOURCE_LABELS = {
+      jira: 'Jira',
+      splunk: 'Splunk',
+      sentinel: 'Microsoft Sentinel',
+      socradar: 'SOCRadar',
+      general: 'General'
+    };
+    const SOURCE_ORDER = ['jira', 'splunk', 'sentinel', 'socradar', 'general'];
+
+    // Per-modal working state. Each modal tracks (a) the current intra-group
+    // ordering of selected section IDs, and (b) which IDs are ticked. Order
+    // is honored when the form is submitted.
+    const sectionState = {
+      add:  { selected: [...SYSTEM_DEFAULT_SECTIONS] },
+      edit: { selected: [] }
+    };
+
+    async function loadSections() {
+      const r = await fetch('/reports/api/sections');
+      allSections = await r.json();
+    }
+
     async function loadCustomers() {
       const r = await fetch('/admin/api/customers');
-      const customers = await r.json();
+      allCustomers = await r.json();
       const list = document.getElementById('customerList');
 
-      if (!customers.length) {
+      if (!allCustomers.length) {
         list.innerHTML = '<div style="color:var(--text-muted); text-align:center; padding:24px;">No customers yet. Add one above.</div>';
         return;
       }
 
-      list.innerHTML = customers.map(c => `
+      list.innerHTML = allCustomers.map(c => {
+        const sectionCount = (c.default_sections || []).length;
+        const sectionLabel = sectionCount > 0
+          ? `${sectionCount} section${sectionCount === 1 ? '' : 's'}`
+          : 'no sections (system fallback)';
+        return `
         <div class="customer-row">
           <div class="customer-info">
             ${c.logo
@@ -314,15 +499,165 @@
               : `<div class="placeholder-icon">${c.short_name.charAt(0)}</div>`}
             <div>
               <div class="customer-name">${c.name}</div>
-              <div class="customer-meta">${c.short_name} | Jira: ${c.jira_project_key || 'N/A'} | Request type: ${c.jira_request_type || 'Report an Incident'} | Industry: ${c.industry || 'N/A'} | Sentinel WS: ${c.sentinel_workspace_id || 'global default'} | Added: ${c.created_at || 'N/A'}</div>
+              <div class="customer-meta">${c.short_name} | Jira: ${c.jira_project_key || 'N/A'} | Request type: ${c.jira_request_type || 'Report an Incident'} | Industry: ${c.industry || 'N/A'} | Sentinel WS: ${c.sentinel_workspace_id || 'global default'} | Defaults: ${sectionLabel} | Added: ${c.created_at || 'N/A'}</div>
             </div>
           </div>
           <div class="customer-actions">
-            <button class="btn btn-secondary btn-sm" onclick="openEditModal('${c.id}', '${c.name.replace(/'/g, "\\'")}', '${c.short_name}', '${c.jira_project_key || ''}', '${c.industry || ''}', '${(c.jira_request_type || 'Report an Incident').replace(/'/g, "\\'")}', '${c.sentinel_workspace_id || ''}')">Edit</button>
+            <button class="btn btn-secondary btn-sm" onclick="openEditModal('${c.id}')">Edit</button>
             <button class="btn btn-danger btn-sm" onclick="deleteCustomer('${c.id}', '${c.name.replace(/'/g, "\\'")}')">Delete</button>
           </div>
         </div>
-      `).join('');
+        `;
+      }).join('');
+    }
+
+    // Render the section grid for a modal. `prefix` is 'add' or 'edit'.
+    // `selectedIds` is the customer's saved order — selected sections are
+    // rendered first (in that order) within each source group, then any
+    // unselected sections are appended in REPORT_SECTIONS order.
+    function renderCustomerSectionGrid(prefix, selectedIds) {
+      const grid = document.getElementById(prefix + 'SectionGrid');
+      if (!grid) return;
+
+      sectionState[prefix].selected = [...selectedIds];
+
+      grid.innerHTML = '';
+      if (!allSections.length) {
+        grid.innerHTML = '<div style="color:var(--text-muted); font-size:13px;">No sections available.</div>';
+        return;
+      }
+
+      // Group all known sections by source.
+      const grouped = {};
+      allSections.forEach(s => {
+        const src = s.source || 'other';
+        if (!grouped[src]) grouped[src] = [];
+        grouped[src].push(s);
+      });
+
+      const selSet = new Set(selectedIds);
+
+      SOURCE_ORDER.forEach(src => {
+        const items = grouped[src];
+        if (!items || !items.length) return;
+
+        // Selected sections in customer order, then unselected in catalog order.
+        const orderedSelected = selectedIds
+          .map(id => items.find(it => it.id === id))
+          .filter(Boolean);
+        const remaining = items.filter(it => !selSet.has(it.id));
+        const orderedItems = [...orderedSelected, ...remaining];
+
+        const heading = document.createElement('div');
+        heading.className = 'section-group-heading';
+        heading.innerHTML = `<span>${SOURCE_LABELS[src] || src}</span>`;
+        grid.appendChild(heading);
+
+        const subgrid = document.createElement('div');
+        subgrid.className = 'section-subgrid';
+
+        orderedItems.forEach((s, idxInGroup) => {
+          const checked = selSet.has(s.id);
+          const isFirstSelected = checked && idxInGroup === 0;
+          const isLastSelected = checked && (
+            idxInGroup === orderedSelected.length - 1
+          );
+
+          const item = document.createElement('div');
+          item.className = 'section-item';
+          item.dataset.source = src;
+          item.dataset.sectionId = s.id;
+          item.innerHTML = `
+            <input type="checkbox" id="${prefix}_sec_${s.id}"
+                   data-section="${s.id}" ${checked ? 'checked' : ''}
+                   onchange="onSectionToggle('${prefix}', '${s.id}', this.checked)">
+            <label class="section-label" for="${prefix}_sec_${s.id}">${s.label}</label>
+            <div class="order-buttons">
+              <button type="button" class="order-btn"
+                      onclick="moveSection('${prefix}', '${s.id}', -1)"
+                      ${(!checked || isFirstSelected) ? 'disabled' : ''}
+                      title="Move up within ${SOURCE_LABELS[src] || src} group">▲</button>
+              <button type="button" class="order-btn"
+                      onclick="moveSection('${prefix}', '${s.id}', 1)"
+                      ${(!checked || isLastSelected) ? 'disabled' : ''}
+                      title="Move down within ${SOURCE_LABELS[src] || src} group">▼</button>
+            </div>
+          `;
+          subgrid.appendChild(item);
+        });
+
+        grid.appendChild(subgrid);
+      });
+    }
+
+    function getSectionMeta(id) {
+      return allSections.find(s => s.id === id);
+    }
+
+    function onSectionToggle(prefix, sectionId, checked) {
+      const state = sectionState[prefix];
+      if (checked) {
+        if (!state.selected.includes(sectionId)) state.selected.push(sectionId);
+      } else {
+        state.selected = state.selected.filter(id => id !== sectionId);
+      }
+      renderCustomerSectionGrid(prefix, state.selected);
+    }
+
+    // Move a section up or down within its own source group only.
+    // Cross-group moves are intentionally not supported — source group order
+    // is fixed in the report generator.
+    function moveSection(prefix, sectionId, delta) {
+      const state = sectionState[prefix];
+      const sectionMeta = getSectionMeta(sectionId);
+      if (!sectionMeta) return;
+      const src = sectionMeta.source;
+
+      const inGroup = state.selected.filter(id => {
+        const m = getSectionMeta(id);
+        return m && m.source === src;
+      });
+      const idxInGroup = inGroup.indexOf(sectionId);
+      const newIdxInGroup = idxInGroup + delta;
+      if (newIdxInGroup < 0 || newIdxInGroup >= inGroup.length) return;
+
+      // Swap in the within-group list, then rebuild full selected list
+      // by interleaving each source group's items at their existing positions.
+      [inGroup[idxInGroup], inGroup[newIdxInGroup]] =
+        [inGroup[newIdxInGroup], inGroup[idxInGroup]];
+
+      // Rebuild state.selected: walk the original order, replacing items of
+      // this source with the new in-group order while preserving slots of
+      // other-source items.
+      let groupCursor = 0;
+      state.selected = state.selected.map(id => {
+        const m = getSectionMeta(id);
+        if (m && m.source === src) {
+          return inGroup[groupCursor++];
+        }
+        return id;
+      });
+
+      renderCustomerSectionGrid(prefix, state.selected);
+    }
+
+    function selectAllCustomerSections(prefix, checked) {
+      if (checked) {
+        // Add anything not already selected, preserving existing order.
+        const existing = new Set(sectionState[prefix].selected);
+        const additions = allSections
+          .map(s => s.id)
+          .filter(id => !existing.has(id));
+        sectionState[prefix].selected = [...sectionState[prefix].selected, ...additions];
+      } else {
+        sectionState[prefix].selected = [];
+      }
+      renderCustomerSectionGrid(prefix, sectionState[prefix].selected);
+    }
+
+    function resetCustomerSections(prefix) {
+      sectionState[prefix].selected = [...SYSTEM_DEFAULT_SECTIONS];
+      renderCustomerSectionGrid(prefix, sectionState[prefix].selected);
     }
 
     async function addCustomer(e) {
@@ -332,10 +667,22 @@
       fd.append('short_name', document.getElementById('addShort').value.trim());
       fd.append('jira_project_key', document.getElementById('addJiraKey').value.trim());
       fd.append('jira_request_type', document.getElementById('addRequestType').value.trim() || 'Report an Incident');
+      fd.append('jira_incident_issuetype', document.getElementById('addIncidentIssueType').value.trim() || '[System] Incident');
+      fd.append('jira_service_request_issuetype', document.getElementById('addSrIssueType').value.trim() || 'Service Request');
+      fd.append('jira_change_request_issuetype', document.getElementById('addCrIssueType').value.trim() || 'Change');
       fd.append('sentinel_workspace_id', document.getElementById('addSentinelWorkspaceId').value.trim());
+      fd.append('sentinel_tenant_id', document.getElementById('addSentinelTenantId').value.trim());
+      fd.append('sentinel_client_id', document.getElementById('addSentinelClientId').value.trim());
+      fd.append('sentinel_client_secret', document.getElementById('addSentinelClientSecret').value);
       fd.append('industry', document.getElementById('addIndustry').value);
       const logo = document.getElementById('addLogo');
       if (logo.files.length) fd.append('logo', logo.files[0]);
+
+      // Submit selected sections in the operator's chosen order. The marker
+      // tells the backend "this field was managed in the form" so it persists
+      // even an empty list.
+      fd.append('default_sections_submitted', '1');
+      sectionState.add.selected.forEach(id => fd.append('default_sections', id));
 
       const r = await fetch('/admin/api/customers', { method: 'POST', body: fd });
       if (!r.ok) {
@@ -344,6 +691,9 @@
         return;
       }
       document.getElementById('addForm').reset();
+      // Reset the in-memory section state for the next customer.
+      sectionState.add.selected = [...SYSTEM_DEFAULT_SECTIONS];
+      renderCustomerSectionGrid('add', sectionState.add.selected);
       loadCustomers();
     }
 
@@ -353,15 +703,41 @@
       loadCustomers();
     }
 
-    function openEditModal(id, name, short, jiraKey, industry, requestType, sentinelWorkspaceId) {
-      document.getElementById('editId').value = id;
-      document.getElementById('editName').value = name;
-      document.getElementById('editShort').value = short;
-      document.getElementById('editJiraKey').value = jiraKey;
-      document.getElementById('editIndustry').value = industry || '';
-      document.getElementById('editRequestType').value = requestType || 'Report an Incident';
-      document.getElementById('editSentinelWorkspaceId').value = sentinelWorkspaceId || '';
+    function openEditModal(id) {
+      const c = allCustomers.find(x => x.id === id);
+      if (!c) {
+        alert('Customer not found. Refreshing list.');
+        loadCustomers();
+        return;
+      }
+      document.getElementById('editId').value = c.id;
+      document.getElementById('editName').value = c.name || '';
+      document.getElementById('editShort').value = c.short_name || '';
+      document.getElementById('editJiraKey').value = c.jira_project_key || '';
+      document.getElementById('editIndustry').value = c.industry || '';
+      document.getElementById('editRequestType').value = c.jira_request_type || 'Report an Incident';
+      document.getElementById('editIncidentIssueType').value = c.jira_incident_issuetype || '[System] Incident';
+      document.getElementById('editSrIssueType').value = c.jira_service_request_issuetype || 'Service Request';
+      document.getElementById('editCrIssueType').value = c.jira_change_request_issuetype || 'Change';
+      document.getElementById('editSentinelWorkspaceId').value = c.sentinel_workspace_id || '';
+      document.getElementById('editSentinelTenantId').value = c.sentinel_tenant_id || '';
+      document.getElementById('editSentinelClientId').value = c.sentinel_client_id || '';
+      // Never pre-populate the secret field. Adjust placeholder to indicate state.
+      const secretEl = document.getElementById('editSentinelClientSecret');
+      secretEl.value = '';
+      secretEl.placeholder = c.sentinel_client_secret_kv_name
+        ? '••••• (already set — leave blank to keep)'
+        : 'Paste the secret value';
       document.getElementById('editLogo').value = '';
+
+      // Render the section grid using the customer's saved order. If the
+      // record predates this feature and has no default_sections, fall back
+      // to system defaults so the operator has a sensible starting point.
+      const saved = (c.default_sections && c.default_sections.length)
+        ? c.default_sections
+        : SYSTEM_DEFAULT_SECTIONS;
+      renderCustomerSectionGrid('edit', saved);
+
       document.getElementById('editModal').classList.add('active');
     }
     function closeEditModal() {
@@ -375,10 +751,23 @@
       fd.append('short_name', document.getElementById('editShort').value.trim());
       fd.append('jira_project_key', document.getElementById('editJiraKey').value.trim());
       fd.append('jira_request_type', document.getElementById('editRequestType').value.trim() || 'Report an Incident');
+      fd.append('jira_incident_issuetype', document.getElementById('editIncidentIssueType').value.trim() || '[System] Incident');
+      fd.append('jira_service_request_issuetype', document.getElementById('editSrIssueType').value.trim() || 'Service Request');
+      fd.append('jira_change_request_issuetype', document.getElementById('editCrIssueType').value.trim() || 'Change');
       fd.append('sentinel_workspace_id', document.getElementById('editSentinelWorkspaceId').value.trim());
+      fd.append('sentinel_tenant_id', document.getElementById('editSentinelTenantId').value.trim());
+      fd.append('sentinel_client_id', document.getElementById('editSentinelClientId').value.trim());
+      // Only send the secret when the operator typed something in. Blank value =
+      // "leave existing KV secret untouched" (handled server-side).
+      const secretVal = document.getElementById('editSentinelClientSecret').value;
+      if (secretVal) fd.append('sentinel_client_secret', secretVal);
       fd.append('industry', document.getElementById('editIndustry').value);
       const logo = document.getElementById('editLogo');
       if (logo.files.length) fd.append('logo', logo.files[0]);
+
+      // Always send the marker on save so an emptied list overwrites cleanly.
+      fd.append('default_sections_submitted', '1');
+      sectionState.edit.selected.forEach(sid => fd.append('default_sections', sid));
 
       const r = await fetch(`/admin/api/customers/${id}`, { method: 'PUT', body: fd });
       if (!r.ok) {
@@ -406,8 +795,13 @@
       input.value = '';
     }
 
-    initTheme();
-    loadCustomers();
+    async function init() {
+      initTheme();
+      await loadSections();
+      renderCustomerSectionGrid('add', sectionState.add.selected);
+      loadCustomers();
+    }
+    init();
   </script>
 </body>
 </html>

@@ -1,46 +1,36 @@
-import os
 import logging
+from datetime import datetime
 
+from dateutil.relativedelta import relativedelta
 import httpx
 
 logger = logging.getLogger(__name__)
 
-WORKSPACE_ID = os.environ.get("SENTINEL_WORKSPACE_ID", "")
-
 _LOG_ANALYTICS_SCOPE = "https://api.loganalytics.io/.default"
 
 
-def _get_access_token() -> str:
-    # Resolve credentials at call time so Key Vault secrets are available.
-    from tools.secrets import get_secret
-    tenant_id = get_secret("SENTINEL_TENANT_ID")
-    client_id = get_secret("SENTINEL_CLIENT_ID")
-    client_secret = get_secret("SENTINEL_CLIENT_SECRET")
+def _get_access_token(tenant_id: str, client_id: str, client_secret: str) -> str:
+    """Acquire a Log Analytics access token using the customer's own SP credentials.
 
-    # If explicit service principal credentials are configured, use them directly.
-    # Required when Sentinel lives in a different tenant from the Container App's
-    # Managed Identity — DefaultAzureCredential would get a token for the wrong tenant.
-    if all([tenant_id, client_id, client_secret]):
-        url = f"https://login.microsoftonline.com/{tenant_id}/oauth2/v2.0/token"
-        r = httpx.post(url, data={
-            "grant_type": "client_credentials",
-            "client_id": client_id,
-            "client_secret": client_secret,
-            "scope": _LOG_ANALYTICS_SCOPE,
-        }, timeout=30)
-        r.raise_for_status()
-        return r.json()["access_token"]
-
-    # Fallback: same-tenant Managed Identity (no explicit credentials configured)
-    from azure.identity import DefaultAzureCredential
-    cred = DefaultAzureCredential(exclude_interactive_browser_credential=True)
-    token = cred.get_token(_LOG_ANALYTICS_SCOPE)
-    return token.token
+    Each customer brings their own SP that lives in their tenant and has
+    Log Analytics Reader on their Sentinel workspace — see the per-customer
+    onboarding flow. The token is issued by `tenant_id`, which must match the
+    workspace's home tenant.
+    """
+    url = f"https://login.microsoftonline.com/{tenant_id}/oauth2/v2.0/token"
+    r = httpx.post(url, data={
+        "grant_type": "client_credentials",
+        "client_id": client_id,
+        "client_secret": client_secret,
+        "scope": _LOG_ANALYTICS_SCOPE,
+    }, timeout=30)
+    r.raise_for_status()
+    return r.json()["access_token"]
 
 
 def _run_kql(token: str, query: str, timespan: str | None = None,
              workspace_id: str = "") -> list[dict]:
-    url = f"https://api.loganalytics.io/v1/workspaces/{workspace_id or WORKSPACE_ID}/query"
+    url = f"https://api.loganalytics.io/v1/workspaces/{workspace_id}/query"
     body: dict = {"query": query}
     if timespan:
         body["timespan"] = timespan
@@ -88,17 +78,33 @@ def _safe_kql(token: str, query: str, timespan: str | None = None,
 
 
 def fetch_data(config: dict, start_date: str, end_date: str) -> dict:
-    """Fetch security data from Microsoft Sentinel / Log Analytics."""
-    from tools.secrets import get_secret
-    workspace_id = config.get("sentinel_workspace_id") or WORKSPACE_ID
-    if not all([get_secret("SENTINEL_TENANT_ID"), get_secret("SENTINEL_CLIENT_ID"),
-                get_secret("SENTINEL_CLIENT_SECRET"), workspace_id]):
+    """Fetch security data from Microsoft Sentinel / Log Analytics.
+
+    Resolves the customer's own SP credentials (tenant/client/secret/workspace)
+    from the customer record. The client secret value is fetched from Key Vault
+    via the deterministic name stored on the record.
+    """
+    from tools.customers import get_customer
+    from tools.secrets import get_kv_secret
+
+    customer_id = config.get("customer_id", "")
+    customer = get_customer(customer_id) or {}
+
+    workspace_id  = customer.get("sentinel_workspace_id") or config.get("sentinel_workspace_id", "")
+    tenant_id     = customer.get("sentinel_tenant_id", "")
+    client_id     = customer.get("sentinel_client_id", "")
+    kv_name       = customer.get("sentinel_client_secret_kv_name", "")
+    client_secret = get_kv_secret(kv_name) if kv_name else ""
+
+    if not all([tenant_id, client_id, client_secret, workspace_id]):
         raise ValueError(
-            "Sentinel credentials incomplete. Check SENTINEL_TENANT_ID, "
-            "SENTINEL_CLIENT_ID, SENTINEL_CLIENT_SECRET, SENTINEL_WORKSPACE_ID."
+            f"Customer '{customer_id}' is missing one or more Sentinel credentials. "
+            "Required on the customer record: sentinel_tenant_id, sentinel_client_id, "
+            "sentinel_client_secret_kv_name (with the secret present in Key Vault), "
+            "sentinel_workspace_id."
         )
 
-    token = _get_access_token()
+    token = _get_access_token(tenant_id, client_id, client_secret)
 
     # ISO 8601 timespan used as the query time filter
     timespan = f"{start_date}T00:00:00Z/{end_date}T23:59:59Z"
@@ -122,6 +128,34 @@ Usage
     total_gb = round(sum(float(r.get("TotalGB") or 0) for r in utilization_rows), 2)
     avg_daily_gb = round(total_gb / max(len(utilization_rows), 1), 2)
 
+    # 1b. Trailing 3-month utilization — sole consumer is the
+    # "Monthly Log Ingestion (GB) — Past 3 Months" chart. Kept separate from
+    # the period-scoped query above so total_gb / avg_daily_gb / spike days
+    # remain accurate to the report period (e.g. just March), while the chart
+    # can still show Jan / Feb / Mar bars.
+    monthly_rows: list[dict] = []
+    try:
+        end_dt = datetime.strptime(end_date, "%Y-%m-%d")
+        chart_start_dt = (end_dt - relativedelta(months=2)).replace(day=1)
+        chart_timespan = (
+            f"{chart_start_dt.strftime('%Y-%m-%d')}T00:00:00Z/"
+            f"{end_date}T23:59:59Z"
+        )
+        monthly_rows = _safe_kql(token, """
+Usage
+| where IsBillable == true
+| summarize TotalGB = round(sum(Quantity) / 1024, 2) by bin(TimeGenerated, 1d)
+| order by TimeGenerated asc
+""", chart_timespan, workspace_id)
+        if not monthly_rows:
+            monthly_rows = _safe_kql(token, """
+Usage
+| summarize TotalGB = round(sum(Quantity) / 1024, 2) by bin(TimeGenerated, 1d)
+| order by TimeGenerated asc
+""", chart_timespan, workspace_id)
+    except Exception as e:
+        logger.warning("Trailing-3-month Usage query skipped (%s): %s", type(e).__name__, e)
+
     # 2. Top alerts triggered in the period.
     # Try SecurityAlert first; fall back to SecurityIncident for workspaces where
     # incidents are not surfaced as individual alerts (e.g. identity-only tenants).
@@ -138,23 +172,46 @@ SecurityIncident
 | top 15 by Count desc
 """, timespan, workspace_id)
 
-    # 3. Total assets under monitoring — try MDE DeviceInfo first, fall back to CrowdStrike
+    # 3. Total assets under monitoring — fallback chain:
+    # MDE DeviceInfo → CrowdStrike → Heartbeat (Sentinel agent presence).
+    # `assets_source` records which tier produced the data so the report can
+    # adjust its narrative ("EDR-managed" vs "Sentinel agent heartbeat").
+    assets_source = "none"
+    total_assets = 0
+
     assets_rows = _safe_kql(token, """
 DeviceInfo
 | summarize arg_max(TimeGenerated, *) by DeviceName
 | count
 """, workspace_id=workspace_id)
-    if not assets_rows or int(assets_rows[0].get("Count", 0)) == 0:
+    if assets_rows and int(assets_rows[0].get("Count", 0)) > 0:
+        total_assets = int(assets_rows[0]["Count"])
+        assets_source = "mde"
+    else:
         assets_rows = _safe_kql(token, """
 CrowdStrikeHosts
 | summarize arg_max(TimeGenerated, *) by Hostname
 | count
 """, workspace_id=workspace_id)
-    total_assets = int(assets_rows[0].get("Count", 0)) if assets_rows else 0
+        if assets_rows and int(assets_rows[0].get("Count", 0)) > 0:
+            total_assets = int(assets_rows[0]["Count"])
+            assets_source = "crowdstrike"
+        else:
+            # Heartbeat fallback — for customers without EDR connectors.
+            # Counts distinct VMs/servers reporting to the workspace agent.
+            hb_rows = _safe_kql(token, """
+Heartbeat
+| summarize arg_max(TimeGenerated, *) by Computer
+| count
+""", workspace_id=workspace_id)
+            if hb_rows and int(hb_rows[0].get("Count", 0)) > 0:
+                total_assets = int(hb_rows[0]["Count"])
+                assets_source = "heartbeat"
 
-    # 4. Per-device sensor health state — try MDE DeviceInfo first, fall back to CrowdStrike.
+    # 4. Per-device sensor health state — same fallback chain as assets above.
     # Use extend+column_ifexists (not project+column_ifexists) — the assignment form in project
     # is not reliably supported by the Log Analytics REST API even though it works in the UI.
+    sensor_health_source = "none"
     health_rows = _safe_kql(token, """
 DeviceInfo
 | summarize arg_max(TimeGenerated, *) by DeviceName
@@ -172,7 +229,9 @@ DeviceInfo
     LastSeen = TimeGenerated
 | order by HealthStatus asc
 """, workspace_id=workspace_id)
-    if not health_rows:
+    if health_rows:
+        sensor_health_source = "mde"
+    else:
         health_rows = _safe_kql(token, """
 CrowdStrikeHosts
 | summarize arg_max(TimeGenerated, *) by Hostname
@@ -185,6 +244,28 @@ CrowdStrikeHosts
 | project DeviceName, OnboardingStatus, HealthStatus, OSPlatform, ExposureLevel, LastSeen
 | order by HealthStatus asc
 """, workspace_id=workspace_id)
+        if health_rows:
+            sensor_health_source = "crowdstrike"
+        else:
+            # Heartbeat fallback — Sentinel agent presence in lieu of EDR sensor data.
+            health_rows = _safe_kql(token, """
+Heartbeat
+| summarize arg_max(TimeGenerated, *) by Computer
+| extend
+    DeviceName = Computer,
+    OnboardingStatus = "Reporting (Sentinel agent)",
+    HealthStatus = case(
+        TimeGenerated > ago(1h),  "Active",
+        TimeGenerated > ago(24h), "Stale (24h)",
+        TimeGenerated > ago(7d),  "Idle (7d)",
+        "Inactive"),
+    OSPlatform = strcat(coalesce(OSType, ""), iif(isnotempty(OSMajorVersion), strcat(" ", OSMajorVersion), "")),
+    ExposureLevel = "N/A (no EDR)"
+| project DeviceName, OnboardingStatus, HealthStatus, OSPlatform, ExposureLevel, LastSeen = TimeGenerated
+| order by HealthStatus asc
+""", workspace_id=workspace_id)
+            if health_rows:
+                sensor_health_source = "heartbeat"
 
     # 5a. Vulnerability severity breakdown
     # DeviceTvmSoftwareVulnerabilities is a snapshot table — passing timespan excludes all rows
@@ -266,10 +347,13 @@ ThreatIntelligenceIndicator
             "total_gb": total_gb,
             "avg_daily_gb": avg_daily_gb,
             "daily_breakdown": utilization_rows,
+            "monthly_breakdown": monthly_rows,
         },
         "top_alerts": alerts_rows,
         "total_assets": total_assets,
+        "total_assets_source": assets_source,           # "mde" | "crowdstrike" | "heartbeat" | "none"
         "sensor_health": health_rows,
+        "sensor_health_source": sensor_health_source,   # same domain as above
         "vulnerabilities": {
             "by_severity": vuln_severity_rows,
             "exposed_devices": vuln_devices_rows,

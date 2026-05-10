@@ -13,19 +13,248 @@ from io import BytesIO
 import zipfile
 
 from flask import Blueprint, render_template, session, request, jsonify, Response, send_file
-from openai import AsyncAzureOpenAI
+from tools.llm_client import make_chat_client
 
 from routes.auth import require_login
 from tools.jira_client import (fetch_incidents_for_report, fetch_incidents_from_csv,
                                 fetch_service_requests, fetch_change_requests,
-                                fetch_monthly_counts_12m)
+                                fetch_monthly_counts_12m, DEFAULT_INCIDENT_ISSUE_TYPE)
+from tools.jira_verifier import verify_monthly_counts, format_verification_error
 from tools.chart_generator import generate_all_charts, generate_sentinel_utilization_chart, generate_top_alerts_chart
 from tools import sentinel_client, splunk_client, socradar_rest as socradar_client, tavily_client
+from tools.customers import get_customer
 import tools.db as db
 
 log = logging.getLogger(__name__)
 
 reports_bp = Blueprint("reports", __name__)
+
+
+def _render_socradar_alarms_html(alarms: list) -> str:
+    """Pre-render the SOCRadar Company Alarms table as a single-line HTML
+    string that markdown will pass through verbatim into the PDF.
+
+    Why pre-render: when the LLM tried to emit this as a markdown pipe-table,
+    rows containing long values (file paths, review notes) got line-wrapped
+    mid-row, which the markdown `tables` extension can't parse — the PDF
+    rendered the raw `|` characters instead of an actual table.
+
+    Building the HTML in Python guarantees consistent formatting.
+    """
+    if not alarms:
+        return ""
+
+    import html as _html
+
+    def _cell(value: str, max_chars: int = 60) -> str:
+        s = str(value or "").strip()
+        if len(s) > max_chars:
+            s = s[:max_chars - 1] + "…"
+        return _html.escape(s)
+
+    def _status(raw: str) -> str:
+        # SOCRadar returns SCREAMING_SNAKE_CASE — humanise.
+        s = (raw or "").replace("_", " ").strip().title()
+        return _cell(s, 24)
+
+    def _file_from(alarm: dict) -> str:
+        c = alarm.get("content") or {}
+        if isinstance(c, dict):
+            return c.get("file_name") or c.get("filename") or ""
+        return ""
+
+    def _date(raw: str) -> str:
+        return _cell((raw or "")[:16], 18)  # YYYY-MM-DD HH:MM
+
+    rows_html = []
+    for a in alarms:
+        if not isinstance(a, dict):
+            continue
+        rows_html.append(
+            "<tr>"
+            f"<td>{_cell(a.get('alarm_id'), 12)}</td>"
+            f"<td>{_date(a.get('date'))}</td>"
+            f"<td>{_cell(a.get('alarm_asset'), 22)}</td>"
+            f"<td>{_cell(_file_from(a), 36)}</td>"
+            f"<td>{_cell(a.get('alarm_risk_level'), 10)}</td>"
+            f"<td>{_status(a.get('status'))}</td>"
+            "</tr>"
+        )
+
+    if not rows_html:
+        return ""
+
+    return (
+        '<table class="socradar-alarms">'
+        "<thead><tr>"
+        "<th>Alarm ID</th><th>Date</th><th>Asset</th>"
+        "<th>File / Source</th><th>Risk</th><th>Status</th>"
+        "</tr></thead>"
+        "<tbody>" + "".join(rows_html) + "</tbody>"
+        "</table>"
+    )
+
+
+# Sentinel marker for the pre-rendered incident details table. The LLM is told
+# to emit this token verbatim where the table belongs; after section assembly
+# we swap it for the HTML rendered by `_render_incident_details_html`. This
+# keeps a 1,400-row table out of the LLM output budget (max_tokens=16000), which
+# was previously truncating the table with a "..." row and a "for brevity"
+# warning.
+INCIDENT_DETAILS_TOKEN = "<!--INCIDENT_DETAILS_TABLE-->"
+
+# Same pattern for pending tickets. Ticket summaries contain literal `|`
+# characters (e.g. "LTW | LOGICALIS-27964 | LOW | AD account...") which
+# break markdown pipe-tables when the LLM emits them — pipes get parsed as
+# column separators and the row's cells shift one column right. Pre-rendered
+# HTML cells side-step that entirely.
+PENDING_TICKETS_TOKEN = "<!--PENDING_TICKETS_TABLE-->"
+
+
+def _render_incident_details_html(incidents: list) -> str:
+    """Pre-render the full Incident Ticket Details table as HTML.
+
+    Same rationale as `_render_socradar_alarms_html` — but the row count is
+    much higher (1,400+), so we must NEVER ask the LLM to emit this verbatim
+    in the prompt. Caller swaps INCIDENT_DETAILS_TOKEN for this string after
+    the LLM has produced the section heading + intro.
+
+    Columns / formatting match the previous Section 1.5 prompt:
+      Incident ID | Date | Incident Subject | Category | Severity | Status | TP/FP/BP
+    """
+    if not incidents:
+        return ""
+
+    import html as _html
+    from dateutil.parser import parse as _dateparse
+
+    def _fmt_date(raw: str) -> str:
+        if not raw:
+            return ""
+        try:
+            dt = _dateparse(raw)
+            return dt.strftime("%-d/%-m/%Y %-H:%M")
+        except Exception:
+            return str(raw)[:19]
+
+    def _category(rec: dict) -> str:
+        cat = (rec.get("category") or "").strip()
+        if cat:
+            return cat
+        labels = rec.get("labels") or []
+        if isinstance(labels, list):
+            return ", ".join(str(l) for l in labels[:3])
+        return str(labels)
+
+    def _esc(value) -> str:
+        return _html.escape(str(value or "").strip())
+
+    sortable = []
+    for rec in incidents:
+        if not isinstance(rec, dict):
+            continue
+        try:
+            sort_key = _dateparse(rec.get("created") or "")
+        except Exception:
+            sort_key = datetime.min
+        sortable.append((sort_key, rec))
+    sortable.sort(key=lambda pair: pair[0], reverse=True)
+
+    rows_html = []
+    for _, rec in sortable:
+        rows_html.append(
+            "<tr>"
+            f"<td>{_esc(rec.get('key'))}</td>"
+            f"<td>{_esc(_fmt_date(rec.get('created')))}</td>"
+            f"<td>{_esc(rec.get('summary'))}</td>"
+            f"<td>{_esc(_category(rec))}</td>"
+            f"<td>{_esc(rec.get('severity'))}</td>"
+            f"<td>{_esc(rec.get('status'))}</td>"
+            f"<td>{_esc(rec.get('close_justification'))}</td>"
+            "</tr>"
+        )
+
+    if not rows_html:
+        return ""
+
+    return (
+        '<table class="incident-details">'
+        "<thead><tr>"
+        "<th>Incident ID</th><th>Date</th><th>Incident Subject</th>"
+        "<th>Category</th><th>Severity</th><th>Status</th><th>TP/FP/BP</th>"
+        "</tr></thead>"
+        "<tbody>" + "".join(rows_html) + "</tbody>"
+        "</table>"
+    )
+
+
+def _render_pending_tickets_html(pending: list) -> str:
+    """Pre-render the Pending Tickets table as HTML.
+
+    Columns match the previous Section 1.8 prompt:
+      Incident ID | Incident Subject | Severity | Created | Status
+
+    Sorted by created date descending (most recent first).
+    """
+    if not pending:
+        return (
+            '<table class="pending-tickets">'
+            "<thead><tr>"
+            "<th>Incident ID</th><th>Incident Subject</th>"
+            "<th>Severity</th><th>Created</th><th>Status</th>"
+            "</tr></thead>"
+            '<tbody><tr><td colspan="5" style="text-align:center;">'
+            "No pending tickets."
+            "</td></tr></tbody>"
+            "</table>"
+        )
+
+    import html as _html
+    from dateutil.parser import parse as _dateparse
+
+    def _esc(value) -> str:
+        return _html.escape(str(value or "").strip())
+
+    def _fmt_created(raw: str) -> str:
+        if not raw:
+            return ""
+        try:
+            return _dateparse(raw).strftime("%Y-%m-%d %H:%M")
+        except Exception:
+            return str(raw)[:19]
+
+    sortable = []
+    for rec in pending:
+        if not isinstance(rec, dict):
+            continue
+        try:
+            sort_key = _dateparse(rec.get("created") or "")
+        except Exception:
+            sort_key = datetime.min
+        sortable.append((sort_key, rec))
+    sortable.sort(key=lambda pair: pair[0], reverse=True)
+
+    rows_html = []
+    for _, rec in sortable:
+        rows_html.append(
+            "<tr>"
+            f"<td>{_esc(rec.get('key'))}</td>"
+            f"<td>{_esc(rec.get('summary'))}</td>"
+            f"<td>{_esc(rec.get('severity'))}</td>"
+            f"<td>{_esc(_fmt_created(rec.get('created')))}</td>"
+            f"<td>{_esc(rec.get('status'))}</td>"
+            "</tr>"
+        )
+
+    return (
+        '<table class="pending-tickets">'
+        "<thead><tr>"
+        "<th>Incident ID</th><th>Incident Subject</th>"
+        "<th>Severity</th><th>Created</th><th>Status</th>"
+        "</tr></thead>"
+        "<tbody>" + "".join(rows_html) + "</tbody>"
+        "</table>"
+    )
 
 BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 DATA_DIR = os.path.join(BASE_DIR, "data")
@@ -36,8 +265,10 @@ JOB_TIMEOUT_SECONDS = 600
 # In-memory job store (single replica = APScheduler constraint)
 jobs: dict = {}
 
-# LLM model: use AZURE_OPENAI_DEPLOYMENT if set, else gpt-4o
-_LLM_MODEL = os.environ.get("AZURE_OPENAI_DEPLOYMENT", "gpt-4o")
+# LLM client + model are resolved at call time via tools.llm_client.make_chat_client(),
+# which detects the provider from env (AZURE_OPENAI_ENDPOINT vs OPENAI_COMPAT_BASE_URL
+# vs OPENAI_API_KEY). No module-level constant — different providers use different
+# model identifiers and we don't want to bake one in at import time.
 
 
 REPORT_SECTIONS = [
@@ -71,8 +302,6 @@ _REPORT_TAIL = """
 - **Inactive devices**: Devices that may no longer be in use, were reinstalled or renamed, have been offboarded, or are not currently sending signals to the monitoring platform.
 - **No sensor data**: Devices that are misconfigured or whose agents have stopped reporting. Remediation steps include verifying agent installation, checking network connectivity to the SIEM collector, and reviewing agent logs for errors.
 
-For further guidance refer to the [Microsoft Sentinel documentation](https://learn.microsoft.com/en-us/azure/sentinel/).
-
 ## Confidentiality Statement
 
 The contents of this document are confidential and proprietary to Logicalis. This document is submitted on the condition that the customer does not disclose the information contained herein to any third party without the written consent of Logicalis. By receiving Logicalis submission of this document, the customer further agrees not to disclose the contents hereof internally other than to those of its agents, principals, representatives, consultants or employees who need to know these contents for the purposes of the customer evaluation of the document.
@@ -86,11 +315,13 @@ REPORT_SYSTEM_PROMPT = """You are a professional SOC report writer for Logicalis
 You are generating a monthly security operations report for a client. Follow the exact structure and tone of the Logicalis GSOC Monthly Report template.
 
 CRITICAL RULES:
+- **Generate ONLY the sections listed in `SECTIONS TO GENERATE` below.** Other section descriptions appear later in this prompt as a reference template — do NOT generate them. If a section is not in `SECTIONS TO GENERATE`, omit it entirely.
+- **Do NOT write any closing markers, terminators, or footers.** Do not write phrases like "End of Report Section", "End of Document", "End of Report", "---", or any goodbye/signature line. End your output immediately after the last assigned section's content.
 - Write in a professional, third-person tone suitable for a client-facing security report
 - Use markdown formatting throughout
 - Include specific numbers, dates, and details from the provided data
 - Do NOT fabricate or hallucinate data - use only what is provided
-- For sections where the data source is NOT connected (marked as UNAVAILABLE below), generate a placeholder block exactly like this:
+- For an assigned section whose data source is NOT connected (marked as UNAVAILABLE below), generate a placeholder block exactly like this:
   > **Data Source Pending Integration** — This section requires data from [source name] which is not yet connected. Data will be populated once the integration is configured.
 - If a data source IS connected but returned no data for the period (empty lists, zero counts), do NOT show the placeholder. Instead write a brief note such as: "No data was recorded for this section during the reporting period." Then continue with any context or analysis that can be drawn from zero activity.
 
@@ -140,18 +371,14 @@ Write 2-4 paragraphs covering:
   - True vs Benign Positive breakdown and implications
 
 **### 1.5. Incident Ticket Details** (if "incident_details" is selected)
-Present a markdown table with these exact columns: Incident ID | Date | Incident Subject | Category | Severity | Status | TP/FP/BP
+The full incident table is pre-rendered as HTML in Python (covering every incident, sorted by date descending) and will be substituted in by the report assembly step. Do NOT generate the table yourself — generating it would exceed your output token budget and cause truncation.
 
-IMPORTANT rules for this table:
-- Include ALL incidents from the provided data — do not truncate, summarise, or omit any rows
-- **Incident ID**: Use the ticket key exactly as provided (e.g. "CAM-11469")
-- **Date**: Use the created date formatted as "d/m/YYYY H:MM" (e.g. "25/2/2026 6:18")
-- **Incident Subject**: Use the FULL summary text as provided in the data. Do NOT shorten, truncate, or paraphrase it. Include the full text even if it is long.
-- **Category**: Use the category/incident_type field (e.g. "Suspicious-activity", "Exfiltration", "DefenseEvasion"). If empty, use the labels field.
-- **Severity**: Use the severity field exactly (e.g. "Medium", "Low", "High")
-- **Status**: Use the status field exactly (e.g. "Closed", "Open", "Pending")
-- **TP/FP/BP**: Use the close_justification field exactly (e.g. "Benign Positive", "True Positive", "False Positive")
-- Sort rows by date descending (most recent first)
+Output exactly these three things, in order, and nothing else for this section:
+1. The heading line: `### <a id="15-incident-ticket-details"></a>1.5. Incident Ticket Details`
+2. A single sentence stating the total number of incidents listed in the table (use the `incident_details` array length from the data).
+3. The literal token `<!--INCIDENT_DETAILS_TABLE-->` on its own line. Output it character-for-character — including the `<!--` and `-->` — exactly as shown.
+
+Do NOT emit any markdown table for this section. Do NOT paraphrase the rows. Do NOT comment on individual incidents — that belongs in the analysis sections (Severity, Status, Recommendations).
 
 **### 1.6. Service Requests Summary** (if "service_requests" is selected)
 If service_requests.unavailable is true, show the placeholder block noting the issue type is not configured in this Jira project.
@@ -173,29 +400,33 @@ Otherwise:
 If Microsoft Sentinel is NOT connected, show the placeholder block. If connected but no data for the period, write a brief note stating no activity was recorded.
 Otherwise:
 - State the total ingestion for the period (in GB) and the average daily ingestion (in GB/day).
-- Then render the daily ingestion breakdown as a markdown table with these exact columns:
-  Date | Ingested (GB)
-  - Date: format as YYYY-MM-DD (use the TimeGenerated value from the daily_breakdown rows)
-  - Ingested (GB): the TotalGB value rounded to 2 decimal places
-  - Sort rows by date ascending
-- If daily_breakdown is empty, state "No daily utilization data was recorded for this period."
+- Identify the top 3 spike days from utilization_top_spike_days (if non-empty) and write a one-sentence comment about them — what dates they occurred and the GB value.
+- Do NOT render any per-day table or list. The chart visualises the daily curve; a tabular daily breakdown would be redundant and noisy in the PDF.
 
 **### 1.11. Top Alert Triggered on Sentinel** (if "top_alerts_sentinel" is selected, REQUIRES SENTINEL)
 If Microsoft Sentinel is NOT connected, show the placeholder block. If connected but no data for the period, write a brief note stating no activity was recorded.
 Otherwise: Table showing top alerts with count, sorted by frequency.
 
 **### 1.12. Total Assets Under Monitoring** (if "total_assets" is selected, REQUIRES SENTINEL)
-If Microsoft Sentinel is NOT connected, show the placeholder block. If connected but no data for the period, write a brief note stating no activity was recorded.
-Otherwise: State total asset count. Note: asset data may come from Microsoft Defender for Endpoint (DeviceInfo table) or CrowdStrike (CrowdStrikeHosts table) depending on the EDR deployed for this customer.
+If Microsoft Sentinel is NOT connected, show the placeholder block.
+Otherwise, write the section based on the value of sentinel.total_assets_source. Substitute the actual integer from sentinel.total_assets where the text below says N:
+- If total_assets_source is "mde": State "N endpoints are under Microsoft Defender for Endpoint monitoring." with 1-2 sentences of analysis.
+- If total_assets_source is "crowdstrike": State "N endpoints are under CrowdStrike Falcon monitoring." with 1-2 sentences of analysis.
+- If total_assets_source is "heartbeat": State "N servers/VMs are reporting via Sentinel agent heartbeat for this period." Then add a separate paragraph: "**Note**: Endpoint Detection and Response (EDR) — Microsoft Defender for Endpoint or CrowdStrike — is not currently connected for this customer. The figure above reflects Sentinel agent presence (Heartbeat table) rather than EDR-managed endpoints. To populate this section with full EDR asset visibility, enable the Microsoft Defender XDR connector in Sentinel."
+- If total_assets_source is "none": State "Endpoint asset visibility is currently unavailable. Microsoft Defender for Endpoint (DeviceInfo), CrowdStrike (CrowdStrikeHosts), and Sentinel agent heartbeat (Heartbeat) all returned no data for this period. **Recommended action**: verify agent deployment to monitored systems, OR enable an EDR connector (Microsoft Defender XDR or CrowdStrike Falcon) in Sentinel."
 
 **### 1.13. Managed Assets by Sensor Health State** (if "sensor_health" is selected, REQUIRES SENTINEL)
-If Microsoft Sentinel is NOT connected, show the placeholder block. If connected but no data for the period, write a brief note stating no activity was recorded.
-Otherwise: Table of devices with columns: Device Name | Last Update | OS Platform | Exposure Level | Health Status.
-Note: if data comes from CrowdStrike (fields DeviceName, OnboardingStatus, HealthStatus, OSPlatform, ExposureLevel, LastSeen), map them directly. HealthStatus values are "Active" (seen within 7 days) or "Inactive".
+If Microsoft Sentinel is NOT connected, show the placeholder block.
+Otherwise, render based on sentinel.sensor_health_source:
+- If sensor_health_source is "mde" or "crowdstrike": Table of devices with columns: Device Name | Last Update | OS Platform | Exposure Level | Health Status. Map fields directly from the data.
+- If sensor_health_source is "heartbeat": Render a table titled "**Sentinel Agent Heartbeat (EDR not connected)**" with columns: Computer | OS | Last Heartbeat | Status. Use DeviceName, OSPlatform, LastSeen (formatted YYYY-MM-DD HH:MM), and HealthStatus from the data. After the table, add: "**Note**: This table reflects Sentinel agent (Microsoft Monitoring Agent / Azure Monitor Agent) heartbeat status, not EDR sensor health. To enable EDR sensor health visibility, connect Microsoft Defender for Endpoint or CrowdStrike to this customer's Sentinel workspace."
+- If sensor_health_source is "none": State "Sensor health visibility is currently unavailable. Neither Microsoft Defender for Endpoint, CrowdStrike, nor Sentinel agent heartbeat returned device data for this period. **Recommended action**: verify Sentinel agent installation OR enable an EDR connector."
 
 **### 1.14. Vulnerability Details** (if "vulnerability_details" is selected, REQUIRES SENTINEL)
-If Microsoft Sentinel is NOT connected, show the placeholder block. If connected but no data for the period, write a brief note stating no activity was recorded.
-Otherwise: Exposure score explanation, severity breakdown, Microsoft Secure Score details.
+If Microsoft Sentinel is NOT connected, show the placeholder block.
+Otherwise, render based on whether `sentinel.vulnerability_by_severity` is populated:
+- If populated: Exposure score explanation, severity breakdown, Microsoft Secure Score details.
+- If empty: State "Vulnerability intelligence is currently unavailable for this customer. This section is populated by Microsoft Defender for Endpoint with the Threat & Vulnerability Management (TVM) module — specifically the `DeviceTvmSoftwareVulnerabilities` table. TVM is not currently active for this customer's Sentinel workspace. **Recommended action**: enable Microsoft Defender XDR's TVM module to populate this section."
 
 **### 1.15. Threat Analytics Hunting** (if "threat_analytics" is selected, REQUIRES SENTINEL)
 If Microsoft Sentinel is NOT connected, show the placeholder block. If connected but no data for the period, write a brief note stating no activity was recorded.
@@ -204,8 +435,10 @@ Present a summary table with columns: Indicator Type | Count. Map STIX keys to h
 Follow with 2-3 paragraphs of analysis covering the distribution of indicator types and what they indicate about the threat landscape.
 
 **### 1.16. Monthly Vulnerability Exposed Devices** (if "vulnerability_devices" is selected, REQUIRES SENTINEL)
-If Microsoft Sentinel is NOT connected, show the placeholder block. If connected but no data for the period, write a brief note stating no activity was recorded.
-Otherwise: Statistics on exposed devices, recommendation to patch immediately.
+If Microsoft Sentinel is NOT connected, show the placeholder block.
+Otherwise, render based on whether `sentinel.vulnerability_exposed_devices` is populated:
+- If populated: Statistics on exposed devices, recommendation to patch immediately.
+- If empty: State "Per-device vulnerability exposure data is currently unavailable. This section requires Microsoft Defender for Endpoint with the Threat & Vulnerability Management (TVM) module — specifically the `DeviceTvmSoftwareVulnerabilities` table. TVM is not currently active for this customer. **Recommended action**: enable Microsoft Defender XDR's TVM module to populate this section."
 
 **### 1.17. Indicators of Compromise (IOC) Update** (if "ioc_update" is selected, REQUIRES SENTINEL)
 If Microsoft Sentinel is NOT connected, show the placeholder block. If connected but no data for the period, write a brief note stating no activity was recorded.
@@ -226,9 +459,14 @@ If Splunk is NOT connected (not listed in available data sources), show the plac
 Otherwise: Table showing top Splunk correlation rules / notable events with count, sorted by frequency. Include severity breakdown if available.
 
 **### 1.8. Pending Tickets** (if "pending_tickets" is selected)
-Present a markdown table with columns: Incident ID | Incident Subject | Severity | Created | Status
-Use the pre-computed `pending_tickets` list from the data — it already contains only non-closed tickets (any status that is not Closed/Resolved). Do NOT re-filter incident_details; use pending_tickets directly.
-If pending_tickets is empty, show a table with a single row: "- | No pending tickets | - | - | -"
+The pending tickets table is pre-rendered as HTML in Python (covering every non-closed ticket, sorted by created date descending) and will be substituted in by the report assembly step. Do NOT generate the table yourself — ticket summaries contain literal pipe characters that break markdown table rendering.
+
+Output exactly these three things, in order, and nothing else for this section:
+1. The heading line: `### <a id="18-pending-tickets"></a>1.8. Pending Tickets`
+2. A single sentence stating the total number of pending tickets (use the `pending_tickets` array length from the data).
+3. The literal token `<!--PENDING_TICKETS_TABLE-->` on its own line. Output it character-for-character — including the `<!--` and `-->` — exactly as shown.
+
+Do NOT emit any markdown table for this section. Do NOT paraphrase the rows.
 
 **### 1.9. GSOC Monitoring Scope** (if "monitoring_scope" is selected)
 Write: "Below are the log sources that are onboarded to Microsoft Sentinel SIEM currently for GSOC monitoring."
@@ -262,8 +500,12 @@ S.No | Priority | Recommendation | Affected Area | GSOC Action | Customer Action
 
 **### SOCRadar Threat Intelligence** (if "socradar_threat_intel" is selected, REQUIRES SOCRADAR)
 If SOCRadar data is unavailable, show the placeholder block.
-Otherwise, write 3-4 paragraphs covering:
-1. **Company Alarms**: Summary of company-specific alarms/detections during the period (count, top types)
+Otherwise, write the section in this exact order:
+
+1. **Company Alarms**:
+   - First, write 1–2 sentences summarising the count of company alarms and the dominant risk levels (e.g. "SOCRadar registered 8 company alarms during the period, all classified as HIGH risk.").
+   - Then, on a new line, INSERT THE EXACT VALUE of `socradar.company_alarms_html_table` VERBATIM. Do not modify it, do not re-format the rows, do not wrap it in code fences, do not paraphrase the values. The table is pre-rendered HTML and must reach the PDF unchanged.
+   - After the table, write 1 sentence noting any patterns (e.g. all related to one repository, mostly closed as false positives, etc.).
 2. **Active Threat Actors**: Table with columns: Threat Actor | Origin | Target Industries | TTPs | Status. List top actors from socradar.threat_actors data.
 3. **Critical CVEs**: Table with columns: CVE ID | CVSS Score | Affected Products | Exploit Available | Recommendation. List top CVEs from socradar.cve_intel.
 4. **Dark Web Monitoring**: Summary of any dark web mentions, leaked credentials, or mentions of the company domain. If socradar.dark_web_alarms is empty, state "No dark web mentions detected during this period."
@@ -483,10 +725,21 @@ def _collect_report_data(config: dict) -> dict:
     start_date = config.get("start_date", "")
     end_date = config.get("end_date", "")
     csv_path = config.get("csv_path", "")
+
+    # Per-customer issue-type overrides. Defaults match Atlassian/JSM
+    # canonical names; admins can override in the Customer admin page when
+    # a customer's Jira project uses different labels (e.g. "Incident",
+    # "Service Desk Request", "RFC").
+    customer_record = get_customer(config.get("customer_id", "")) or {}
+    incident_issue_type = customer_record.get("jira_incident_issuetype", "") or DEFAULT_INCIDENT_ISSUE_TYPE
+    sr_issue_type = customer_record.get("jira_service_request_issuetype", "") or "Service Request"
+    cr_issue_type = customer_record.get("jira_change_request_issuetype", "") or "Change"
+
     if csv_path:
         result = fetch_incidents_from_csv(project_key, start_date, end_date, csv_path=csv_path)
     else:
-        result = fetch_incidents_for_report(project_key, start_date, end_date)
+        result = fetch_incidents_for_report(project_key, start_date, end_date,
+                                            incident_issue_type=incident_issue_type)
 
     if result.get("error"):
         log.error(f"Jira data collection error: {result['error']}")
@@ -500,9 +753,13 @@ def _collect_report_data(config: dict) -> dict:
     if config.get("use_socradar"):
         fetch_tasks["socradar"] = lambda: socradar_client.fetch_data(config, start_date, end_date)
     if "service_requests" in sections and project_key:
-        fetch_tasks["service_requests"] = lambda: fetch_service_requests(project_key, start_date, end_date)
+        _sr_type = sr_issue_type
+        fetch_tasks["service_requests"] = lambda: fetch_service_requests(
+            project_key, start_date, end_date, issue_type=_sr_type)
     if "change_requests" in sections and project_key:
-        fetch_tasks["change_requests"] = lambda: fetch_change_requests(project_key, start_date, end_date)
+        _cr_type = cr_issue_type
+        fetch_tasks["change_requests"] = lambda: fetch_change_requests(
+            project_key, start_date, end_date, issue_type=_cr_type)
     industry = config.get("customer_industry", "")
     if industry and "industry_threat_intel" in sections:
         _ind, _sd, _ed = industry, start_date, end_date
@@ -510,10 +767,13 @@ def _collect_report_data(config: dict) -> dict:
         if config.get("use_socradar"):
             fetch_tasks["industry_socradar"] = lambda: socradar_client.fetch_industry_data(_ind, _sd, _ed)
 
-    # Fetch 12-month incident counts for the monthly trend chart (Jira API mode only)
+    # Fetch 12-month incident counts for the monthly trend chart (Jira API mode only).
+    # Verified against an independent JQL window in the verifier step below.
     if not csv_path and project_key:
         _pk, _ed = project_key, end_date
-        fetch_tasks["monthly_trend_12m"] = lambda: fetch_monthly_counts_12m(_pk, _ed)
+        _it = incident_issue_type
+        fetch_tasks["monthly_trend_12m"] = lambda: fetch_monthly_counts_12m(_pk, _ed,
+                                                                            incident_issue_type=_it)
 
     if fetch_tasks:
         fetch_results: dict = {}
@@ -540,16 +800,38 @@ def _collect_report_data(config: dict) -> dict:
         for key, err in fetch_errors.items():
             result[f"{key}_error"] = err
 
-        # Merge 12-month counts into monthly_trend so the chart spans a full year.
-        # Take the max per month so accurate counts from the fetched incidents are
-        # never overwritten by a stale or undercount from the API query.
+        # 12-month chart accuracy: the primary fetch (fetch_monthly_counts_12m)
+        # runs 12 separate per-month queries; the verifier runs ONE 12-month
+        # query and groups locally. They must agree exactly. If they don't,
+        # we refuse to ship the report rather than render a chart with
+        # numbers we can't trust.
         trend_12m = fetch_results.get("monthly_trend_12m")
-        if trend_12m and result.get("stats"):
-            existing = result["stats"].get("monthly_trend", {})
-            merged = dict(trend_12m)
-            for k, v in existing.items():
-                merged[k] = max(merged.get(k, 0), v)
-            result["stats"]["monthly_trend"] = merged
+        if trend_12m and project_key and not csv_path:
+            verification = verify_monthly_counts(
+                project_key=project_key,
+                end_date=end_date,
+                primary_monthly_counts=trend_12m,
+                incident_issue_type=incident_issue_type,
+            )
+            if not verification["verified"]:
+                msg = format_verification_error(verification)
+                log.error("Monthly count verification FAILED:\n%s", msg)
+                raise ValueError(
+                    "JIRA incident counts could not be verified. Refusing to "
+                    "generate report with unverified numbers.\n\n" + msg
+                )
+            log.info(
+                "Monthly count verification PASSED: %d incidents over 12 months "
+                "(issue_type=%r)",
+                verification["total_verifier"],
+                verification.get("issue_type"),
+            )
+            # The verifier's by_month dict is the authoritative source of
+            # truth for the chart. The in-period stats.monthly_trend is kept
+            # as-is (it covers a different window and is consumed elsewhere).
+            if result.get("stats") is None:
+                result["stats"] = {}
+            result["stats"]["monthly_trend"] = verification["by_month"]
 
         if industry and "industry_threat_intel" in sections:
             result["industry_intel"] = {
@@ -591,6 +873,16 @@ def _build_report_context(data: dict, config: dict) -> dict:
         report_year = datetime.now().year
 
     _closed_statuses = {"closed", "resolved", "done", "complete", "completed"}
+    _incident_records = [
+        {
+            "key": i["key"], "summary": i["summary"], "severity": i["severity"],
+            "status": i["status"], "priority": i["priority"], "assignee": i["assignee"],
+            "created": i["created"], "resolved": i["resolved"],
+            "close_justification": i["close_justification"],
+            "labels": i["labels"], "category": i.get("incident_type", ""),
+        }
+        for i in data.get("incidents", [])
+    ]
     jira_data = {
         "total_incidents": data.get("stats", {}).get("total", 0),
         "by_severity": data.get("stats", {}).get("by_severity", {}),
@@ -600,16 +892,7 @@ def _build_report_context(data: dict, config: dict) -> dict:
         "top_alerts": data.get("stats", {}).get("top_alerts", {}),
         "monthly_trend": data.get("stats", {}).get("monthly_trend", {}),
         "assignee_distribution": data.get("stats", {}).get("assignee_distribution", {}),
-        "incident_details": [
-            {
-                "key": i["key"], "summary": i["summary"], "severity": i["severity"],
-                "status": i["status"], "priority": i["priority"], "assignee": i["assignee"],
-                "created": i["created"], "resolved": i["resolved"],
-                "close_justification": i["close_justification"],
-                "labels": i["labels"], "category": i.get("incident_type", ""),
-            }
-            for i in data.get("incidents", [])
-        ],
+        "incident_details": _incident_records,
         "pending_tickets": [
             {
                 "key": i["key"], "summary": i["summary"], "severity": i["severity"],
@@ -650,13 +933,26 @@ def _build_report_context(data: dict, config: dict) -> dict:
     sentinel_data = {}
     sentinel = data.get("sentinel")
     if sentinel:
+        # Pull only the top 3 spike days from the daily breakdown — the full
+        # 28-31-row table is redundant with the chart and cluttered the PDF.
+        # See routes/reports.py prompt for section 1.10.
+        _daily = sentinel.get("utilization", {}).get("daily_breakdown", []) or []
+        _spike_days = sorted(
+            ({"date": (r.get("TimeGenerated") or r.get("date") or "")[:10],
+              "gb":   round(float(r.get("TotalGB") or r.get("gb") or 0), 2)}
+             for r in _daily if isinstance(r, dict)),
+            key=lambda d: d["gb"], reverse=True,
+        )[:3]
+
         sentinel_data = {
             "utilization_total_gb": sentinel.get("utilization", {}).get("total_gb"),
             "utilization_avg_daily_gb": sentinel.get("utilization", {}).get("avg_daily_gb"),
-            "utilization_daily_breakdown": sentinel.get("utilization", {}).get("daily_breakdown", []),
+            "utilization_top_spike_days": _spike_days,
             "top_alerts": sentinel.get("top_alerts", []),
             "total_assets": sentinel.get("total_assets"),
+            "total_assets_source": sentinel.get("total_assets_source", "none"),
             "sensor_health": sentinel.get("sensor_health", []),
+            "sensor_health_source": sentinel.get("sensor_health_source", "none"),
             "vulnerability_by_severity": sentinel.get("vulnerabilities", {}).get("by_severity", []),
             "vulnerability_exposed_devices": sentinel.get("vulnerabilities", {}).get("exposed_devices", []),
             "threat_analytics": sentinel.get("threat_analytics", []),
@@ -676,8 +972,10 @@ def _build_report_context(data: dict, config: dict) -> dict:
     socradar_data = {}
     socradar = data.get("socradar")
     if socradar:
+        alarms = socradar.get("company_alarms", []) or []
         socradar_data = {
-            "company_alarms": socradar.get("company_alarms", []),
+            "company_alarms": alarms,
+            "company_alarms_html_table": _render_socradar_alarms_html(alarms),
             "threat_actors": socradar.get("threat_actors", []),
             "cve_intel": socradar.get("cve_intel", []),
             "dark_web_alarms": socradar.get("dark_web_alarms", []),
@@ -700,6 +998,13 @@ def _build_report_context(data: dict, config: dict) -> dict:
         "splunk_data": splunk_data,
         "socradar_data": socradar_data,
         "industry_intel_data": industry_intel_data,
+        # Pre-rendered HTML kept off `jira_data` so it does not bloat the LLM
+        # input (a 1,400-row HTML table is ~250KB of text). The post-processor
+        # in `_run_report_agent` substitutes it for INCIDENT_DETAILS_TOKEN.
+        "incident_details_html_table": _render_incident_details_html(_incident_records),
+        "pending_tickets_html_table": _render_pending_tickets_html(
+            jira_data["pending_tickets"]
+        ),
     }
 
 
@@ -724,13 +1029,10 @@ def _build_unified_toc(content: str) -> str:
     return "\n".join(toc_lines) + "\n\n" + content
 
 
-def _azure_openai_client() -> AsyncAzureOpenAI:
-    from tools.secrets import get_secret
-    return AsyncAzureOpenAI(
-        azure_endpoint=os.environ.get("AZURE_OPENAI_ENDPOINT", ""),
-        api_key=get_secret("AZURE_OPENAI_API_KEY"),
-        api_version=os.environ.get("AZURE_OPENAI_API_VERSION", "2024-10-21"),
-    )
+# LLM client construction has moved to tools.llm_client.make_chat_client().
+# The factory there handles Azure OpenAI, OpenAI-compat (Ollama/vLLM), and
+# public OpenAI behind one interface. Detection is env-driven so the same
+# image runs against any provider.
 
 
 async def _generate_group(group_sections: list, data_subset: dict, ctx: dict, config: dict) -> str:
@@ -755,9 +1057,9 @@ async def _generate_group(group_sections: list, data_subset: dict, ctx: dict, co
         report_year=ctx["report_year"],
     )
 
-    client = _azure_openai_client()
+    client, model = make_chat_client()
     response = await client.chat.completions.create(
-        model=_LLM_MODEL,
+        model=model,
         messages=[
             {"role": "system", "content": prompt},
             {"role": "user", "content": "Generate the assigned report sections now."},
@@ -799,6 +1101,19 @@ async def _run_report_agent(data: dict, config: dict) -> str:
     assembled = "\n\n".join(p for p in parts if p.strip())
     assembled = _build_unified_toc(assembled)
     assembled += _REPORT_TAIL.format(report_year=ctx["report_year"])
+
+    # Swap the LLM-emitted tokens for the pre-rendered HTML tables. Done after
+    # assembly so a single replace covers the case where the token appears in
+    # any part of the markdown. If the LLM omitted the token (e.g. the section
+    # was deselected), nothing to do.
+    incident_html = ctx.get("incident_details_html_table") or ""
+    if INCIDENT_DETAILS_TOKEN in assembled:
+        assembled = assembled.replace(INCIDENT_DETAILS_TOKEN, incident_html)
+
+    pending_html = ctx.get("pending_tickets_html_table") or ""
+    if PENDING_TICKETS_TOKEN in assembled:
+        assembled = assembled.replace(PENDING_TICKETS_TOKEN, pending_html)
+
     return assembled
 
 
@@ -834,10 +1149,18 @@ def run_report_job(job_id: str, config: dict) -> None:
 
         sentinel = data.get("sentinel")
         if sentinel:
-            daily_breakdown = sentinel.get("utilization", {}).get("daily_breakdown", [])
+            # Past-3-months chart needs trailing 3-month data — daily_breakdown is
+            # scoped to the report period (single month) and would render Jan/Feb
+            # as 0 GB. monthly_breakdown is the dedicated chart-only feed from
+            # tools/sentinel_client.py:fetch_data.
+            chart_breakdown = (
+                sentinel.get("utilization", {}).get("monthly_breakdown")
+                or sentinel.get("utilization", {}).get("daily_breakdown")
+                or []
+            )
             try:
                 chart = generate_sentinel_utilization_chart(
-                    daily_breakdown or [], end_date=config.get("end_date", "")
+                    chart_breakdown, end_date=config.get("end_date", "")
                 )
                 if chart:
                     charts["sentinel_utilization"] = chart

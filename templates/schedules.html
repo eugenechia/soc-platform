@@ -162,12 +162,15 @@
 <body>
   <div class="header">
     <div class="header-left">
-      <img src="/static/Logo.webp" alt="Logicalis">
-      <h1>Scheduled Reports</h1>
+      <a href="/reports/" style="display:flex; align-items:center; gap:12px; text-decoration:none; color:var(--text-primary);">
+        <img src="/static/Logo.webp" alt="Logicalis">
+        <h1>Scheduled Reports</h1>
+      </a>
     </div>
     <div class="header-right">
       <nav class="header-nav">
-        <a href="/reports/">Home</a>
+        <a href="/" title="Switch mode (back to SOC Platform launcher)">← Main</a>
+        <a href="/reports/">Reports</a>
         <a href="/admin/customers">Manage Customers</a>
         <a href="/admin/history">Report History</a>
         <a href="/admin/schedules" class="active">Schedules</a>

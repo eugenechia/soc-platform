@@ -90,6 +90,7 @@
       transition: all 0.2s;
     }
     .header-nav a:hover { color: var(--accent); background: var(--accent-light); }
+    .header-nav a.active { color: var(--accent); background: var(--accent-light); }
 
     /* Theme toggle */
     .theme-toggle {
@@ -445,9 +446,10 @@
     </div>
     <div class="header-right">
       <nav class="header-nav">
-        <a href="/reports/">Home</a>
-        <a href="/admin/history">Report History</a>
+        <a href="/" title="Switch mode (back to SOC Platform launcher)">← Main</a>
+        <a href="/reports/" class="active">Reports</a>
         <a href="/admin/customers">Manage Customers</a>
+        <a href="/admin/history">Report History</a>
         <a href="/admin/schedules">Schedules</a>
       </nav>
       <div class="theme-toggle" onclick="toggleTheme()">
@@ -480,49 +482,6 @@
             <option value="">-- Select a customer --</option>
             <option value="__new__">+ Add New Customer</option>
           </select>
-        </div>
-        <div id="newCustomerForm" style="display:none; margin-top:16px; padding-top:16px; border-top:1px solid var(--border);">
-          <div class="form-group">
-            <label>Customer Name</label>
-            <input type="text" id="newCustName" placeholder="e.g. Chartered Asset Management">
-          </div>
-          <div class="form-row">
-            <div class="form-group">
-              <label>Short Name</label>
-              <input type="text" id="newCustShort" placeholder="e.g. CAM">
-            </div>
-            <div class="form-group">
-              <label>Jira Project Key</label>
-              <input type="text" id="newCustJiraKey" placeholder="e.g. CAM">
-            </div>
-          </div>
-          <div class="form-group">
-            <label>Jira Request Type</label>
-            <input type="text" id="newCustRequestType" placeholder="e.g. Report a Security Incident" value="Report an Incident">
-            <div style="font-size:12px; color:var(--text-muted); margin-top:4px;">The exact request type name used in this customer's Jira project.</div>
-          </div>
-          <div class="form-group">
-            <label>Azure Log Analytics Workspace ID</label>
-            <input type="text" id="newCustSentinelWorkspaceId" placeholder="e.g. xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx">
-            <div style="font-size:12px; color:var(--text-muted); margin-top:4px;">Azure Log Analytics workspace ID for this customer's Microsoft Sentinel. Leave blank to use the global default.</div>
-          </div>
-          <div class="form-group">
-            <label>Industry</label>
-            <select id="newCustIndustry">
-              <option value="">-- Select industry --</option>
-              <option value="Healthcare">Healthcare</option>
-              <option value="Financial Services">Financial Services</option>
-              <option value="Academia">Academia</option>
-              <option value="Enterprise">Enterprise</option>
-              <option value="Government">Government</option>
-            </select>
-          </div>
-          <div class="form-group">
-            <label>Logo (optional)</label>
-            <input type="file" id="newCustLogo" accept=".png,.jpg,.jpeg,.webp"
-                   style="font-size:13px; color:var(--text-muted);">
-          </div>
-          <button class="btn btn-primary" onclick="createCustomer()" style="margin-top:8px;">Save Customer</button>
         </div>
         <div class="btn-row">
           <div></div>
@@ -781,16 +740,37 @@
       grid.innerHTML = '';
       const defaults = selectedCustomer ? selectedCustomer.default_sections : [
         'introduction', 'incident_overview', 'incident_severity',
-        'incident_status', 'incident_details', 'pending_tickets',
-        'monitoring_scope', 'recommendations'
+        'incident_status', 'incident_details',
+        'service_requests', 'change_requests',
+        'pending_tickets', 'monitoring_scope', 'recommendations',
+        'industry_threat_intel'
       ];
+
+      // Auto-flip the Step 3 data-source toggles to match what the customer's
+      // default sections need. Jira is left alone (always required, default
+      // checked). Operator can still manually override after this runs;
+      // onSourceChange() does not call renderSections(), so manual toggles
+      // are preserved.
+      const requiredSources = new Set();
+      defaults.forEach(id => {
+        const s = sections.find(x => x.id === id);
+        if (s && s.source) requiredSources.add(s.source);
+      });
+      const sentEl = document.getElementById('srcSentinel');
+      const splkEl = document.getElementById('srcSplunk');
+      const socrEl = document.getElementById('srcSocradar');
+      if (sentEl) sentEl.checked = requiredSources.has('sentinel');
+      if (splkEl) splkEl.checked = requiredSources.has('splunk');
+      if (socrEl) socrEl.checked = requiredSources.has('socradar');
 
       const sourceLabels = {
         jira: 'Jira',
         splunk: 'Splunk',
-        sentinel: 'Microsoft Sentinel'
+        sentinel: 'Microsoft Sentinel',
+        socradar: 'SOCRadar',
+        general: 'General'
       };
-      const sourceOrder = ['jira', 'splunk', 'sentinel'];
+      const sourceOrder = ['jira', 'splunk', 'sentinel', 'socradar', 'general'];
       const grouped = {};
       sections.forEach(s => {
         const src = s.source || 'other';
@@ -802,6 +782,21 @@
         const items = grouped[src];
         if (!items || !items.length) return;
 
+        // Order within this source group: customer's saved order first
+        // (for sections that exist in defaults), then any remaining sections
+        // for that source in REPORT_SECTIONS order. This preserves per-customer
+        // intra-group ordering set in the admin UI.
+        const orderedIds = [];
+        defaults.forEach(id => {
+          if (items.some(it => it.id === id)) orderedIds.push(id);
+        });
+        items.forEach(it => {
+          if (!orderedIds.includes(it.id)) orderedIds.push(it.id);
+        });
+        const orderedItems = orderedIds
+          .map(id => items.find(it => it.id === id))
+          .filter(Boolean);
+
         const heading = document.createElement('div');
         heading.className = 'section-group-heading';
         heading.innerHTML = `<span>${sourceLabels[src] || src}</span>`;
@@ -809,7 +804,7 @@
 
         const subgrid = document.createElement('div');
         subgrid.className = 'section-subgrid';
-        items.forEach(s => {
+        orderedItems.forEach(s => {
           const checked = defaults.includes(s.id);
           const item = document.createElement('label');
           item.className = 'section-item';
@@ -832,63 +827,30 @@
       });
     }
 
-    // Customer selection
+    // Customer selection. New customers are created on the dedicated
+    // /admin/customers page (which holds the canonical Sentinel auth fields).
     function onCustomerChange() {
-      const val = document.getElementById('customerSelect').value;
-      const form = document.getElementById('newCustomerForm');
+      const sel = document.getElementById('customerSelect');
+      const val = sel.value;
       const nextBtn = document.getElementById('step1Next');
 
       if (val === '__new__') {
-        form.style.display = 'block';
+        // Reset the dropdown so this redirect does not re-fire on browser back.
+        sel.value = '';
         selectedCustomer = null;
         nextBtn.disabled = true;
-      } else if (val) {
-        form.style.display = 'none';
+        window.location.href = '/admin/customers';
+        return;
+      }
+
+      if (val) {
         selectedCustomer = customers.find(c => c.id === val);
         nextBtn.disabled = false;
         renderSections();
       } else {
-        form.style.display = 'none';
         selectedCustomer = null;
         nextBtn.disabled = true;
       }
-    }
-
-    async function createCustomer() {
-      const name = document.getElementById('newCustName').value.trim();
-      const short_name = document.getElementById('newCustShort').value.trim();
-      const jira_key = document.getElementById('newCustJiraKey').value.trim();
-      const logoInput = document.getElementById('newCustLogo');
-
-      if (!name || !short_name) { alert('Name and short name are required.'); return; }
-
-      const fd = new FormData();
-      fd.append('name', name);
-      fd.append('short_name', short_name);
-      fd.append('jira_project_key', jira_key);
-      fd.append('jira_request_type', document.getElementById('newCustRequestType').value.trim() || 'Report an Incident');
-      fd.append('sentinel_workspace_id', document.getElementById('newCustSentinelWorkspaceId').value.trim());
-      fd.append('industry', document.getElementById('newCustIndustry').value);
-      if (logoInput.files.length) fd.append('logo', logoInput.files[0]);
-
-      const r = await fetch('/admin/api/customers', { method: 'POST', body: fd });
-      const result = await r.json();
-      if (!r.ok) {
-        alert(result.error || 'Failed to create customer.');
-        return;
-      }
-
-      await loadCustomers();
-      document.getElementById('customerSelect').value = result.id || short_name.toLowerCase().replace(' ', '-');
-      onCustomerChange();
-      document.getElementById('newCustomerForm').style.display = 'none';
-      document.getElementById('newCustName').value = '';
-      document.getElementById('newCustShort').value = '';
-      document.getElementById('newCustJiraKey').value = '';
-      document.getElementById('newCustRequestType').value = 'Report an Incident';
-      document.getElementById('newCustSentinelWorkspaceId').value = '';
-      document.getElementById('newCustIndustry').value = '';
-      logoInput.value = '';
     }
 
     // Wizard navigation
@@ -1132,6 +1094,7 @@
         filename = `soc-report-${customer_name.toLowerCase().replace(/\s+/g, '-')}.${format}`;
       }
 
+      window.exportLoading?.show(format);
       try {
         const r = await fetch(url, {
           method: 'POST',
@@ -1151,6 +1114,8 @@
         URL.revokeObjectURL(a.href);
       } catch (e) {
         alert('Export failed: ' + e.message);
+      } finally {
+        window.exportLoading?.hide();
       }
     }
 
@@ -1187,6 +1152,79 @@
     setDefaultDates();
     loadCustomers();
     loadSections();
+  </script>
+
+  <style>
+    /* Export-loading overlay. Shown by exportLoading.show(format) while the
+       server is generating a PDF/DOCX/XLSX/PPTX (can take 30s+ on large
+       reports). Hidden by exportLoading.hide() after the blob downloads or
+       on error. Inlined here (not in base.html) because reports.html is a
+       standalone page that does not extend the base template. */
+    .export-loading-overlay {
+      display: none;
+      position: fixed;
+      inset: 0;
+      background: rgba(15, 23, 42, 0.55);
+      z-index: 9999;
+      align-items: center;
+      justify-content: center;
+      backdrop-filter: blur(2px);
+    }
+    .export-loading-overlay.visible { display: flex; }
+    .export-loading-card {
+      background: var(--bg-surface);
+      color: var(--text-primary);
+      border-radius: var(--radius);
+      padding: 28px 36px;
+      box-shadow: 0 10px 40px rgba(0,0,0,0.25);
+      display: flex;
+      align-items: center;
+      gap: 18px;
+      min-width: 320px;
+      max-width: 90vw;
+    }
+    .export-loading-spinner {
+      width: 28px;
+      height: 28px;
+      border: 3px solid var(--border);
+      border-top-color: var(--accent);
+      border-radius: 50%;
+      animation: export-loading-spin 0.9s linear infinite;
+      flex-shrink: 0;
+    }
+    @keyframes export-loading-spin { to { transform: rotate(360deg); } }
+    .export-loading-text { font-size: 15px; }
+    .export-loading-text .title { font-weight: 600; margin-bottom: 2px; }
+    .export-loading-text .subtitle { color: var(--text-muted); font-size: 13px; }
+  </style>
+
+  <div id="exportLoadingOverlay" class="export-loading-overlay" role="status" aria-live="polite">
+    <div class="export-loading-card">
+      <div class="export-loading-spinner"></div>
+      <div class="export-loading-text">
+        <div class="title" id="exportLoadingTitle">Generating export…</div>
+        <div class="subtitle">Large reports can take 30+ seconds. Please wait.</div>
+      </div>
+    </div>
+  </div>
+
+  <script>
+    window.exportLoading = {
+      show(format) {
+        const el = document.getElementById('exportLoadingOverlay');
+        const title = document.getElementById('exportLoadingTitle');
+        if (title) {
+          title.textContent = format
+            ? `Generating ${String(format).toUpperCase()} export…`
+            : 'Generating export…';
+        }
+        if (el) el.classList.add('visible');
+      },
+      hide() {
+        const el = document.getElementById('exportLoadingOverlay');
+        if (el) el.classList.remove('visible');
+      },
+    };
   </script>
 </body>
 </html>

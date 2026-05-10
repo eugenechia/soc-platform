@@ -1,0 +1,44 @@
+# Secrets — must NEVER be baked into the image. Production secrets come
+# from Azure Key Vault via the runtime tools/secrets.py loader.
+.env
+.env.*
+*.env
+
+# Local data (transient + secret-bearing). In production this dir is an
+# Azure Files mount; only the seed JSON files (triage_rules.json,
+# triage_rules.schema.json) need to ship in the image.
+data/customers.json
+data/customers.json.bak
+data/*.db
+data/reports/
+data/uploads/
+data/logos/
+data/triage_rules.json.lastgood
+
+# Python build artifacts
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.venv/
+venv/
+.pytest_cache/
+.mypy_cache/
+
+# IDE / OS noise
+.vscode/
+.idea/
+.DS_Store
+
+# Git metadata
+.git/
+.gitignore
+
+# Documentation that doesn't need to ship in the image
+docs/
+samples/
+README.md
+
+# Build artifacts of prior runs
+*.log
+.tmp/

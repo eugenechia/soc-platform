@@ -6,3 +6,7 @@ data/
 *.db
 token.json
 credentials.json
+.DS_Store
+.venv/
+.venv-diagrams/
+Archive/

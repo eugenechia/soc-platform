@@ -129,6 +129,49 @@
       max-width: 1400px;
       margin: 0 auto;
     }
+
+    /* Shared export-loading overlay. Shown by exportLoading.show(format)
+       while the server is generating a PDF/DOCX/XLSX/PPTX (can take 30s+
+       on large reports). Hidden by exportLoading.hide() after the blob
+       downloads or on error. */
+    .export-loading-overlay {
+      display: none;
+      position: fixed;
+      inset: 0;
+      background: rgba(15, 23, 42, 0.55);
+      z-index: 9999;
+      align-items: center;
+      justify-content: center;
+      backdrop-filter: blur(2px);
+    }
+    .export-loading-overlay.visible { display: flex; }
+    .export-loading-card {
+      background: var(--bg-surface);
+      color: var(--text-primary);
+      border-radius: var(--radius);
+      padding: 28px 36px;
+      box-shadow: 0 10px 40px rgba(0,0,0,0.25);
+      display: flex;
+      align-items: center;
+      gap: 18px;
+      min-width: 320px;
+      max-width: 90vw;
+    }
+    .export-loading-spinner {
+      width: 28px;
+      height: 28px;
+      border: 3px solid var(--border);
+      border-top-color: var(--accent);
+      border-radius: 50%;
+      animation: export-loading-spin 0.9s linear infinite;
+      flex-shrink: 0;
+    }
+    @keyframes export-loading-spin {
+      to { transform: rotate(360deg); }
+    }
+    .export-loading-text { font-size: 15px; }
+    .export-loading-text .title { font-weight: 600; margin-bottom: 2px; }
+    .export-loading-text .subtitle { color: var(--text-muted); font-size: 13px; }
   </style>
   {% block head_extra %}{% endblock %}
 </head>
@@ -158,6 +201,35 @@
   <main class="content">
     {% block content %}{% endblock %}
   </main>
+
+  <div id="exportLoadingOverlay" class="export-loading-overlay" role="status" aria-live="polite">
+    <div class="export-loading-card">
+      <div class="export-loading-spinner"></div>
+      <div class="export-loading-text">
+        <div class="title" id="exportLoadingTitle">Generating export…</div>
+        <div class="subtitle">Large reports can take 30+ seconds. Please wait.</div>
+      </div>
+    </div>
+  </div>
+
+  <script>
+    window.exportLoading = {
+      show(format) {
+        const el = document.getElementById('exportLoadingOverlay');
+        const title = document.getElementById('exportLoadingTitle');
+        if (title) {
+          title.textContent = format
+            ? `Generating ${String(format).toUpperCase()} export…`
+            : 'Generating export…';
+        }
+        if (el) el.classList.add('visible');
+      },
+      hide() {
+        const el = document.getElementById('exportLoadingOverlay');
+        if (el) el.classList.remove('visible');
+      },
+    };
+  </script>
 
   {% block scripts %}{% endblock %}
 </body>

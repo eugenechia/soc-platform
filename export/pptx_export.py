@@ -118,71 +118,101 @@ def _extract_table_rows(soup: BeautifulSoup, heading_keyword: str,
     return [], []
 
 
-def _add_slide_chrome(slide, title: str, customer_name: str = "",
-                      logicalis_logo: str = "", subtitle: str = ""):
+_FOOTER_GREY = (0x59, 0x59, 0x59)        # IMDA template body grey
+_CLASSIFICATION = "Sensitive/Internal"   # IMDA-style classification label
+
+
+def _add_imda_footer(slide, dark_bg: bool = False):
     """
-    Add the standard content-slide chrome:
-      - Logicalis logo — top right
-      - Red title bar — top left, stopping before the logo
-      - Customer name footer — bottom left with blue underline accent
+    Add the standard IMDA-style 3-element footer present on every slide:
+        bottom-left   "Logicalis"
+        bottom-center "Sensitive/Internal"
+        bottom-right  <auto slide number>
+
+    Slide is assumed to be 10" x 7.5". Footer baseline ~ y=7.10".
+    On slides with a dark background (e.g. the cover), pass dark_bg=True so the
+    text is rendered in white instead of grey.
     """
-    from pptx.util import Inches, Pt
-    from pptx.dml.color import RGBColor
     from pptx.enum.text import PP_ALIGN
     from pptx.oxml.ns import qn
     from lxml import etree
 
-    # Logicalis logo — top right
-    if logicalis_logo and os.path.exists(logicalis_logo):
-        try:
-            slide.shapes.add_picture(logicalis_logo,
-                                     _inches(8.3), _inches(0.1),
-                                     height=_inches(0.45))
-        except Exception:
-            pass
+    text_color = _WHITE if dark_bg else _FOOTER_GREY
+    text_color_hex = "FFFFFF" if dark_bg else "595959"
 
-    # Red title bar — x=0, full width but leaves visual room for logo
-    bar = slide.shapes.add_shape(
-        1,
-        _inches(0), _inches(0.1),
-        _inches(10), _inches(0.65),
+    def _footer_textbox(left, top, width, height, text, alignment):
+        box = slide.shapes.add_textbox(left, top, width, height)
+        tf = box.text_frame
+        tf.margin_left = _inches(0.05)
+        tf.margin_right = _inches(0.05)
+        tf.margin_top = _inches(0.02)
+        tf.margin_bottom = _inches(0.02)
+        p = tf.paragraphs[0]
+        p.alignment = alignment
+        run = p.add_run()
+        run.text = text
+        run.font.size = _pt(8)
+        run.font.color.rgb = _rgb(*text_color)
+        run.font.name = "Arial"
+        return box, p
+
+    # Bottom-left — "Logicalis"
+    _footer_textbox(_inches(0.35), _inches(7.10), _inches(2.0), _inches(0.30),
+                    "Logicalis", PP_ALIGN.LEFT)
+
+    # Bottom-center — classification label
+    _footer_textbox(_inches(4.0), _inches(7.10), _inches(2.0), _inches(0.30),
+                    _CLASSIFICATION, PP_ALIGN.CENTER)
+
+    # Bottom-right — auto slide-number field via OOXML <a:fld type="slidenum">.
+    # Real slide-number fields stay correct if slides are reordered, unlike a
+    # hard-coded text run.
+    box, p = _footer_textbox(_inches(8.0), _inches(7.10), _inches(1.65),
+                             _inches(0.30), "", PP_ALIGN.RIGHT)
+    fld = etree.SubElement(p._p, qn("a:fld"), {
+        "id": "{4F1E3F58-2A1F-4A2D-90D1-94F9E76F8001}",
+        "type": "slidenum",
+    })
+    rPr = etree.SubElement(fld, qn("a:rPr"), {
+        "lang": "en-US", "dirty": "0", "sz": "800",
+    })
+    solidFill = etree.SubElement(rPr, qn("a:solidFill"))
+    etree.SubElement(solidFill, qn("a:srgbClr"), {"val": text_color_hex})
+    etree.SubElement(rPr, qn("a:latin"), {"typeface": "Arial"})
+    t = etree.SubElement(fld, qn("a:t"))
+    t.text = "‹#›"
+
+
+def _add_slide_chrome(slide, title: str, customer_name: str = "",
+                      logicalis_logo: str = "", subtitle: str = ""):
+    """
+    IMDA-style content-slide chrome:
+      - Small red title in the top-left (no full-width bar)
+      - Standard 3-element footer at the bottom
+
+    `customer_name` and `logicalis_logo` are accepted for backwards compat but
+    are no longer rendered on content slides — the cover slide handles branding.
+    """
+    from pptx.enum.text import PP_ALIGN
+
+    # Small red title — top-left
+    title_box = slide.shapes.add_textbox(
+        _inches(0.4), _inches(0.35), _inches(9.2), _inches(0.55),
     )
-    bar.fill.solid()
-    bar.fill.fore_color.rgb = _rgb(*_RED)
-    bar.line.fill.background()
-
-    tf = bar.text_frame
+    tf = title_box.text_frame
+    tf.margin_left = _inches(0)
+    tf.margin_top = _inches(0)
     tf.word_wrap = False
-    tf.margin_left = _inches(0.15)
-    tf.margin_top = _inches(0.05)
     p = tf.paragraphs[0]
     p.alignment = PP_ALIGN.LEFT
     run = p.add_run()
     run.text = title
-    run.font.size = _pt(18)
+    run.font.size = _pt(20)
     run.font.bold = True
-    run.font.color.rgb = _rgb(*_WHITE)
+    run.font.color.rgb = _rgb(*_RED)
     run.font.name = "Arial"
 
-    # Customer name footer — bottom left with blue underline accent
-    if customer_name:
-        footer_box = slide.shapes.add_textbox(
-            _inches(0.2), _inches(7.1),
-            _inches(3.5), _inches(0.3),
-        )
-        tf_f = footer_box.text_frame
-        p_f = tf_f.paragraphs[0]
-        run_f = p_f.add_run()
-        run_f.text = customer_name
-        run_f.font.size = _pt(8)
-        run_f.font.color.rgb = _rgb(*_BLUE)
-        run_f.font.bold = True
-        run_f.font.name = "Arial"
-
-        # Blue bottom border under the footer text
-        pPr = p_f._p.get_or_add_pPr()
-        pBdr = etree.SubElement(pPr, qn("a:buNone"))  # clear bullet
-        lnSpc = etree.SubElement(p_f._p, qn("a:endParaRPr"))
+    _add_imda_footer(slide)
 
 
 # Keep the old name as an alias used in the generate function
@@ -395,21 +425,9 @@ def generate_pptx(markdown_content: str, customer_name: str, report_date: str,
         except Exception:
             pass
 
-    # Footer bar — bottom left
-    footer_bar = slide.shapes.add_shape(
-        1, _inches(0), _inches(7.1), _inches(3.5), _inches(0.4))
-    footer_bar.fill.solid()
-    footer_bar.fill.fore_color.rgb = _rgb(0x1A, 0x4A, 0xBB)
-    footer_bar.line.fill.background()
-    tf_fb = footer_bar.text_frame
-    tf_fb.margin_left = _inches(0.15)
-    tf_fb.margin_top  = _inches(0.06)
-    p_fb = tf_fb.paragraphs[0]
-    r_fb = p_fb.add_run()
-    r_fb.text = customer_name
-    r_fb.font.size = _pt(9)
-    r_fb.font.color.rgb = _rgb(*_WHITE)
-    r_fb.font.name = "Arial"
+    # IMDA-style footer (Logicalis / Sensitive-Internal / slide-number).
+    # White text since the cover has a dark blue background.
+    _add_imda_footer(slide, dark_bg=True)
 
     # ── Slide 2: Executive Summary ────────────────────────────────────────────
     slide = _content_slide("Executive Summary")

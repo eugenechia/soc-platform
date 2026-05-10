@@ -12,6 +12,12 @@ from flask import Blueprint, render_template, session, request, jsonify, send_fi
 
 from routes.auth import require_login
 import tools.db as db
+from tools.customers import (
+    load_customers as _load_customers,
+    save_customers as _save_customers,
+    CUSTOMERS_FILE,
+)
+from tools.secrets import set_kv_secret
 
 log = __import__("logging").getLogger(__name__)
 
@@ -19,7 +25,6 @@ admin_bp = Blueprint("admin", __name__)
 
 BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 DATA_DIR = os.path.join(BASE_DIR, "data")
-CUSTOMERS_FILE = os.path.join(DATA_DIR, "customers.json")
 LOGOS_DIR = os.path.join(DATA_DIR, "logos")
 REPORTS_DIR = os.path.join(DATA_DIR, "reports")
 
@@ -27,19 +32,9 @@ os.makedirs(LOGOS_DIR, exist_ok=True)
 os.makedirs(REPORTS_DIR, exist_ok=True)
 
 
-# ── Customer helpers ───────────────────────────────────────────────────────────
-
-def _load_customers() -> list:
-    if not os.path.exists(CUSTOMERS_FILE):
-        return []
-    with open(CUSTOMERS_FILE) as f:
-        return json.load(f)
-
-
-def _save_customers(customers: list):
-    os.makedirs(os.path.dirname(CUSTOMERS_FILE), exist_ok=True)
-    with open(CUSTOMERS_FILE, "w") as f:
-        json.dump(customers, f, indent=2)
+def _customer_secret_kv_name(customer_id: str) -> str:
+    """Deterministic KV name for a customer's Sentinel client secret."""
+    return f"customer-{customer_id}-sentinel-client-secret"
 
 
 # ── Pages ──────────────────────────────────────────────────────────────────────
@@ -86,8 +81,14 @@ def api_customers_create():
     short_name = request.form.get("short_name", "").strip()
     jira_project_key = request.form.get("jira_project_key", "").strip()
     jira_request_type = request.form.get("jira_request_type", "Report an Incident").strip()
+    jira_incident_issuetype = request.form.get("jira_incident_issuetype", "").strip()
+    jira_service_request_issuetype = request.form.get("jira_service_request_issuetype", "").strip()
+    jira_change_request_issuetype = request.form.get("jira_change_request_issuetype", "").strip()
     industry = request.form.get("industry", "").strip()
     sentinel_workspace_id = request.form.get("sentinel_workspace_id", "").strip()
+    sentinel_tenant_id = request.form.get("sentinel_tenant_id", "").strip()
+    sentinel_client_id = request.form.get("sentinel_client_id", "").strip()
+    sentinel_client_secret = request.form.get("sentinel_client_secret", "").strip()
     default_sections = request.form.getlist("default_sections")
 
     if not name or not short_name:
@@ -108,19 +109,36 @@ def api_customers_create():
         logo_file.save(os.path.join(LOGOS_DIR, logo_filename))
         logo_path = f"data/logos/{logo_filename}"
 
+    kv_name = ""
+    if sentinel_client_secret:
+        kv_name = _customer_secret_kv_name(cid)
+        try:
+            set_kv_secret(kv_name, sentinel_client_secret)
+        except Exception as e:
+            log.error("Failed to write Sentinel client secret to KV for %s: %s", cid, e)
+            return jsonify({"error": f"Could not save client secret to Key Vault: {e}"}), 500
+
     customer = {
         "id": cid,
         "name": name,
         "short_name": short_name,
         "jira_project_key": jira_project_key,
         "jira_request_type": jira_request_type or "Report an Incident",
+        "jira_incident_issuetype": jira_incident_issuetype or "[System] Incident",
+        "jira_service_request_issuetype": jira_service_request_issuetype or "Service Request",
+        "jira_change_request_issuetype": jira_change_request_issuetype or "Change",
         "industry": industry,
         "sentinel_workspace_id": sentinel_workspace_id,
+        "sentinel_tenant_id": sentinel_tenant_id,
+        "sentinel_client_id": sentinel_client_id,
+        "sentinel_client_secret_kv_name": kv_name,
         "logo": logo_path,
         "default_sections": default_sections or [
             "introduction", "incident_overview", "incident_severity",
-            "incident_status", "incident_details", "pending_tickets",
-            "monitoring_scope", "recommendations"
+            "incident_status", "incident_details",
+            "service_requests", "change_requests",
+            "pending_tickets", "monitoring_scope", "recommendations",
+            "industry_threat_intel"
         ],
         "created_at": datetime.now().strftime("%Y-%m-%d"),
     }
@@ -145,15 +163,41 @@ def api_customers_update(cid):
         jira_request_type_val = request.form.get("jira_request_type", None)
         if jira_request_type_val is not None:
             customer["jira_request_type"] = jira_request_type_val.strip() or "Report an Incident"
+        incident_issuetype_val = request.form.get("jira_incident_issuetype", None)
+        if incident_issuetype_val is not None:
+            customer["jira_incident_issuetype"] = incident_issuetype_val.strip() or "[System] Incident"
+        sr_issuetype_val = request.form.get("jira_service_request_issuetype", None)
+        if sr_issuetype_val is not None:
+            customer["jira_service_request_issuetype"] = sr_issuetype_val.strip() or "Service Request"
+        cr_issuetype_val = request.form.get("jira_change_request_issuetype", None)
+        if cr_issuetype_val is not None:
+            customer["jira_change_request_issuetype"] = cr_issuetype_val.strip() or "Change"
         industry_val = request.form.get("industry", None)
         if industry_val is not None:
             customer["industry"] = industry_val.strip()
         sentinel_workspace_id_val = request.form.get("sentinel_workspace_id", None)
         if sentinel_workspace_id_val is not None:
             customer["sentinel_workspace_id"] = sentinel_workspace_id_val.strip()
-        default_sections = request.form.getlist("default_sections")
-        if default_sections:
-            customer["default_sections"] = default_sections
+        sentinel_tenant_id_val = request.form.get("sentinel_tenant_id", None)
+        if sentinel_tenant_id_val is not None:
+            customer["sentinel_tenant_id"] = sentinel_tenant_id_val.strip()
+        sentinel_client_id_val = request.form.get("sentinel_client_id", None)
+        if sentinel_client_id_val is not None:
+            customer["sentinel_client_id"] = sentinel_client_id_val.strip()
+        # Client secret: rotation semantics — empty input means "leave KV value alone".
+        # Non-empty input writes the new value to KV under a deterministic name and
+        # records the reference on the customer record.
+        sentinel_client_secret_val = request.form.get("sentinel_client_secret", "").strip()
+        if sentinel_client_secret_val:
+            kv_name = _customer_secret_kv_name(cid)
+            try:
+                set_kv_secret(kv_name, sentinel_client_secret_val)
+            except Exception as e:
+                log.error("Failed to update Sentinel client secret in KV for %s: %s", cid, e)
+                return jsonify({"error": f"Could not save client secret to Key Vault: {e}"}), 500
+            customer["sentinel_client_secret_kv_name"] = kv_name
+        if request.form.get("default_sections_submitted"):
+            customer["default_sections"] = request.form.getlist("default_sections")
         logo_file = request.files.get("logo")
         if logo_file and logo_file.filename:
             ext = os.path.splitext(logo_file.filename)[1].lower()
@@ -165,9 +209,22 @@ def api_customers_update(cid):
     else:
         data = request.json or {}
         for key in ("name", "short_name", "jira_project_key", "jira_request_type",
-                    "industry", "sentinel_workspace_id", "default_sections"):
+                    "jira_incident_issuetype",
+                    "jira_service_request_issuetype", "jira_change_request_issuetype",
+                    "industry", "sentinel_workspace_id", "sentinel_tenant_id",
+                    "sentinel_client_id", "default_sections"):
             if key in data:
                 customer[key] = data[key]
+        # JSON path also supports rotating the secret. The KV reference name is
+        # derived deterministically — clients only send the raw value.
+        if "sentinel_client_secret" in data and data["sentinel_client_secret"]:
+            kv_name = _customer_secret_kv_name(cid)
+            try:
+                set_kv_secret(kv_name, data["sentinel_client_secret"])
+            except Exception as e:
+                log.error("Failed to update Sentinel client secret in KV for %s: %s", cid, e)
+                return jsonify({"error": f"Could not save client secret to Key Vault: {e}"}), 500
+            customer["sentinel_client_secret_kv_name"] = kv_name
 
     _save_customers(customers)
     return jsonify(customer)

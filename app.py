@@ -27,6 +27,7 @@ from routes.investigate import investigate_bp
 from routes.admin import admin_bp
 from routes.exports import exports_bp
 from routes.webhook import webhook_bp
+from routes.gateway import gateway_bp
 
 
 def create_app() -> Flask:
@@ -53,12 +54,16 @@ def create_app() -> Flask:
     app.register_blueprint(admin_bp,        url_prefix="/admin")
     app.register_blueprint(exports_bp,      url_prefix="/exports")
     app.register_blueprint(webhook_bp,      url_prefix="/webhook")
+    app.register_blueprint(gateway_bp,      url_prefix="/api")
 
     # Every request requires an authenticated Entra ID session, except:
-    # /auth/* (SSO flow), /static/* (assets), /webhook/* (secret-token auth)
+    # /auth/*    SSO flow
+    # /static/*  assets
+    # /webhook/* Jira webhook (secret-token auth)
+    # /api/*     SIEM-facing gateway (X-Shared-Secret auth — SIEMs are unattended)
     @app.before_request
     def _enforce_login():
-        if request.path.startswith(("/auth/", "/static/", "/webhook/")):
+        if request.path.startswith(("/auth/", "/static/", "/webhook/", "/api/")):
             return
         if not session.get("user"):
             return redirect("/auth/login")

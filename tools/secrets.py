@@ -84,3 +84,41 @@ def get_secret(name: str) -> str:
 def clear_cache() -> None:
     """Force re-read of all secrets. Used by admin 'reload config' actions if you add them."""
     _cache.clear()
+
+
+def get_kv_secret(name: str) -> str:
+    """Fetch a secret directly from Key Vault, skipping env fallback.
+
+    Used for customer-scoped secrets (e.g. per-customer Sentinel client secrets) that
+    have no env equivalent and live in KV under explicit kebab-case names.
+    Returns "" if not found, KV unconfigured, or the SDK is unavailable.
+    """
+    if not _AZURE_KEYVAULT_URL:
+        return ""
+    cache_key = f"__kv__{name}"
+    if cache_key in _cache:
+        return _cache[cache_key]
+    value = _fetch_from_keyvault(name) or ""
+    _cache[cache_key] = value
+    return value
+
+
+def set_kv_secret(name: str, value: str) -> None:
+    """Write a secret to Key Vault under the given name.
+
+    Used by admin handlers when an operator enters a fresh customer credential.
+    Raises if KV is not configured or the write fails — callers should handle.
+    The in-process cache is invalidated for this name so subsequent reads see the new value.
+    """
+    if not _AZURE_KEYVAULT_URL:
+        raise RuntimeError(
+            "AZURE_KEYVAULT_URL is not set — cannot write secret to Key Vault."
+        )
+    client = _get_kv_client()
+    if client is None:
+        raise RuntimeError(
+            "Key Vault client unavailable (azure-identity / azure-keyvault-secrets not installed)."
+        )
+    client.set_secret(name, value)
+    _cache.pop(f"__kv__{name}", None)
+    _cache.pop(name, None)

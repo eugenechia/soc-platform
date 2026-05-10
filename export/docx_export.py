@@ -73,7 +73,10 @@ def _set_cell_shading(cell, fill_hex: str):
 def _set_table_full_width_centered(table):
     """Force a table to span 100% of the content width, autofit columns, and centre-align."""
     tbl = table._tbl
-    tblPr = tbl.get_or_add_tblPr()
+    # python-docx 1.2.0's CT_Tbl exposes tblPr as a property only — there is no
+    # get_or_add_tblPr() helper. add_table() always inserts a tblPr element, so
+    # accessing it directly is safe.
+    tblPr = tbl.tblPr
 
     # Remove any pre-existing tblW / jc / tblLayout elements to avoid duplicates
     for tag_name in ("w:tblW", "w:jc", "w:tblLayout"):
@@ -251,20 +254,49 @@ def _add_cover_page(doc, customer_name: str, report_date: str,
     doc.add_page_break()
 
 
-def _add_header_footer(doc, report_date: str):
-    """Add header and footer to the document sections."""
+def _add_header_footer(doc, report_date: str, logicalis_logo: str = ""):
+    """Add header and footer to the document sections.
+
+    Header layout: 2-column borderless table \u2014 left cell has the report-month
+    text, right cell has the Logicalis logo (right-aligned, ~0.45 inch tall).
+    """
     report_month = _get_report_month(report_date)
+    logo_buf = _load_image_as_png(logicalis_logo) if logicalis_logo else None
 
     for section in doc.sections:
         # Header
         header = section.header
         header.is_linked_to_previous = False
-        header_para = header.paragraphs[0] if header.paragraphs else header.add_paragraph()
-        header_para.text = ""
-        run = header_para.add_run(f"Logicalis GSOC Monthly Report \u2013 {report_month}")
+        # Wipe the default empty paragraph so it doesn't leave a blank line
+        # above the table.
+        for p in list(header.paragraphs):
+            p._element.getparent().remove(p._element)
+
+        # Two-column header table \u2014 text left, logo right
+        usable_width = section.page_width - section.left_margin - section.right_margin
+        tbl = header.add_table(rows=1, cols=2, width=usable_width)
+        tbl.autofit = False
+        tbl.columns[0].width = int(usable_width * 0.62)
+        tbl.columns[1].width = usable_width - tbl.columns[0].width
+
+        left_cell, right_cell = tbl.rows[0].cells
+        left_cell.width = tbl.columns[0].width
+        right_cell.width = tbl.columns[1].width
+
+        left_para = left_cell.paragraphs[0]
+        left_para.alignment = WD_ALIGN_PARAGRAPH.LEFT
+        run = left_para.add_run(f"Logicalis GSOC Monthly Report \u2013 {report_month}")
         run.font.size = Pt(8)
         run.font.color.rgb = _GREY
-        _add_para_border(header_para, "bottom", "CCCCCC", sz="4")
+        _add_para_border(left_para, "bottom", "CCCCCC", sz="4")
+
+        right_para = right_cell.paragraphs[0]
+        right_para.alignment = WD_ALIGN_PARAGRAPH.RIGHT
+        if logo_buf:
+            # Reset stream pointer in case the buffer is reused across sections
+            logo_buf.seek(0)
+            right_para.add_run().add_picture(logo_buf, height=Inches(0.45))
+        _add_para_border(right_para, "bottom", "CCCCCC", sz="4")
 
         # Footer
         footer = section.footer
@@ -329,8 +361,8 @@ def generate_docx(markdown_content: str, customer_name: str, report_date: str,
     # Add cover page
     _add_cover_page(doc, customer_name, report_date, logo_path, default_logo)
 
-    # Add headers and footers
-    _add_header_footer(doc, report_date)
+    # Add headers and footers (logo goes top-right of every page)
+    _add_header_footer(doc, report_date, default_logo)
 
     # Parse markdown to HTML
     content_html = md_lib.markdown(
@@ -441,11 +473,16 @@ def generate_docx(markdown_content: str, customer_name: str, report_date: str,
             table = doc.add_table(rows=len(rows_data), cols=ncols)
             table.style = "Table Grid"
 
-            for ri, row_data in enumerate(rows_data):
+            # Iterate via row.cells (O(1) per access). The previous
+            # table.cell(ri, ci) lookup walked all cells from the start every
+            # call — O(rows × cols) per cell, so a 1402×7 incident table took
+            # 500+ seconds to render and tripped ACA's 240s ingress timeout.
+            for ri, (row, row_data) in enumerate(zip(table.rows, rows_data)):
+                row_cells = row.cells
                 for ci, (text, is_th) in enumerate(row_data):
                     if ci >= ncols:
                         continue
-                    cell = table.cell(ri, ci)
+                    cell = row_cells[ci]
                     cell_para = cell.paragraphs[0]
                     run = cell_para.add_run(text)
                     run.font.size = Pt(8)

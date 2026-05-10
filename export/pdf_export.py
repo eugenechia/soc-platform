@@ -36,12 +36,39 @@ def _get_report_month(report_date: str) -> str:
 
 _PDF_STYLES = """
   @page {
-    margin: 2cm 2cm 2.5cm 2cm;
+    /* Top margin enlarged from 2.4cm so body content has breathing room
+       below the logo. The logo (~1.2cm tall) is anchored to the top of the
+       margin via vertical-align: top, so the bottom of the logo sits at
+       roughly 1.2cm from the page edge and ~2cm of whitespace remains
+       before the content begins at the 3.2cm margin boundary. */
+    margin: 3.2cm 2cm 2.5cm 2cm;
     @top-left {
       content: "Logicalis GSOC Monthly Report — {report_month}";
       font-size: 8pt;
       color: #888;
       font-family: Arial, sans-serif;
+      vertical-align: top;
+      padding-top: 30px;
+    }
+    @top-right {
+      /* Box explicitly fills the full top page margin (4.5cm wide × 3.2cm
+         tall, matching the page's top margin). Without explicit dimensions
+         WeasyPrint collapses the margin box and the background image
+         disappears entirely. Image is drawn at right-top of the box, which
+         is also the right-top of the page top margin — i.e. the very top
+         edge of the page. The remaining ~2cm below the image becomes
+         whitespace before body content starts at the margin boundary. */
+      content: "";
+      width: 4.5cm;
+      height: 3.2cm;
+      background-image: url("{logicalis_logo_uri}");
+      background-repeat: no-repeat;
+      background-position: right 30px;
+      /* Logo source is 1200x600 px (2:1 aspect). Sizing to 2.4cm x 1.2cm
+         preserves that ratio. The previous 4.5cm x 1.2cm forced 3.75:1,
+         visibly squishing the logo vertically and stretching it
+         horizontally. */
+      background-size: 2.4cm 1.2cm;
     }
     @bottom-left {
       content: "Confidential";
@@ -60,6 +87,7 @@ _PDF_STYLES = """
   @page cover {
     margin: 0;
     @top-left { content: none; }
+    @top-right { content: none; background: none; }
     @bottom-left { content: none; }
     @bottom-right { content: none; }
   }
@@ -145,19 +173,35 @@ _PDF_STYLES = """
   }
   pre code { background: none; padding: 0; }
 
+  /* Tables.
+     - `table-layout: auto` sizes columns by content (so single-digit S.No
+       columns stay narrow and ID columns get enough room for "LOGICALIS-XXXXX").
+     - `word-break` removed (was forcing mid-string breaks like
+       "LOGICALIS-2787" / "2"). Hyphens are no longer break opportunities;
+       IDs render on one line.
+     - `overflow-wrap: break-word` kept as a safety net for unbreakable
+       strings that would otherwise overflow the page width.
+     - Page-break rules keep individual rows whole across page boundaries;
+       long tables split between rows with the header repeating. */
   table {
     border-collapse: collapse;
     width: 100%;
-    table-layout: fixed;
+    table-layout: auto;
     margin: 0.8em auto;
     font-size: 8.5pt;
+    page-break-inside: auto;
+  }
+  thead { display: table-header-group; }
+  tfoot { display: table-footer-group; }
+  tr {
+    page-break-inside: avoid;
+    page-break-after: auto;
   }
   th, td {
     border: 1px solid #cdd5e8;
     padding: 4px 7px;
     text-align: left;
     vertical-align: top;
-    word-break: break-word;
     overflow-wrap: break-word;
     overflow: hidden;
   }
@@ -306,11 +350,16 @@ def generate_pdf(markdown_content: str, customer_name: str, report_date: str,
     if customer_logo_uri:
         logos_html += f'<img src="{customer_logo_uri}" alt="{customer_name}">'
 
+    styles = (
+        _PDF_STYLES
+        .replace("{report_month}", report_month)
+        .replace("{logicalis_logo_uri}", logicalis_logo_uri)
+    )
     html = f"""<!DOCTYPE html>
 <html lang="en">
 <head>
   <meta charset="UTF-8">
-  <style>{_PDF_STYLES.replace("{report_month}", report_month)}</style>
+  <style>{styles}</style>
 </head>
 <body>
   <div class="cover-page">

@@ -1,0 +1,57 @@
+---
+config:
+  flowchart:
+    defaultRenderer: elk
+    nodeSpacing: 60
+    rankSpacing: 60
+---
+flowchart LR
+    classDef siem      fill:#E5F1FB,color:#1E293B,stroke:#0078D4,stroke-width:1px
+    classDef gateway   fill:#0078D4,color:#fff,stroke:#004578,stroke-width:1.5px
+    classDef brain     fill:#1F2A44,color:#fff,stroke:#0B1426,stroke-width:1.5px
+    classDef triage    fill:#107C10,color:#fff,stroke:#0B5C0B,stroke-width:1.5px
+    classDef report    fill:#7C3AED,color:#fff,stroke:#4C1D95,stroke-width:1.5px
+    classDef jira      fill:#FFF4E5,color:#1E293B,stroke:#DE350B,stroke-width:1.5px
+    classDef external  fill:#F1F5F9,color:#1E293B,stroke:#94A3B8,stroke-width:1px,stroke-dasharray:3 3
+    classDef person    fill:#FFFFFF,color:#1E293B,stroke:#475569,stroke-width:2px
+
+    subgraph SRC["Detection / Data Sources"]
+        direction TB
+        SENT["Microsoft Sentinel<br/>+ Logic App"]:::siem
+        SPLK["Splunk<br/>(planned)"]:::siem
+        FUT["Future SIEMs"]:::siem
+    end
+
+    subgraph SOCP["soc-platform &nbsp;(Azure Container Apps)"]
+        direction TB
+        GW["SIEM Gateway<br/>/api/ingest"]:::gateway
+        WH["Webhook +<br/>Dedup Engine"]:::brain
+        TR["L1 Triage<br/>IOC Enrichment"]:::triage
+        RG["Report Generator<br/>scheduled + on-demand"]:::report
+    end
+
+    JIRA[("Jira Cloud<br/>SCDM project")]:::jira
+    ENR["IOC Reputation<br/>VirusTotal · AbuseIPDB · SOCRadar"]:::external
+    USER(("SOC Analyst")):::person
+
+    %% Alert path
+    SENT -->|"creates ticket"| JIRA
+    SPLK -->|"normalised alert"| GW
+    FUT  --> GW
+    GW   -->|"create / dedup"| JIRA
+
+    %% Triage cycle
+    JIRA -->|"webhook"| WH
+    WH   --> TR
+    WH   -->|"dedup label /<br/>occurrence count"| JIRA
+    TR   -->|"Potential-TP /<br/>IOC report"| JIRA
+    TR   -->|"reputation lookup"| ENR
+
+    %% Report Generator pulls data
+    JIRA -.->|"JQL"| RG
+    SENT -.->|"KQL"| RG
+    SPLK -.->|"saved searches"| RG
+
+    %% Outputs
+    JIRA --> USER
+    RG   -->|"PDF / DOCX / PPTX / XLSX"| USER
