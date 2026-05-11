@@ -345,7 +345,12 @@ def _build_comment(ioc_results: list[dict], overall_verdict: str, action_taken: 
         ]
         return "\n".join(lines)
 
-    lines.append(f"IOCs found: {len(ioc_results)}")
+    # An "IOC" here means an observable that at least one reputation engine flagged
+    # as malicious. Observables that all engines cleared (or returned no data for)
+    # are still listed below for analyst visibility but don't bump the IOC count.
+    ioc_count = sum(1 for r in ioc_results if r.get("verdict") == "malicious")
+    lines.append(f"IOCs found: {ioc_count}")
+    lines.append(f"(Extracted observables checked: {len(ioc_results)})")
     lines.append("")
 
     for i, result in enumerate(ioc_results, 1):
@@ -354,7 +359,17 @@ def _build_comment(ioc_results: list[dict], overall_verdict: str, action_taken: 
 
         vt = result.get("virustotal")
         if vt:
-            lines.append(f"  VirusTotal: {vt.get('malicious_count', 0)}/{vt.get('total_engines', 0)} detections")
+            mal = vt.get("malicious_count", 0)
+            tot = vt.get("total_engines", 0)
+            rep = vt.get("reputation", 0)
+            if tot > 0:
+                confidence = (mal / tot) * 100
+                lines.append(
+                    f"  VirusTotal: {mal}/{tot} detections "
+                    f"(Confidence {confidence:.1f}%, Reputation {rep})"
+                )
+            else:
+                lines.append(f"  VirusTotal: {mal}/{tot} detections (Reputation {rep})")
         else:
             lines.append("  VirusTotal: Not configured")
 

@@ -28,7 +28,8 @@ def check_ioc(value: str, ioc_type: str) -> dict | None:
     """Look up IOC reputation from VirusTotal.
 
     ioc_type: "ip" | "domain" | "hash"
-    Returns {"malicious_count": int, "total_engines": int, "raw": dict} or None.
+    Returns {"malicious_count": int, "total_engines": int, "reputation": int, "raw": dict} or None.
+    `reputation` is VT's community-voted signed integer (negative = bad, positive = good); 0 when absent.
     """
     headers = _headers()
     if not headers:
@@ -47,16 +48,22 @@ def check_ioc(value: str, ioc_type: str) -> dict | None:
     try:
         r = httpx.get(f"{_BASE}/{endpoint}", headers=headers, timeout=30)
         if r.status_code == 404:
-            return {"malicious_count": 0, "total_engines": 0, "raw": {}}
+            return {"malicious_count": 0, "total_engines": 0, "reputation": 0, "raw": {}}
         if r.status_code >= 400:
             logger.warning("VirusTotal %s HTTP %s: %s", endpoint, r.status_code, r.text[:200])
             return None
         data = r.json()
-        stats = (data.get("data", {}).get("attributes", {})
-                     .get("last_analysis_stats", {}))
+        attrs = data.get("data", {}).get("attributes", {})
+        stats = attrs.get("last_analysis_stats", {})
         malicious = int(stats.get("malicious", 0))
         total = sum(stats.values()) if stats else 0
-        return {"malicious_count": malicious, "total_engines": total, "raw": data}
+        reputation = int(attrs.get("reputation", 0) or 0)
+        return {
+            "malicious_count": malicious,
+            "total_engines": total,
+            "reputation": reputation,
+            "raw": data,
+        }
     except Exception as e:
         logger.warning("VirusTotal check failed (%s): %s", type(e).__name__, e)
         return None
