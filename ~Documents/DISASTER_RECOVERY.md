@@ -121,10 +121,10 @@ If Entra ID redirect fails with a callback URL mismatch, register `http://localh
 > Replace resource names below if you want different ones; just keep them consistent across all commands and update `.env` to match.
 
 ```bash
-RG=rg-eugene-socplatform
+RG=rg-soc-platform
 LOC=southeastasia
 KV=kv-socplatform
-ACR=socplatformregistry
+ACR=socplatformreg
 ACA_ENV=soc-platform-env
 ACA_APP=soc-platform
 
@@ -209,8 +209,8 @@ Then in the SOC-Platform admin UI: **Customers → Add (or Edit existing)** → 
 Once Azure is rebuilt and customers re-onboarded:
 
 ```bash
-RG=rg-eugene-socplatform
-ACR=socplatformregistry
+RG=rg-soc-platform
+ACR=socplatformreg
 ACA_APP=soc-platform
 
 az acr build --registry $ACR --image soc-platform:latest .
