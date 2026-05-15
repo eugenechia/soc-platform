@@ -100,7 +100,7 @@ def render_deployment() -> Path:
             sa = StorageAccounts("Storage Account\nsocdataplatform")
             fs = AzureFileshares("File Share\nsoc-platform-data\n(/app/data)")
             law = LogAnalyticsWorkspaces("Log Analytics\nContainerAppConsoleLogs")
-            aoai = AzureOpenAI("Azure OpenAI\ngpt-4.1")
+            aoai = AzureOpenAI("Azure OpenAI\ngpt-5.2")
 
         operator >> Edge(label="HTTPS\nEntra-gated", style="bold", color="#0078D4") >> aca
         operator >> Edge(label="OAuth2 PKCE", style="dashed", color="#0078D4") >> entra
@@ -167,8 +167,8 @@ def render_integration() -> Path:
         # AI
         with Cluster("AI Services",
                      graph_attr={**CLUSTER_ATTRS, "bgcolor": "#DCFCE7"}):
-            aoai = AzureOpenAI("Azure OpenAI\ngpt-4.1\n(report writer)")
-            anthropic = _gen_node("Anthropic\nMessages + MCP-client beta\n(Investigate analyst)")
+            aoai = AzureOpenAI("Azure OpenAI\ngpt-5.2\n(report writer)")
+            openai_resp = _gen_node("OpenAI\ngpt-5.2\nResponses API + MCP\n(Investigate analyst)")
 
         # Output / delivery
         with Cluster("Delivery",
@@ -184,13 +184,13 @@ def render_integration() -> Path:
         app >> Edge(label="REST") >> splunk
 
         app >> Edge(label="API-Key") >> socr_rest
-        app >> Edge(label="MCP / Anthropic") >> socr_mcp
+        app >> Edge(label="MCP (OAuth2.1 PKCE)") >> socr_mcp
         app >> Edge(label="search query") >> tavily
         app >> Edge(label="enrichment", style="dashed") >> vt
         app >> Edge(label="enrichment", style="dashed") >> abuse
 
         app >> Edge(label="chat.completions", color="#107C10") >> aoai
-        app >> Edge(label="messages.create", color="#D97706") >> anthropic
+        app >> Edge(label="responses.create", color="#D97706") >> openai_resp
 
         app >> Edge(label="multipart attachment\n(scheduled)", style="dashed") >> smtp
 

@@ -110,7 +110,7 @@ flowchart TB
         FS["File share<br/>soc-platform-data<br/>mount: /app/data<br/>customers.json + reports/"]:::storage
         LAW["Log Analytics<br/>ContainerAppConsoleLogs<br/>a5be1877…"]:::azureRes
         MI["Managed Identity<br/>d187181d…"]:::identity
-        AOAI["Azure OpenAI<br/>socaiagent.openai.azure.com<br/>gpt-4.1"]:::azureRes
+        AOAI["Azure OpenAI<br/>socaiagent.openai.azure.com<br/>gpt-5.2"]:::azureRes
     end
 
     USR ==>|"HTTPS<br/>Entra-gated"| ACA
@@ -174,8 +174,8 @@ flowchart LR
     end
 
     subgraph LLM ["AI"]
-        AOAI["Azure OpenAI<br/>gpt-4.1<br/>report writer"]:::azNode
-        ANTH["Anthropic API<br/>(MCP client beta)<br/>Investigate analyst"]:::extNode
+        AOAI["Azure OpenAI<br/>gpt-5.2<br/>report writer"]:::azNode
+        OAI["OpenAI<br/>gpt-5.2<br/>(Responses API + MCP)<br/>Investigate analyst"]:::extNode
     end
 
     subgraph DELIVERY ["Output"]
@@ -189,13 +189,13 @@ flowchart LR
     APP <-->|"REST"| SPLK
 
     APP <-->|"API-Key<br/>company alarms · CVEs · industry actors"| SOCRR
-    APP <-->|"MCP / Anthropic beta"| SOCRM
+    APP <-->|"MCP (OAuth2.1 PKCE)"| SOCRM
     APP <-->|"search query"| TAVILY
     APP <-->|"IOC enrichment"| VT
     APP <-->|"IOC enrichment"| ABUSE
 
     APP <-->|"chat.completions<br/>(report sections)"| AOAI
-    APP <-->|"messages.create<br/>(MCP analyst)"| ANTH
+    APP <-->|"responses.create<br/>(MCP analyst)"| OAI
 
     APP -->|"multipart attachment<br/>(scheduled)"| SMTP
 ```
@@ -204,8 +204,8 @@ flowchart LR
 
 | Operator mode | LLM | Threat-intel sources | Output |
 |---|---|---|---|
-| **Generate Report** | Azure OpenAI gpt-4.1 (parallel per source group) | SOCRadar REST + Tavily (industry section) | Markdown → PDF / DOCX / PPTX / XLSX |
-| **Investigate** | Anthropic + MCP-client beta | SOCRadar MCP (full tool catalog) + Tavily | Streaming Markdown in-browser |
+| **Generate Report** | Azure OpenAI gpt-5.2 (parallel per source group) | SOCRadar REST + Tavily (industry section) | Markdown → PDF / DOCX / PPTX / XLSX |
+| **Investigate** | OpenAI gpt-5.2 (Responses API + MCP tools) | SOCRadar MCP (full tool catalog) + Tavily | Streaming Markdown in-browser |
 
 **Per-customer credentials** (each onboarded customer brings their own):
 - `sentinel_tenant_id` / `sentinel_client_id` / `sentinel_workspace_id` — stored on customer record

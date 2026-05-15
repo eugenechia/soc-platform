@@ -98,9 +98,9 @@ def _render_socradar_alarms_html(alarms: list) -> str:
 # Sentinel marker for the pre-rendered incident details table. The LLM is told
 # to emit this token verbatim where the table belongs; after section assembly
 # we swap it for the HTML rendered by `_render_incident_details_html`. This
-# keeps a 1,400-row table out of the LLM output budget (max_tokens=16000), which
-# was previously truncating the table with a "..." row and a "for brevity"
-# warning.
+# keeps a 1,400-row table out of the LLM output budget (max_completion_tokens=
+# 16000), which was previously truncating the table with a "..." row and a "for
+# brevity" warning.
 INCIDENT_DETAILS_TOKEN = "<!--INCIDENT_DETAILS_TABLE-->"
 
 # Same pattern for pending tickets. Ticket summaries contain literal `|`
@@ -1064,7 +1064,7 @@ async def _generate_group(group_sections: list, data_subset: dict, ctx: dict, co
             {"role": "system", "content": prompt},
             {"role": "user", "content": "Generate the assigned report sections now."},
         ],
-        max_tokens=16000,
+        max_completion_tokens=16000,
     )
     return (response.choices[0].message.content or "").strip()
 

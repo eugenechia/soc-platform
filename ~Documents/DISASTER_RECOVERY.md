@@ -29,7 +29,7 @@ Confirm access to all of these before starting. Missing access here = blocked re
 - [ ] **Microsoft Entra ID admin** — tenant `7cf1bf61-082f-40f3-a95a-1333d539fcc4` (for the SOC-Platform app registration)
 - [ ] **Jira admin** — for webhook configuration and custom field IDs
 - [ ] **Each customer's Azure tenant admin** — only needed if KV is gone (Step 5)
-- [ ] **External services** — SOCRadar, Anthropic / Azure OpenAI, Tavily, VirusTotal, AbuseIPDB, SMTP provider
+- [ ] **External services** — SOCRadar, Azure OpenAI, OpenAI, Tavily, VirusTotal, AbuseIPDB, SMTP provider
 
 ---
 

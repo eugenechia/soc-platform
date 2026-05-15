@@ -37,7 +37,7 @@ log = logging.getLogger(__name__)
 
 investigate_bp = Blueprint("investigate", __name__)
 
-_INVESTIGATE_MODEL = os.environ.get("INVESTIGATE_MODEL", "gpt-4.1-mini")
+_INVESTIGATE_MODEL = os.environ.get("INVESTIGATE_MODEL", "gpt-5.2")
 
 # Investigate jobs live in-process. Single-replica Container App means this is
 # acceptable; we just accept that jobs in flight during a restart are lost.

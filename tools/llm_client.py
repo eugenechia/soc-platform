@@ -4,7 +4,7 @@ The platform's report-narrative generator (routes/reports.py) needs an
 async chat-completions client. Different deployments back this with
 different LLMs:
 
-  * Azure (SOC-Platform on ACA):  Azure OpenAI deployment (gpt-4.1)
+  * Azure (SOC-Platform on ACA):  Azure OpenAI deployment (gpt-5.2)
   * On-prem (Cisco-OCP):          operator-supplied Ollama or vLLM
                                   (OpenAI-compat REST endpoint)
   * Local dev / CI:               public OpenAI
@@ -28,7 +28,7 @@ for every deployment — only the env vars change.
 
   3. OPENAI_API_KEY set
         → use AsyncOpenAI against public OpenAI.
-        Model from OPENAI_MODEL (default gpt-4o-mini).
+        Model from OPENAI_MODEL (default gpt-5.2).
 
 If none of the above is set, raises RuntimeError at the first call site
 so the failure is loud rather than a silent 401 later.
@@ -86,7 +86,7 @@ def make_chat_client() -> tuple[AsyncOpenAI, str]:
         )
         model = (
             os.environ.get("AZURE_OPENAI_DEPLOYMENT", "").strip()
-            or "gpt-4o"
+            or "gpt-5.2"
         )
         log.info("LLM provider: azure-openai endpoint=%s, deployment=%s",
                  azure_endpoint, model)
@@ -95,7 +95,7 @@ def make_chat_client() -> tuple[AsyncOpenAI, str]:
     # 3. Public OpenAI (developer / CI fallback)
     api_key = get_secret("OPENAI_API_KEY")
     if api_key:
-        model = os.environ.get("OPENAI_MODEL", "").strip() or "gpt-4o-mini"
+        model = os.environ.get("OPENAI_MODEL", "").strip() or "gpt-5.2"
         log.info("LLM provider: public openai, model=%s", model)
         return AsyncOpenAI(api_key=api_key), model
 
