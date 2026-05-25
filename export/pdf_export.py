@@ -93,6 +93,8 @@ _PDF_STYLES = """
   }
 
   body {
+    margin: 0;
+    padding: 0;
     font-family: Arial, 'Helvetica Neue', sans-serif;
     font-size: 11pt;
     line-height: 1.65;
@@ -182,12 +184,29 @@ _PDF_STYLES = """
      - `overflow-wrap: break-word` kept as a safety net for unbreakable
        strings that would otherwise overflow the page width.
      - Page-break rules keep individual rows whole across page boundaries;
-       long tables split between rows with the header repeating. */
+       long tables split between rows with the header repeating.
+     - Centering: tables are wrapped in `.table-center` (a flex container)
+       during HTML post-processing. WeasyPrint's `margin: auto` on tables
+       does not reliably horizontally-center them — observed behavior leaves
+       tables aligned right of the content area. A flex container with
+       `justify-content: center` forces centering regardless of computed
+       table width. `max-width: 100%` prevents the table from spilling past
+       the page content area when `table-layout: auto` computes column widths
+       summing to more than 100%. */
+  .table-center {
+    display: flex;
+    justify-content: center;
+    width: 100%;
+    margin: 0.8em 0;
+  }
+  .table-center > table {
+    margin: 0;
+  }
   table {
     border-collapse: collapse;
     width: 100%;
+    max-width: 100%;
     table-layout: auto;
-    margin: 0.8em auto;
     font-size: 8.5pt;
     page-break-inside: auto;
   }
@@ -282,6 +301,23 @@ def _inject_charts_into_html(html: str, charts: dict) -> str:
     return html
 
 
+def _wrap_tables_for_centering(html: str) -> str:
+    """Wrap each <table>...</table> in a flex-centered div.
+
+    WeasyPrint does not reliably center tables via `margin: auto` — observed
+    behavior leaves tables sitting off-center within the body content area.
+    Wrapping each table in a flex container with `justify-content: center`
+    forces horizontal centering regardless of the table's computed width.
+    """
+    import re
+    return re.sub(
+        r'(<table\b[^>]*>.*?</table>)',
+        r'<div class="table-center">\1</div>',
+        html,
+        flags=re.IGNORECASE | re.DOTALL,
+    )
+
+
 def _add_heading_ids(html: str) -> str:
     """Add id attributes to heading tags that don't already have them.
 
@@ -328,6 +364,10 @@ def generate_pdf(markdown_content: str, customer_name: str, report_date: str,
 
     # Add id attributes to headings for TOC anchor links
     content_html = _add_heading_ids(content_html)
+
+    # Wrap tables in flex-centered divs (WeasyPrint margin: auto centering
+    # is unreliable for tables — flex centering is the workaround).
+    content_html = _wrap_tables_for_centering(content_html)
 
     # Inject charts into HTML
     if charts:
