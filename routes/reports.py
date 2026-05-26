@@ -21,7 +21,7 @@ from tools.jira_client import (fetch_incidents_for_report, fetch_incidents_from_
                                 fetch_monthly_counts_12m, DEFAULT_INCIDENT_ISSUE_TYPE)
 from tools.jira_verifier import verify_monthly_counts, format_verification_error
 from tools.chart_generator import generate_all_charts, generate_sentinel_utilization_chart, generate_top_alerts_chart
-from tools import sentinel_client, splunk_client, socradar_rest as socradar_client, tavily_client
+from tools import sentinel_client, defender_client, splunk_client, socradar_rest as socradar_client, tavily_client
 from tools.customers import get_customer
 import tools.db as db
 
@@ -748,6 +748,11 @@ def _collect_report_data(config: dict) -> dict:
     fetch_tasks = {}
     if config.get("use_sentinel"):
         fetch_tasks["sentinel"] = lambda: sentinel_client.fetch_data(config, start_date, end_date)
+        # Defender XDR runs alongside Sentinel — when DEFENDER_* creds exist,
+        # it supersedes the Sentinel-side Heartbeat/TVM fallbacks for sections
+        # 1.12-1.16. When creds are missing the client returns {} and Sentinel
+        # data stands as-is.
+        fetch_tasks["defender"] = lambda: defender_client.fetch_data(config, start_date, end_date)
     if config.get("use_splunk"):
         fetch_tasks["splunk"] = lambda: splunk_client.fetch_data(config, start_date, end_date)
     if config.get("use_socradar"):
@@ -958,6 +963,23 @@ def _build_report_context(data: dict, config: dict) -> dict:
             "threat_analytics": sentinel.get("threat_analytics", []),
             "ioc_updates": sentinel.get("ioc_updates", []),
         }
+
+        # Defender XDR overrides Sentinel's Heartbeat / TVM-empty fallbacks.
+        # We replace per-field rather than dict-merge so the override is
+        # explicit: only the device + vulnerability fields move; utilization,
+        # top alerts, threat analytics, and IOC updates stay on Sentinel.
+        defender = data.get("defender") or {}
+        if defender.get("total_assets"):
+            sentinel_data["total_assets"]        = defender["total_assets"]
+            sentinel_data["total_assets_source"] = "mde"
+        if defender.get("sensor_health"):
+            sentinel_data["sensor_health"]        = defender["sensor_health"]
+            sentinel_data["sensor_health_source"] = "mde"
+        _defender_vulns = defender.get("vulnerabilities") or {}
+        if _defender_vulns.get("by_severity"):
+            sentinel_data["vulnerability_by_severity"] = _defender_vulns["by_severity"]
+        if _defender_vulns.get("exposed_devices"):
+            sentinel_data["vulnerability_exposed_devices"] = _defender_vulns["exposed_devices"]
 
     splunk_data = {}
     splunk = data.get("splunk")
