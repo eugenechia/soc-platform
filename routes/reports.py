@@ -35,6 +35,11 @@ from tools.customer_advisories import (
     load_threat_analytics_advisories,
     load_ioc_advisories,
 )
+from tools.sentinel_history import (
+    load_historical_sentinel_data,
+    load_sentinel_data_from_saved_report,
+    is_outside_sentinel_retention,
+)
 import tools.db as db
 
 log = logging.getLogger(__name__)
@@ -831,7 +836,34 @@ def _collect_report_data(config: dict) -> dict:
 
     sections = config.get("sections", [])
     fetch_tasks = {}
-    if config.get("use_sentinel"):
+
+    # Phase A — Sentinel + Defender retention window.
+    # Sentinel KQL only sees the trailing 90 days, and Defender's DeviceInfo
+    # / TVM tables are CURRENT-state (not period-scoped) — querying them for
+    # a 4-month-old report would either return empty or, worse, return
+    # today's state mislabeled as that historical month. When end_date is
+    # outside Sentinel's retention window, fall back to the snapshot saved
+    # at the time the original report was generated.
+    _outside_retention = (config.get("use_sentinel")
+                          and is_outside_sentinel_retention(end_date))
+    _customer_id_for_history = config.get("customer_id", "")
+    if _outside_retention:
+        log.info(
+            "[%s] end_date %s is outside Sentinel retention; using saved snapshot for "
+            "customer=%s instead of live KQL.",
+            config.get("customer_name", "?"), end_date, _customer_id_for_history,
+        )
+        _cid, _sd = _customer_id_for_history, start_date
+        def _load_saved_sentinel():
+            snap = load_sentinel_data_from_saved_report(_cid, _sd)
+            return snap or {}
+        fetch_tasks["sentinel"] = _load_saved_sentinel
+        # Defender snapshot lives inside the saved report's sentinel dict only
+        # when the saved report had Defender wired in; in any case there is no
+        # separate "saved Defender" feed, so we explicitly skip the live call
+        # and let the downstream merge use whatever the saved sentinel carries.
+        fetch_tasks["defender"] = lambda: {}
+    elif config.get("use_sentinel"):
         fetch_tasks["sentinel"] = lambda: sentinel_client.fetch_data(config, start_date, end_date)
         # Defender XDR runs alongside Sentinel — when DEFENDER_* creds exist,
         # it supersedes the Sentinel-side Heartbeat/TVM fallbacks for sections
@@ -937,6 +969,31 @@ def _collect_report_data(config: dict) -> dict:
         "threat_analytics": load_threat_analytics_advisories(_cust_name, start_date, end_date),
         "ioc": load_ioc_advisories(_cust_name, start_date, end_date),
     }
+
+    # Phase A — layer 11 months of historical Sentinel utilization onto the
+    # current report's sentinel dict, so any future caller (e.g. a 12-month
+    # chart, quarterly rollup, or operator export) has the trailing-year
+    # GB-ingested series available without re-querying Sentinel — which
+    # would return empty past 90 days. The current month comes from the
+    # live (or saved-snapshot) fetch above; we splice that on top so
+    # `monthly_history` is always a complete trailing-12 picture.
+    _sentinel = result.get("sentinel") or {}
+    if _sentinel and _customer_id_for_history:
+        try:
+            _hist = load_historical_sentinel_data(_customer_id_for_history, end_date)
+            _util = _sentinel.setdefault("utilization", {})
+            _monthly: dict = dict(_hist.get("utilization_monthly", {}))
+            _current_total = _util.get("total_gb")
+            try:
+                _current_month_key = datetime.strptime(end_date, "%Y-%m-%d").strftime("%Y-%m")
+                if isinstance(_current_total, (int, float)):
+                    _monthly[_current_month_key] = round(float(_current_total), 2)
+            except ValueError:
+                pass
+            _util["monthly_history"] = _monthly
+            _util["monthly_history_missing"] = _hist.get("missing_months", [])
+        except Exception as exc:
+            log.warning("Sentinel history backfill failed (non-fatal): %s", exc)
 
     return result
 
