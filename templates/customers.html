@@ -248,6 +248,16 @@
           </div>
         </div>
         <div class="form-group">
+          <label>Additional Jira Projects (JSON, optional)</label>
+          <textarea id="addJiraProjectsJson" rows="6" placeholder='[
+  {"name": "Logicalis MY", "project_key": "CAM",   "base_url": "https://logicalis-my.atlassian.net", "email": "soc-my@logicalis.com", "api_token": "..."},
+  {"name": "Logicalis SG", "project_key": "CAMSG", "base_url": "https://logicalis-sg.atlassian.net", "email": "soc-sg@logicalis.com", "api_token": "..."}
+]' style="font-family:monospace; font-size:12px; width:100%;"></textarea>
+          <div style="font-size:12px; color:var(--text-muted); margin-top:4px;">
+            For customers raising tickets across multiple Jira projects — even across different Jira Cloud instances. When non-empty, this list <strong>replaces</strong> the single Jira Project Key above. Blank <code>base_url</code> / <code>email</code> / <code>api_token</code> fields fall back to the global <code>JIRA_URL</code> / <code>JIRA_EMAIL</code> / <code>JIRA_API_TOKEN</code> env vars (one-instance customers, common case). The four Jira issue-type fields above apply to ALL projects on this customer.
+          </div>
+        </div>
+        <div class="form-group">
           <label>Sentinel Workspace ID</label>
           <input type="text" id="addSentinelWorkspaceId" placeholder="e.g. xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx">
           <div style="font-size:12px; color:var(--text-muted); margin-top:4px;">Azure Log Analytics workspace ID for this customer's Microsoft Sentinel.</div>
@@ -388,6 +398,13 @@
           <label>Jira Change Request Issue Type</label>
           <input type="text" id="editCrIssueType" placeholder="Change">
           <div style="font-size:12px; color:var(--text-muted); margin-top:4px;">Issue type label for change requests (e.g. "Change", "Change Management", "RFC").</div>
+        </div>
+      </div>
+      <div class="form-group">
+        <label>Jira Projects (JSON)</label>
+        <textarea id="editJiraProjectsJson" rows="8" style="font-family:monospace; font-size:12px; width:100%;"></textarea>
+        <div style="font-size:12px; color:var(--text-muted); margin-top:4px;">
+          Authoritative multi-project list. Pre-filled from the saved record. <code>api_token</code> is intentionally NOT shown — leave blank to keep the existing Key Vault value; type a new token to rotate. Blank <code>base_url</code> / <code>email</code> fall back to env vars. Non-empty content replaces the single Jira Project Key above on save.
         </div>
       </div>
       <div class="form-group">
@@ -532,7 +549,7 @@
               : `<div class="placeholder-icon">${c.short_name.charAt(0)}</div>`}
             <div>
               <div class="customer-name">${c.name}</div>
-              <div class="customer-meta">${c.short_name} | Jira: ${c.jira_project_key || 'N/A'} | Request type: ${c.jira_request_type || 'Report an Incident'} | Industry: ${c.industry || 'N/A'} | Sentinel WS: ${c.sentinel_workspace_id || 'global default'} | Defaults: ${sectionLabel} | Added: ${c.created_at || 'N/A'}</div>
+              <div class="customer-meta">${c.short_name} | Jira: ${(Array.isArray(c.jira_projects) && c.jira_projects.length > 1) ? `${c.jira_projects.length} projects` : (c.jira_project_key || (c.jira_projects && c.jira_projects[0] && c.jira_projects[0].project_key) || 'N/A')} | Request type: ${c.jira_request_type || 'Report an Incident'} | Industry: ${c.industry || 'N/A'} | Sentinel WS: ${c.sentinel_workspace_id || 'global default'} | Defaults: ${sectionLabel} | Added: ${c.created_at || 'N/A'}</div>
             </div>
           </div>
           <div class="customer-actions">
@@ -712,6 +729,9 @@
       if (addWsJson) fd.append('sentinel_workspaces_json', addWsJson);
       const addDefJson = document.getElementById('addDefenderWorkspacesJson').value.trim();
       if (addDefJson) fd.append('defender_workspaces_json', addDefJson);
+      // Multi-Jira-project JSON — when non-empty, replaces the single jira_project_key above.
+      const addJiraProjJson = document.getElementById('addJiraProjectsJson').value.trim();
+      if (addJiraProjJson) fd.append('jira_projects_json', addJiraProjJson);
       fd.append('industry', document.getElementById('addIndustry').value);
       const logo = document.getElementById('addLogo');
       if (logo.files.length) fd.append('logo', logo.files[0]);
@@ -789,6 +809,20 @@
       }));
       document.getElementById('editDefenderWorkspacesJson').value =
         defenderWsDisplay.length ? JSON.stringify(defenderWsDisplay, null, 2) : '';
+      // Pre-fill multi-Jira-project JSON. Strip api_token from display (it's
+      // never echoed back); surface api_token_kv_name so operators see which
+      // KV entry is wired in.
+      const jiraProjects = Array.isArray(c.jira_projects) ? c.jira_projects : [];
+      const jiraProjectsDisplay = jiraProjects.map(p => ({
+        name: p.name || '',
+        project_key: p.project_key || '',
+        base_url: p.base_url || '',
+        email: p.email || '',
+        api_token_kv_name: p.api_token_kv_name || '',
+        // api_token intentionally omitted on display
+      }));
+      document.getElementById('editJiraProjectsJson').value =
+        jiraProjectsDisplay.length ? JSON.stringify(jiraProjectsDisplay, null, 2) : '';
       document.getElementById('editLogo').value = '';
 
       // Render the section grid using the customer's saved order. If the
@@ -829,6 +863,10 @@
       if (editWsJson) fd.append('sentinel_workspaces_json', editWsJson);
       const editDefJson = document.getElementById('editDefenderWorkspacesJson').value.trim();
       if (editDefJson) fd.append('defender_workspaces_json', editDefJson);
+      // Multi-Jira-project JSON — same semantics: blank api_token in any
+      // entry means "leave existing KV value alone".
+      const editJiraProjJson = document.getElementById('editJiraProjectsJson').value.trim();
+      if (editJiraProjJson) fd.append('jira_projects_json', editJiraProjJson);
       fd.append('industry', document.getElementById('editIndustry').value);
       const logo = document.getElementById('editLogo');
       if (logo.files.length) fd.append('logo', logo.files[0]);

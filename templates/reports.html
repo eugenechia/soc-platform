@@ -575,14 +575,14 @@
 
         <div style="margin-top: 16px;">
           <label for="aggregationMode" style="font-weight: 600; display:block; margin-bottom: 6px;">
-            Aggregation Mode (multi-workspace customers)
+            Aggregation Mode (multi-workspace or multi-Jira-project customers)
           </label>
           <select id="aggregationMode" style="padding: 8px 12px; min-width: 360px;">
-            <option value="merged">Merged — one rollup report combining all workspaces</option>
-            <option value="per_workspace">Per-workspace — one report per Sentinel workspace</option>
+            <option value="merged">Merged — one rollup report combining all silos</option>
+            <option value="per_workspace">Per-silo — one report per Sentinel workspace (or per Jira project)</option>
           </select>
           <p style="font-size:12px; color:var(--text-muted); margin-top:4px;">
-            Single-workspace customers always generate one report regardless of this setting.
+            Single-silo customers always generate one report regardless of this setting. When the customer has BOTH multiple Sentinel workspaces AND multiple Jira projects, Sentinel takes precedence (Jira data is merged inside each per-workspace report).
           </p>
         </div>
 

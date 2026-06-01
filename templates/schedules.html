@@ -250,10 +250,10 @@
         <div class="form-group">
           <label>Aggregation Mode</label>
           <select id="schedAggregationMode">
-            <option value="merged">Merged — one rollup report combining all workspaces</option>
-            <option value="per_workspace">Per-workspace — one report per Sentinel workspace</option>
+            <option value="merged">Merged — one rollup report combining all silos</option>
+            <option value="per_workspace">Per-silo — one report per Sentinel workspace (or per Jira project)</option>
           </select>
-          <p class="form-hint">Only affects multi-workspace customers. Single-workspace customers always render one report.</p>
+          <p class="form-hint">Only affects customers with multiple Sentinel workspaces or multiple Jira projects. When both are multi-valued, Sentinel workspace fan-out wins (Jira data is merged inside each per-workspace child report).</p>
         </div>
 
         <div class="form-group">

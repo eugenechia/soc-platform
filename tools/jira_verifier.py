@@ -27,8 +27,7 @@ from datetime import datetime
 import httpx
 
 from tools.jira_client import (
-    JIRA_URL,
-    _jira_headers,
+    _resolve_jira_auth,
     _incident_jql_filter,
     _parse_jira_date,
     DEFAULT_INCIDENT_ISSUE_TYPE,
@@ -64,8 +63,14 @@ def verify_monthly_counts(
     end_date: str,
     primary_monthly_counts: dict,
     incident_issue_type: str = DEFAULT_INCIDENT_ISSUE_TYPE,
+    project_spec: dict | None = None,
 ) -> dict:
     """Cross-check primary_monthly_counts via an independent JQL window.
+
+    Single-project variant. For multi-project customers, the orchestrator
+    in routes/reports.py calls :func:`verify_monthly_counts_for_customer`
+    which iterates the projects, runs this function per-project, and sums
+    by-month before diffing.
 
     Returns a dict with this shape:
         {
@@ -115,6 +120,7 @@ def verify_monthly_counts(
     )
     logger.info("verify_monthly_counts JQL: %s", jql)
 
+    base_url, headers = _resolve_jira_auth(project_spec)
     fetched = 0
     next_token: str | None = None
     while fetched < _VERIFIER_SAFETY_BOUND:
@@ -123,8 +129,8 @@ def verify_monthly_counts(
             params["nextPageToken"] = next_token
         try:
             r = httpx.get(
-                f"{JIRA_URL}/rest/api/3/search/jql",
-                headers=_jira_headers(),
+                f"{base_url}/rest/api/3/search/jql",
+                headers=headers,
                 params=params,
                 timeout=30,
             )
@@ -202,6 +208,100 @@ def verify_monthly_counts(
         "verified": len(discrepancies) == 0,
         "by_month": by_month,
         "total_verifier": sum(by_month.values()),
+        "total_primary": sum(primary_monthly_counts.values()),
+        "discrepancies": discrepancies,
+        "error": None,
+        "issue_type": issue_type,
+    }
+
+
+def verify_monthly_counts_for_customer(
+    customer_record: dict,
+    end_date: str,
+    primary_monthly_counts: dict,
+    incident_issue_type: str = DEFAULT_INCIDENT_ISSUE_TYPE,
+    project_filter: str | None = None,
+) -> dict:
+    """Multi-project variant. Runs the verifier query against each project
+    on ``customer_record['jira_projects']``, sums by-month, and diffs against
+    ``primary_monthly_counts`` (which the orchestrator already summed across
+    the same projects).
+
+    Returns the same dict shape as :func:`verify_monthly_counts`.
+    `verified=True` requires every per-project sub-query to succeed AND every
+    month's summed verifier count to match the primary count.
+    """
+    issue_type = (incident_issue_type or DEFAULT_INCIDENT_ISSUE_TYPE).strip() \
+        or DEFAULT_INCIDENT_ISSUE_TYPE
+
+    projects = customer_record.get("jira_projects") or []
+    if project_filter:
+        projects = [p for p in projects if (p.get("name") or "") == project_filter]
+
+    summed = _empty_12m_buckets(end_date)
+    if not summed:
+        return {
+            "verified": False,
+            "by_month": {},
+            "total_verifier": 0,
+            "total_primary": sum(primary_monthly_counts.values()),
+            "discrepancies": [],
+            "error": f"verify_monthly_counts_for_customer: invalid end_date {end_date!r}",
+            "issue_type": issue_type,
+        }
+
+    per_project: list[dict] = []
+    for proj in projects:
+        proj_key = (proj.get("project_key") or "").strip()
+        if not proj_key:
+            continue
+        sub = verify_monthly_counts(
+            project_key=proj_key,
+            end_date=end_date,
+            # We diff once globally at the end against the summed by_month;
+            # passing an empty dict here means the per-project verifier just
+            # reports its own by_month without an internal diff.
+            primary_monthly_counts={},
+            incident_issue_type=issue_type,
+            project_spec=proj,
+        )
+        per_project.append(sub)
+        if sub.get("error"):
+            # Any per-project verifier failure is fatal — we can't claim the
+            # summed counts are verified if one project's contribution is
+            # unknown.
+            return {
+                "verified": False,
+                "by_month": summed,
+                "total_verifier": sum(summed.values()),
+                "total_primary": sum(primary_monthly_counts.values()),
+                "discrepancies": [],
+                "error": (
+                    f"verifier failed for project {proj.get('name', proj_key)!r}: "
+                    f"{sub['error']}"
+                ),
+                "issue_type": issue_type,
+            }
+        for k, v in (sub.get("by_month") or {}).items():
+            if k in summed:
+                summed[k] += int(v or 0)
+
+    # Diff every month present in either source.
+    all_months = set(summed.keys()) | set(primary_monthly_counts.keys())
+    discrepancies = []
+    for k in sorted(all_months):
+        primary = int(primary_monthly_counts.get(k, 0) or 0)
+        verifier = int(summed.get(k, 0) or 0)
+        if primary != verifier:
+            discrepancies.append({
+                "month": k, "primary": primary, "verifier": verifier,
+                "delta": verifier - primary,
+            })
+
+    return {
+        "verified": len(discrepancies) == 0,
+        "by_month": summed,
+        "total_verifier": sum(summed.values()),
         "total_primary": sum(primary_monthly_counts.values()),
         "discrepancies": discrepancies,
         "error": None,

@@ -3,6 +3,7 @@ import csv
 import json
 import base64
 import logging
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timedelta
 from collections import Counter
 
@@ -15,7 +16,12 @@ USE_SAMPLE_DATA = os.environ.get("USE_SAMPLE_DATA", "false").lower() == "true"
 
 
 def _jira_headers() -> dict:
-    """Build the Jira REST auth header at call time.
+    """Build the Jira REST auth header at call time, using the global env
+    fallback creds (JIRA_EMAIL + JIRA_API_TOKEN). Used by code paths that
+    are not customer-scoped (e.g. the L1 Triage webhook in routes/webhook.py).
+    Customer-scoped report fetches go through :func:`_resolve_jira_auth`
+    instead, which honours per-project ``base_url`` / ``email`` /
+    ``api_token_kv_name`` overrides for multi-instance customers.
 
     Resolves email + token via tools.secrets.get_secret so KV-backed
     deployments work without the credentials being smuggled into the image
@@ -26,6 +32,35 @@ def _jira_headers() -> dict:
     token = get_secret("JIRA_API_TOKEN") or os.environ.get("JIRA_API_TOKEN", "")
     creds = base64.b64encode(f"{email}:{token}".encode()).decode()
     return {"Authorization": f"Basic {creds}", "Accept": "application/json"}
+
+
+def _resolve_jira_auth(project_spec: dict | None = None) -> tuple[str, dict]:
+    """Resolve (base_url, auth_headers) for a Jira project fetch.
+
+    When ``project_spec`` is None, returns the global env-var creds
+    (current production path: one Jira instance shared across all customers).
+    When ``project_spec`` is provided, each of ``base_url`` / ``email`` /
+    ``api_token_kv_name`` independently falls back to env when blank — so a
+    customer can override just the base_url while reusing the shared token,
+    or override creds while sharing the URL. The api token is resolved via
+    ``tools.secrets.get_secret`` so it lives in Key Vault, not the customer
+    record on disk."""
+    from tools.secrets import get_secret
+
+    spec = project_spec or {}
+    base_url = (spec.get("base_url") or "").strip() or JIRA_URL
+    email = (spec.get("email") or "").strip() or (
+        get_secret("JIRA_EMAIL") or os.environ.get("JIRA_EMAIL", "")
+    )
+    kv_name = (spec.get("api_token_kv_name") or "").strip()
+    token = ""
+    if kv_name:
+        token = get_secret(kv_name) or ""
+    if not token:
+        token = get_secret("JIRA_API_TOKEN") or os.environ.get("JIRA_API_TOKEN", "")
+    creds = base64.b64encode(f"{email}:{token}".encode()).decode()
+    headers = {"Authorization": f"Basic {creds}", "Accept": "application/json"}
+    return base_url.rstrip("/"), headers
 
 
 _FIELDS = (
@@ -64,7 +99,8 @@ def fetch_issue_by_key(issue_key: str, fields: str = "*all") -> dict | None:
         return None
 
 
-def jira_search(jql: str, max_results: int = 100, next_page_token: str | None = None) -> dict:
+def jira_search(jql: str, max_results: int = 100, next_page_token: str | None = None,
+                project_spec: dict | None = None) -> dict:
     params = {
         "jql": jql,
         "maxResults": max_results,
@@ -73,9 +109,10 @@ def jira_search(jql: str, max_results: int = 100, next_page_token: str | None = 
     if next_page_token:
         params["nextPageToken"] = next_page_token
 
+    base_url, headers = _resolve_jira_auth(project_spec)
     r = httpx.get(
-        f"{JIRA_URL}/rest/api/3/search/jql",
-        headers=_jira_headers(),
+        f"{base_url}/rest/api/3/search/jql",
+        headers=headers,
         params=params,
         timeout=30,
     )
@@ -160,12 +197,13 @@ def _normalize_issue(issue: dict) -> dict:
     }
 
 
-def _fetch_all_pages(jql: str) -> list:
+def _fetch_all_pages(jql: str, project_spec: dict | None = None) -> list:
     """Fetch all pages for a JQL query using cursor pagination."""
     all_issues = []
     next_token = None
     while len(all_issues) < 5000:
-        result = jira_search(jql, max_results=100, next_page_token=next_token)
+        result = jira_search(jql, max_results=100, next_page_token=next_token,
+                             project_spec=project_spec)
         if "error" in result:
             logger.error(f"Jira fetch error: {result}")
             break
@@ -190,7 +228,8 @@ def _date_chunks(start_date: str, end_date: str):
 
 
 def fetch_incidents_for_report(project_key: str, start_date: str, end_date: str,
-                               incident_issue_type: str = DEFAULT_INCIDENT_ISSUE_TYPE) -> dict:
+                               incident_issue_type: str = DEFAULT_INCIDENT_ISSUE_TYPE,
+                               project_spec: dict | None = None) -> dict:
     if USE_SAMPLE_DATA:
         return fetch_incidents_from_csv(project_key, start_date, end_date)
 
@@ -204,14 +243,14 @@ def fetch_incidents_for_report(project_key: str, start_date: str, end_date: str,
             f'AND created < "{chunk_end}" '
             f'ORDER BY created DESC'
         )
-        issues = _fetch_all_pages(jql)
+        issues = _fetch_all_pages(jql, project_spec=project_spec)
         for issue in issues:
             key = issue.get("key")
             if key and key not in seen_keys:
                 seen_keys.add(key)
                 all_issues.append(issue)
 
-    logger.info("fetch_incidents_for_report: total=%d", len(all_issues))
+    logger.info("fetch_incidents_for_report(%s): total=%d", project_key, len(all_issues))
     incidents = [_normalize_issue(i) for i in all_issues]
     stats = _compute_stats(incidents)
     return {"incidents": incidents, "stats": stats}
@@ -325,7 +364,8 @@ def fetch_incidents_from_csv(project_key: str, start_date: str, end_date: str,
 
 
 def _fetch_jira_by_type(issue_type: str, project_key: str,
-                        start_date: str, end_date: str) -> dict:
+                        start_date: str, end_date: str,
+                        project_spec: dict | None = None) -> dict:
     """Generic Jira fetch by issue type. Returns {items, stats, unavailable}."""
     seen_keys = set()
     all_issues = []
@@ -338,7 +378,8 @@ def _fetch_jira_by_type(issue_type: str, project_key: str,
             f'AND created < "{chunk_end}" '
             f'ORDER BY created DESC'
         )
-        result = jira_search(jql, max_results=100, next_page_token=None)
+        result = jira_search(jql, max_results=100, next_page_token=None,
+                             project_spec=project_spec)
         if "error" in result:
             if "HTTP 400" in result.get("error", "") or "HTTP 404" in result.get("error", ""):
                 logger.warning(f"Issue type '{issue_type}' not found in project {project_key}")
@@ -352,14 +393,15 @@ def _fetch_jira_by_type(issue_type: str, project_key: str,
                 seen_keys.add(key)
                 all_issues.append(issue)
 
-    logger.info("_fetch_jira_by_type(%s): total=%d", issue_type, len(all_issues))
+    logger.info("_fetch_jira_by_type(%s/%s): total=%d", project_key, issue_type, len(all_issues))
     items = [_normalize_issue(i) for i in all_issues]
     stats = _compute_stats(items)
     return {"items": items, "stats": stats, "unavailable": False}
 
 
 def fetch_service_requests(project_key: str, start_date: str, end_date: str,
-                           issue_type: str = "Service Request") -> dict:
+                           issue_type: str = "Service Request",
+                           project_spec: dict | None = None) -> dict:
     """Fetch Service Request tickets from Jira for the given project and date range.
 
     The issue_type defaults to the canonical Atlassian/JSM name "Service Request",
@@ -367,14 +409,15 @@ def fetch_service_requests(project_key: str, start_date: str, end_date: str,
     "Service Desk Request") can override this per customer in the admin UI."""
     try:
         return _fetch_jira_by_type(issue_type or "Service Request", project_key,
-                                   start_date, end_date)
+                                   start_date, end_date, project_spec=project_spec)
     except Exception as e:
         logger.warning(f"fetch_service_requests exception: {e}")
         return {"items": [], "stats": {}, "unavailable": True}
 
 
 def fetch_change_requests(project_key: str, start_date: str, end_date: str,
-                          issue_type: str = "Change") -> dict:
+                          issue_type: str = "Change",
+                          project_spec: dict | None = None) -> dict:
     """Fetch Change Request tickets from Jira for the given project and date range.
 
     The issue_type defaults to "Change" (the JSM canonical name); per-customer
@@ -382,7 +425,7 @@ def fetch_change_requests(project_key: str, start_date: str, end_date: str,
     "Change Management"."""
     try:
         return _fetch_jira_by_type(issue_type or "Change", project_key,
-                                   start_date, end_date)
+                                   start_date, end_date, project_spec=project_spec)
     except Exception as e:
         logger.warning(f"fetch_change_requests exception: {e}")
         return {"items": [], "stats": {}, "unavailable": True}
@@ -395,7 +438,8 @@ _MONTHLY_FETCH_SAFETY_BOUND = 200_000
 
 
 def _fetch_month_count(project_key: str, month_start: str, month_end: str,
-                       issue_type: str = DEFAULT_INCIDENT_ISSUE_TYPE) -> int:
+                       issue_type: str = DEFAULT_INCIDENT_ISSUE_TYPE,
+                       project_spec: dict | None = None) -> int:
     """Return the count of incidents for a single month window using cursor pagination.
 
     Uses full pagination — the loop terminates naturally on `isLast` /
@@ -411,6 +455,7 @@ def _fetch_month_count(project_key: str, month_start: str, month_end: str,
         f'ORDER BY created ASC'
     )
     logger.info("_fetch_month_count JQL: %s", jql)
+    base_url, headers = _resolve_jira_auth(project_spec)
     count = 0
     next_token = None
     while count < _MONTHLY_FETCH_SAFETY_BOUND:
@@ -418,8 +463,8 @@ def _fetch_month_count(project_key: str, month_start: str, month_end: str,
         if next_token:
             params["nextPageToken"] = next_token
         r = httpx.get(
-            f"{JIRA_URL}/rest/api/3/search/jql",
-            headers=_jira_headers(),
+            f"{base_url}/rest/api/3/search/jql",
+            headers=headers,
             params=params,
             timeout=30,
         )
@@ -444,7 +489,8 @@ def _fetch_month_count(project_key: str, month_start: str, month_end: str,
 
 
 def fetch_monthly_counts_12m(project_key: str, end_date: str,
-                             incident_issue_type: str = DEFAULT_INCIDENT_ISSUE_TYPE) -> dict:
+                             incident_issue_type: str = DEFAULT_INCIDENT_ISSUE_TYPE,
+                             project_spec: dict | None = None) -> dict:
     """Fetch incident counts per month for the 12 months ending at end_date.
 
     Queries one month at a time so that months with large issue counts (e.g. 700+)
@@ -468,8 +514,272 @@ def fetch_monthly_counts_12m(project_key: str, end_date: str,
         month_key = m.strftime("%Y-%m")
         month_start = m.strftime("%Y-%m-%d")
         month_end = (m + relativedelta(months=1)).strftime("%Y-%m-%d")
-        count = _fetch_month_count(project_key, month_start, month_end, issue_type=incident_issue_type)
+        count = _fetch_month_count(project_key, month_start, month_end,
+                                   issue_type=incident_issue_type,
+                                   project_spec=project_spec)
         monthly_counts[month_key] = count
         logger.info("fetch_monthly_counts_12m(%s): %s = %d", project_key, month_key, count)
 
     return monthly_counts
+
+
+# ── Multi-project orchestrator ───────────────────────────────────────────────
+#
+# A customer record can carry a ``jira_projects`` list (see
+# tools/customers.py:_normalize_customer). When it has >1 entry, all the Jira
+# fetches for a single report fan out across the projects in parallel and
+# their results are merged into a single dict shaped exactly like a
+# single-project response — so the downstream chart / template / LLM-prompt
+# code is unchanged.
+#
+# Per-project auth: each project_spec can override base_url / email /
+# api_token_kv_name independently. Blank fields fall back to env vars, so
+# single-instance multi-project customers (the common case) need only set
+# project_key + name.
+
+def _sum_count_dicts(dicts: list[dict]) -> dict:
+    """Sum a list of {key: int} dicts into one. Used to merge by-severity /
+    by-status / etc. across multiple projects without losing per-key
+    granularity. Non-numeric values are coerced via int() or skipped on
+    TypeError so a malformed entry doesn't poison the rollup."""
+    out: dict = {}
+    for d in dicts:
+        if not isinstance(d, dict):
+            continue
+        for k, v in d.items():
+            try:
+                out[k] = out.get(k, 0) + int(v)
+            except (TypeError, ValueError):
+                continue
+    return out
+
+
+def _merge_project_results(results: list[dict]) -> dict:
+    """Combine N per-project fetches into a single dict shaped like a
+    single-project response. See the table in
+    /Users/.../plans/i-want-to-go-swirling-scroll.md for the merge rules.
+
+    Each input dict has the shape returned by :func:`_fetch_project_data`:
+        {
+          "incidents": [...], "stats": {...},
+          "service_requests": {"items": [...], "stats": {...},
+                                "unavailable": bool} | None,
+          "change_requests":  {...} | None,
+          "monthly_trend_12m": {YYYY-MM: int} | None,
+          "project_name": str, "project_key": str,
+        }
+    """
+    if len(results) == 1:
+        return results[0]
+
+    # --- incidents: concat, then tag each with source_project ----------------
+    merged_incidents: list = []
+    incident_stats_dicts: dict[str, list[dict]] = {
+        "by_severity": [], "by_status": [], "by_priority": [],
+        "by_close_justification": [], "top_alerts": [],
+        "monthly_trend": [], "assignee_distribution": [],
+    }
+    total_incidents = 0
+    for r in results:
+        proj_name = r.get("project_name", "")
+        for inc in r.get("incidents", []):
+            inc_copy = dict(inc)
+            inc_copy.setdefault("source_project", proj_name)
+            merged_incidents.append(inc_copy)
+        s = r.get("stats") or {}
+        total_incidents += int(s.get("total") or 0)
+        for key in incident_stats_dicts:
+            incident_stats_dicts[key].append(s.get(key) or {})
+
+    merged_stats: dict = {"total": total_incidents}
+    for key, ds in incident_stats_dicts.items():
+        merged = _sum_count_dicts(ds)
+        if key == "top_alerts":
+            # Re-cap to top 10 after summing so the chart isn't dominated by long-tail.
+            merged = dict(sorted(merged.items(), key=lambda kv: kv[1], reverse=True)[:10])
+        elif key == "monthly_trend":
+            merged = dict(sorted(merged.items()))
+        merged_stats[key] = merged
+
+    # --- service requests / change requests ----------------------------------
+    def _merge_ticket_bucket(bucket_key: str) -> dict | None:
+        buckets = [r.get(bucket_key) for r in results if r.get(bucket_key) is not None]
+        if not buckets:
+            return None
+        items: list = []
+        for b in buckets:
+            items.extend(b.get("items") or [])
+        stats = _compute_stats(items) if items else {}
+        # unavailable is True only if EVERY project reported it unavailable.
+        # If even one project returned data, surface that data and mark
+        # available; the per-project unavailable flag for the others is lost
+        # but the merged section is still useful.
+        unavailable = all(bool(b.get("unavailable")) for b in buckets)
+        return {"items": items, "stats": stats, "unavailable": unavailable}
+
+    merged_service_requests = _merge_ticket_bucket("service_requests")
+    merged_change_requests = _merge_ticket_bucket("change_requests")
+
+    # --- 12-month trend: sum per YYYY-MM key --------------------------------
+    trend_dicts = [r.get("monthly_trend_12m") for r in results
+                   if isinstance(r.get("monthly_trend_12m"), dict)]
+    merged_monthly_trend_12m: dict | None = None
+    if trend_dicts:
+        merged_monthly_trend_12m = dict(sorted(_sum_count_dicts(trend_dicts).items()))
+
+    out: dict = {
+        "incidents": merged_incidents,
+        "stats": merged_stats,
+        "project_breakdown": [
+            {"name": r.get("project_name", ""),
+             "project_key": r.get("project_key", ""),
+             "total_incidents": int((r.get("stats") or {}).get("total") or 0)}
+            for r in results
+        ],
+    }
+    if merged_service_requests is not None:
+        out["service_requests"] = merged_service_requests
+    if merged_change_requests is not None:
+        out["change_requests"] = merged_change_requests
+    if merged_monthly_trend_12m is not None:
+        out["monthly_trend_12m"] = merged_monthly_trend_12m
+    return out
+
+
+def _fetch_project_data(project_spec: dict, customer_record: dict,
+                        start_date: str, end_date: str,
+                        sections: list[str],
+                        csv_path: str | None = None,
+                        skip_monthly_trend: bool = False) -> dict:
+    """Fetch all Jira data for one project. Single-project-shaped result
+    that :func:`_merge_project_results` will combine if there are multiples.
+
+    ``skip_monthly_trend`` short-circuits the 12-month trend fetch on the
+    CSV path (where it has never been wired) and on callers that don't
+    need it. Service / change requests are only fetched when the
+    corresponding section was opted in.
+    """
+    proj_key = (project_spec.get("project_key") or "").strip()
+    proj_name = (project_spec.get("name") or proj_key or "Primary").strip()
+
+    incident_issue_type = (customer_record.get("jira_incident_issuetype") or "").strip() \
+        or DEFAULT_INCIDENT_ISSUE_TYPE
+    sr_issue_type = (customer_record.get("jira_service_request_issuetype") or "").strip() \
+        or "Service Request"
+    cr_issue_type = (customer_record.get("jira_change_request_issuetype") or "").strip() \
+        or "Change"
+
+    if csv_path:
+        result = fetch_incidents_from_csv(proj_key, start_date, end_date, csv_path=csv_path)
+    else:
+        result = fetch_incidents_for_report(proj_key, start_date, end_date,
+                                            incident_issue_type=incident_issue_type,
+                                            project_spec=project_spec)
+
+    out: dict = {
+        "incidents": result.get("incidents") or [],
+        "stats": result.get("stats") or {},
+        "project_name": proj_name,
+        "project_key": proj_key,
+    }
+    if result.get("error"):
+        out["error"] = result["error"]
+
+    if "service_requests" in sections and proj_key:
+        out["service_requests"] = fetch_service_requests(
+            proj_key, start_date, end_date,
+            issue_type=sr_issue_type, project_spec=project_spec,
+        )
+    if "change_requests" in sections and proj_key:
+        out["change_requests"] = fetch_change_requests(
+            proj_key, start_date, end_date,
+            issue_type=cr_issue_type, project_spec=project_spec,
+        )
+    if not csv_path and proj_key and not skip_monthly_trend:
+        out["monthly_trend_12m"] = fetch_monthly_counts_12m(
+            proj_key, end_date,
+            incident_issue_type=incident_issue_type,
+            project_spec=project_spec,
+        )
+
+    return out
+
+
+def fetch_all_projects(customer_record: dict, start_date: str, end_date: str,
+                       sections: list[str],
+                       csv_path: str | None = None,
+                       project_filter: str | None = None) -> dict:
+    """Orchestrate Jira fetches across all of a customer's Jira projects.
+
+    Returns a single dict with the same keys as a single-project response so
+    downstream code (charts, templates, LLM prompt) does not need to know
+    whether one or many projects were involved. The aggregated dict carries
+    an extra ``project_breakdown`` list (one entry per project, with name +
+    project_key + total_incidents) for any optional per-project sub-table.
+
+    Parallelisation: projects are fetched concurrently via
+    ThreadPoolExecutor, capped at 4 workers to avoid hammering small Jira
+    Cloud instances with parallel cursor-paginated queries. Per-project
+    fetches are serial inside each thread (incidents → SR → CR → 12-month).
+
+    ``project_filter``: when set, only the project whose ``name`` matches is
+    fetched. Used by the per-project fanout path in routes/reports.py.
+    """
+    projects = customer_record.get("jira_projects") or []
+    if not projects:
+        # No Jira projects configured — return an empty shell so the caller
+        # can proceed with non-Jira sections. The downstream report flow
+        # already tolerates zero incidents.
+        return {"incidents": [], "stats": _compute_stats([])}
+
+    if project_filter:
+        projects = [p for p in projects if (p.get("name") or "") == project_filter]
+        if not projects:
+            logger.warning(
+                "fetch_all_projects: project_filter=%r matched no project in customer record",
+                project_filter,
+            )
+            return {"incidents": [], "stats": _compute_stats([])}
+
+    # Single-project shortcut keeps the legacy 1-project install path
+    # unchanged — no extra thread, no merge.
+    if len(projects) == 1:
+        return _fetch_project_data(
+            projects[0], customer_record, start_date, end_date, sections,
+            csv_path=csv_path,
+        )
+
+    logger.info(
+        "fetch_all_projects: fanning out across %d Jira projects for customer=%s",
+        len(projects), customer_record.get("id", "?"),
+    )
+    results: list[dict] = []
+    max_workers = min(4, len(projects))
+    with ThreadPoolExecutor(max_workers=max_workers) as pool:
+        futures = {
+            pool.submit(
+                _fetch_project_data, p, customer_record, start_date, end_date,
+                sections, csv_path,
+            ): p
+            for p in projects
+        }
+        for fut in as_completed(futures):
+            proj = futures[fut]
+            try:
+                results.append(fut.result())
+            except Exception as exc:
+                logger.error(
+                    "fetch_all_projects: project=%s raised %s; skipping",
+                    proj.get("name", "?"), exc,
+                )
+                # Carry an empty per-project result so the merge accounting
+                # is still correct (one entry per project, just empty).
+                results.append({
+                    "incidents": [],
+                    "stats": _compute_stats([]),
+                    "project_name": proj.get("name", ""),
+                    "project_key": proj.get("project_key", ""),
+                    "error": str(exc),
+                })
+
+    return _merge_project_results(results)

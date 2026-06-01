@@ -92,11 +92,20 @@ def _parse_workspaces_json(raw: str) -> list[dict]:
 
 
 def _persist_workspace_secrets(customer_id: str, workspaces: list[dict],
-                               kind: str = "sentinel") -> list[dict]:
-    """For each workspace dict with a non-empty client_secret, write the
-    value to Key Vault and rewrite the dict to carry only the kv_name
-    reference. Workspaces with an empty client_secret keep their existing
-    client_secret_kv_name (rotation semantics: empty means "leave KV alone").
+                               kind: str = "sentinel",
+                               secret_field: str = "client_secret",
+                               kv_field: str = "client_secret_kv_name") -> list[dict]:
+    """For each entry with a non-empty secret, write the value to Key Vault
+    and rewrite the dict to carry only the kv_name reference. Entries with
+    an empty secret keep their existing kv_name (rotation semantics: empty
+    means "leave KV alone").
+
+    ``secret_field`` / ``kv_field`` let this function serve both the
+    Sentinel/Defender workspace flow (``client_secret`` /
+    ``client_secret_kv_name``) and the multi-Jira-project flow
+    (``api_token`` / ``api_token_kv_name``). The KV name is derived
+    deterministically via :func:`_workspace_secret_kv_name` which already
+    accepts a ``kind`` discriminator.
 
     Returns the cleaned list ready for persistence on the customer record.
     Raises RuntimeError on KV write failure so the calling route returns
@@ -104,8 +113,8 @@ def _persist_workspace_secrets(customer_id: str, workspaces: list[dict],
     """
     cleaned: list[dict] = []
     for w in workspaces:
-        secret = w.pop("client_secret", "")
-        kv_name = w.get("client_secret_kv_name", "") or _workspace_secret_kv_name(
+        secret = w.pop(secret_field, "")
+        kv_name = w.get(kv_field, "") or _workspace_secret_kv_name(
             customer_id, w.get("name", ""), kind=kind,
         )
         if secret:
@@ -115,11 +124,50 @@ def _persist_workspace_secrets(customer_id: str, workspaces: list[dict],
                 log.error("Failed to write %s secret for %s/%s: %s",
                           kind, customer_id, w.get("name"), e)
                 raise RuntimeError(
-                    f"Could not save {kind} client secret to Key Vault: {e}"
+                    f"Could not save {kind} {secret_field} to Key Vault: {e}"
                 ) from e
-        w["client_secret_kv_name"] = kv_name
+        w[kv_field] = kv_name
         cleaned.append(w)
     return cleaned
+
+
+def _parse_jira_projects_json(raw: str) -> list[dict]:
+    """Parse and validate the ``jira_projects_json`` form field. Returns
+    [] on empty input; raises ValueError on malformed JSON or missing
+    required keys (``name`` + ``project_key``).
+
+    Optional fields: ``base_url`` / ``email`` / ``api_token`` /
+    ``api_token_kv_name``. Blank values trigger env-var fallback in
+    :func:`tools.jira_client._resolve_jira_auth` so single-instance
+    multi-project customers (the common case) need only fill in
+    ``name`` + ``project_key``.
+    """
+    if not raw or not raw.strip():
+        return []
+    try:
+        parsed = json.loads(raw)
+    except json.JSONDecodeError as e:
+        raise ValueError(f"jira_projects JSON is malformed: {e}")
+    if not isinstance(parsed, list):
+        raise ValueError("jira_projects JSON must be a list of project objects")
+    out: list[dict] = []
+    for i, p in enumerate(parsed):
+        if not isinstance(p, dict):
+            raise ValueError(f"jira_projects[{i}] must be an object")
+        proj_key = (p.get("project_key") or "").strip()
+        if not proj_key:
+            raise ValueError(f"jira_projects[{i}] missing required 'project_key'")
+        out.append({
+            "name":              (p.get("name") or "").strip() or f"Project {i + 1}",
+            "project_key":       proj_key,
+            "base_url":          (p.get("base_url") or "").strip(),
+            "email":             (p.get("email") or "").strip(),
+            # api_token is the raw value; kept in-memory only until we
+            # write to KV — never persisted on the customer record.
+            "api_token":         p.get("api_token") or "",
+            "api_token_kv_name": (p.get("api_token_kv_name") or "").strip(),
+        })
+    return out
 
 
 # ── Pages ──────────────────────────────────────────────────────────────────────
@@ -178,6 +226,9 @@ def api_customers_create():
     # present and non-empty, takes precedence over the legacy 4 flat fields.
     sentinel_workspaces_json = request.form.get("sentinel_workspaces_json", "")
     defender_workspaces_json = request.form.get("defender_workspaces_json", "")
+    # Multi-Jira-project input — same pattern as workspaces. When non-empty
+    # the wrapped list replaces the legacy single jira_project_key field.
+    jira_projects_json = request.form.get("jira_projects_json", "")
     default_sections = request.form.getlist("default_sections")
 
     if not name or not short_name:
@@ -203,6 +254,7 @@ def api_customers_create():
     try:
         sentinel_workspaces = _parse_workspaces_json(sentinel_workspaces_json)
         defender_workspaces = _parse_workspaces_json(defender_workspaces_json)
+        jira_projects = _parse_jira_projects_json(jira_projects_json)
     except ValueError as e:
         return jsonify({"error": str(e)}), 400
 
@@ -238,6 +290,15 @@ def api_customers_create():
         except RuntimeError as e:
             return jsonify({"error": str(e)}), 500
 
+    if jira_projects:
+        try:
+            jira_projects = _persist_workspace_secrets(
+                cid, jira_projects, kind="jira",
+                secret_field="api_token", kv_field="api_token_kv_name",
+            )
+        except RuntimeError as e:
+            return jsonify({"error": str(e)}), 500
+
     customer = {
         "id": cid,
         "name": name,
@@ -252,6 +313,10 @@ def api_customers_create():
         # client will refuse to fetch but the record is still valid.
         "sentinel_workspaces": sentinel_workspaces,
         "defender_workspaces": defender_workspaces,
+        # Multi-Jira-project field. When empty, _normalize_customer auto-wraps
+        # the legacy jira_project_key above into a single-element list at
+        # load time.
+        "jira_projects": jira_projects,
         # Legacy flat fields kept on the record for backwards-compat with
         # any out-of-tree consumers reading customers.json. The normalize
         # layer in tools/customers.py treats sentinel_workspaces as
@@ -347,6 +412,18 @@ def api_customers_update(cid):
                 return jsonify({"error": str(e)}), 400
             except RuntimeError as e:
                 return jsonify({"error": str(e)}), 500
+        jira_projects_json = request.form.get("jira_projects_json", "")
+        if jira_projects_json:
+            try:
+                new_projects = _parse_jira_projects_json(jira_projects_json)
+                customer["jira_projects"] = _persist_workspace_secrets(
+                    cid, new_projects, kind="jira",
+                    secret_field="api_token", kv_field="api_token_kv_name",
+                )
+            except ValueError as e:
+                return jsonify({"error": str(e)}), 400
+            except RuntimeError as e:
+                return jsonify({"error": str(e)}), 500
         if request.form.get("default_sections_submitted"):
             customer["default_sections"] = request.form.getlist("default_sections")
         logo_file = request.files.get("logo")
@@ -396,6 +473,17 @@ def api_customers_update(cid):
                 new_d = _parse_workspaces_json(json.dumps(data["defender_workspaces"]))
                 customer["defender_workspaces"] = _persist_workspace_secrets(
                     cid, new_d, kind="defender",
+                )
+            except ValueError as e:
+                return jsonify({"error": str(e)}), 400
+            except RuntimeError as e:
+                return jsonify({"error": str(e)}), 500
+        if "jira_projects" in data and isinstance(data["jira_projects"], list):
+            try:
+                new_projects = _parse_jira_projects_json(json.dumps(data["jira_projects"]))
+                customer["jira_projects"] = _persist_workspace_secrets(
+                    cid, new_projects, kind="jira",
+                    secret_field="api_token", kv_field="api_token_kv_name",
                 )
             except ValueError as e:
                 return jsonify({"error": str(e)}), 400

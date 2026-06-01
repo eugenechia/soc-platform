@@ -32,6 +32,31 @@ fields) are auto-wrapped by :func:`_normalize_customer` at load time. The
 normalization is idempotent and read-only — the on-disk file is never rewritten
 just because someone read it. The admin UI rewrites the record in the new
 shape the next time the customer is saved.
+
+## Multi-Jira-project schema (2026-06)
+
+A customer record can also describe multiple Jira projects (potentially across
+different Jira Cloud instances) under ``jira_projects``:
+
+```json
+{
+  "jira_projects": [
+    {"name": "Logicalis MY", "project_key": "CAM",
+     "base_url": "https://logicalis-my.atlassian.net",
+     "email": "soc-my@logicalis.com",
+     "api_token_kv_name": "customer-logicalis-asia-jira-logicalis-my-token"},
+    {"name": "Logicalis SG", "project_key": "CAMSG", ...}
+  ]
+}
+```
+
+Legacy records with a flat ``jira_project_key`` are auto-wrapped into a
+single-element ``jira_projects`` list by :func:`_normalize_customer`. Empty
+``base_url`` / ``email`` / ``api_token_kv_name`` means "fall back to the
+global ``JIRA_URL`` / ``JIRA_EMAIL`` / ``JIRA_API_TOKEN`` env vars" — the
+current single-instance production setup. The 4 customer-level Jira issue
+type fields (``jira_incident_issuetype`` etc.) apply to ALL projects on the
+record; per-project issue type overrides are intentionally NOT supported.
 """
 import json
 import os
@@ -51,7 +76,7 @@ _LEGACY_SENTINEL_FIELDS = (
 
 
 def _normalize_customer(record: dict) -> dict:
-    """Return a copy of ``record`` with multi-workspace fields normalised.
+    """Return a copy of ``record`` with multi-source fields normalised.
 
     - If ``sentinel_workspaces`` is already a non-empty list, leave it alone.
     - Else, if any of the legacy flat ``sentinel_*`` fields is set, wrap them
@@ -60,6 +85,12 @@ def _normalize_customer(record: dict) -> dict:
 
     The same logic applies to ``defender_workspaces`` based on legacy
     ``DEFENDER_*`` env vars (no legacy per-customer Defender fields existed).
+
+    Multi-Jira-project (2026-06): if ``jira_projects`` is absent but the legacy
+    flat ``jira_project_key`` is set, wrap it into a single-element list with
+    empty ``base_url`` / ``email`` / ``api_token_kv_name`` so the jira client
+    falls back to ``JIRA_URL`` / ``JIRA_EMAIL`` / ``JIRA_API_TOKEN`` env vars
+    (single-instance install, the current production setup).
 
     Idempotent: normalising an already-normalised record is a no-op.
     Read-only: the input dict is not mutated; a shallow copy is returned.
@@ -87,6 +118,20 @@ def _normalize_customer(record: dict) -> dict:
     # the key is present as a list for downstream iteration.
     if not isinstance(out.get("defender_workspaces"), list):
         out["defender_workspaces"] = []
+
+    projects = out.get("jira_projects")
+    if not (isinstance(projects, list) and projects):
+        legacy_key = (out.get("jira_project_key") or "").strip()
+        if legacy_key:
+            out["jira_projects"] = [{
+                "name":              out.get("name", "") or legacy_key or "Primary",
+                "project_key":       legacy_key,
+                "base_url":          "",
+                "email":             "",
+                "api_token_kv_name": "",
+            }]
+        else:
+            out["jira_projects"] = []
 
     return out
 

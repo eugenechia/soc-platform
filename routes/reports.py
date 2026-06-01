@@ -18,8 +18,11 @@ from tools.llm_client import make_chat_client
 from routes.auth import require_login
 from tools.jira_client import (fetch_incidents_for_report, fetch_incidents_from_csv,
                                 fetch_service_requests, fetch_change_requests,
-                                fetch_monthly_counts_12m, DEFAULT_INCIDENT_ISSUE_TYPE)
-from tools.jira_verifier import verify_monthly_counts, format_verification_error
+                                fetch_monthly_counts_12m, fetch_all_projects,
+                                DEFAULT_INCIDENT_ISSUE_TYPE)
+from tools.jira_verifier import (verify_monthly_counts,
+                                  verify_monthly_counts_for_customer,
+                                  format_verification_error)
 from tools.chart_generator import (
     generate_all_charts,
     generate_sentinel_utilization_chart,
@@ -659,8 +662,11 @@ def _save_report(job_id: str, config: dict, markdown: str, data: dict,
         # Phase C — per-workspace reports carry the workspace name so the
         # History tab can group them and the file name can disambiguate
         # multiple reports for the same customer in the same month.
+        # June 2026 — per-project reports carry project_name with the same
+        # role for Jira-project fanout (multi-instance customers).
         "aggregation_mode": config.get("aggregation_mode", "merged"),
         "workspace_name":   config.get("workspace_name", ""),
+        "project_name":     config.get("project_name", ""),
         "generated_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
         "markdown": markdown,
         "data": data,
@@ -816,10 +822,10 @@ def _collect_report_data(config: dict) -> dict:
     if config.get("report_type") == "Quarterly Report":
         return _collect_quarterly_data(config)
 
-    project_key = config.get("jira_project_key", "")
     start_date = config.get("start_date", "")
     end_date = config.get("end_date", "")
     csv_path = config.get("csv_path", "")
+    sections = config.get("sections", [])
 
     # Per-customer issue-type overrides. Defaults match Atlassian/JSM
     # canonical names; admins can override in the Customer admin page when
@@ -827,19 +833,38 @@ def _collect_report_data(config: dict) -> dict:
     # "Service Desk Request", "RFC").
     customer_record = get_customer(config.get("customer_id", "")) or {}
     incident_issue_type = customer_record.get("jira_incident_issuetype", "") or DEFAULT_INCIDENT_ISSUE_TYPE
-    sr_issue_type = customer_record.get("jira_service_request_issuetype", "") or "Service Request"
-    cr_issue_type = customer_record.get("jira_change_request_issuetype", "") or "Change"
 
-    if csv_path:
-        result = fetch_incidents_from_csv(project_key, start_date, end_date, csv_path=csv_path)
-    else:
-        result = fetch_incidents_for_report(project_key, start_date, end_date,
-                                            incident_issue_type=incident_issue_type)
+    # Multi-Jira-project orchestrator. Fans out to every project in
+    # customer_record["jira_projects"] (one entry for legacy single-project
+    # customers; >1 for the Logicalis Asia-style cross-instance case) and
+    # merges the per-project incidents / SR / CR / 12-month trend into one
+    # dict shaped exactly like a single-project response. Service / change
+    # requests are only fetched when the corresponding section is opted in;
+    # 12-month trend is skipped on the CSV path and re-verified below.
+    # _project_filter (set during per-project fanout in run_report_job)
+    # restricts the fan-out to one project for that child report.
+    project_filter = config.get("_project_filter")
+    result = fetch_all_projects(
+        customer_record=customer_record,
+        start_date=start_date, end_date=end_date,
+        sections=sections,
+        csv_path=csv_path or None,
+        project_filter=project_filter,
+    )
 
     if result.get("error"):
         log.error(f"Jira data collection error: {result['error']}")
 
-    sections = config.get("sections", [])
+    # Carry the active project key forward for code paths (e.g. the monthly
+    # verifier) that still want a single representative key. For single-project
+    # or per-project-fanout this is unambiguous; for merged multi-project it
+    # picks the first project, which is only used in log messages.
+    _active_projects = customer_record.get("jira_projects") or []
+    if project_filter:
+        _active_projects = [p for p in _active_projects
+                            if (p.get("name") or "") == project_filter]
+    project_key = (_active_projects[0].get("project_key") if _active_projects else "") or ""
+
     fetch_tasks = {}
 
     # Phase A — Sentinel + Defender retention window.
@@ -879,28 +904,16 @@ def _collect_report_data(config: dict) -> dict:
         fetch_tasks["splunk"] = lambda: splunk_client.fetch_data(config, start_date, end_date)
     if config.get("use_socradar"):
         fetch_tasks["socradar"] = lambda: socradar_client.fetch_data(config, start_date, end_date)
-    if "service_requests" in sections and project_key:
-        _sr_type = sr_issue_type
-        fetch_tasks["service_requests"] = lambda: fetch_service_requests(
-            project_key, start_date, end_date, issue_type=_sr_type)
-    if "change_requests" in sections and project_key:
-        _cr_type = cr_issue_type
-        fetch_tasks["change_requests"] = lambda: fetch_change_requests(
-            project_key, start_date, end_date, issue_type=_cr_type)
+    # Jira incidents / service requests / change requests / 12-month trend are
+    # ALL already populated on ``result`` by fetch_all_projects above — fanned
+    # out across the customer's Jira projects in parallel inside that one call.
+    # The fetch_tasks block below is now only for non-Jira sources.
     industry = config.get("customer_industry", "")
     if industry and "industry_threat_intel" in sections:
         _ind, _sd, _ed = industry, start_date, end_date
         fetch_tasks["industry_tavily"] = lambda: tavily_client.fetch_industry_threat_intel(_ind, _sd, _ed)
         if config.get("use_socradar"):
             fetch_tasks["industry_socradar"] = lambda: socradar_client.fetch_industry_data(_ind, _sd, _ed)
-
-    # Fetch 12-month incident counts for the monthly trend chart (Jira API mode only).
-    # Verified against an independent JQL window in the verifier step below.
-    if not csv_path and project_key:
-        _pk, _ed = project_key, end_date
-        _it = incident_issue_type
-        fetch_tasks["monthly_trend_12m"] = lambda: fetch_monthly_counts_12m(_pk, _ed,
-                                                                            incident_issue_type=_it)
 
     if fetch_tasks:
         fetch_results: dict = {}
@@ -927,45 +940,51 @@ def _collect_report_data(config: dict) -> dict:
         for key, err in fetch_errors.items():
             result[f"{key}_error"] = err
 
-        # 12-month chart accuracy: the primary fetch (fetch_monthly_counts_12m)
-        # runs 12 separate per-month queries; the verifier runs ONE 12-month
-        # query and groups locally. They must agree exactly. If they don't,
-        # we refuse to ship the report rather than render a chart with
-        # numbers we can't trust.
-        trend_12m = fetch_results.get("monthly_trend_12m")
-        if trend_12m and project_key and not csv_path:
-            verification = verify_monthly_counts(
-                project_key=project_key,
-                end_date=end_date,
-                primary_monthly_counts=trend_12m,
-                incident_issue_type=incident_issue_type,
-            )
-            if not verification["verified"]:
-                msg = format_verification_error(verification)
-                log.error("Monthly count verification FAILED:\n%s", msg)
-                raise ValueError(
-                    "JIRA incident counts could not be verified. Refusing to "
-                    "generate report with unverified numbers.\n\n" + msg
-                )
-            log.info(
-                "Monthly count verification PASSED: %d incidents over 12 months "
-                "(issue_type=%r)",
-                verification["total_verifier"],
-                verification.get("issue_type"),
-            )
-            # The verifier's by_month dict is the authoritative source of
-            # truth for the chart. The in-period stats.monthly_trend is kept
-            # as-is (it covers a different window and is consumed elsewhere).
-            if result.get("stats") is None:
-                result["stats"] = {}
-            result["stats"]["monthly_trend"] = verification["by_month"]
-
         if industry and "industry_threat_intel" in sections:
             result["industry_intel"] = {
                 "industry": industry,
                 "threat_actors": (fetch_results.get("industry_socradar") or {}).get("threat_actors", []),
                 "web_intel": fetch_results.get("industry_tavily"),
             }
+
+    # 12-month chart accuracy: the primary fetch runs 12 separate per-month
+    # queries (per project); the verifier runs ONE 12-month query per
+    # project and groups locally. Summed across projects, the two paths
+    # must agree exactly. If they don't, we refuse to ship the report
+    # rather than render a chart with numbers we can't trust.
+    #
+    # NOTE: this block runs unconditionally (outside the fetch_tasks branch)
+    # because Jira fetches are no longer part of fetch_tasks — fetch_all_projects
+    # populated ``result`` with the 12-month trend whether or not any
+    # non-Jira sources were enabled.
+    trend_12m = result.get("monthly_trend_12m")
+    if trend_12m and project_key and not csv_path:
+        verification = verify_monthly_counts_for_customer(
+            customer_record=customer_record,
+            end_date=end_date,
+            primary_monthly_counts=trend_12m,
+            incident_issue_type=incident_issue_type,
+            project_filter=project_filter,
+        )
+        if not verification["verified"]:
+            msg = format_verification_error(verification)
+            log.error("Monthly count verification FAILED:\n%s", msg)
+            raise ValueError(
+                "JIRA incident counts could not be verified. Refusing to "
+                "generate report with unverified numbers.\n\n" + msg
+            )
+        log.info(
+            "Monthly count verification PASSED: %d incidents over 12 months "
+            "(issue_type=%r)",
+            verification["total_verifier"],
+            verification.get("issue_type"),
+        )
+        # The verifier's by_month dict is the authoritative source of
+        # truth for the chart. The in-period stats.monthly_trend is kept
+        # as-is (it covers a different window and is consumed elsewhere).
+        if result.get("stats") is None:
+            result["stats"] = {}
+        result["stats"]["monthly_trend"] = verification["by_month"]
 
     # Per-customer advisory feeds (§1.15 Threat Analytics + §1.17 IOC Update).
     # Local JSON, so loaded inline rather than via the threaded fetch_tasks block.
@@ -1315,35 +1334,42 @@ def _slug(s: str) -> str:
     return re.sub(r"[^a-z0-9]+", "-", (s or "").lower()).strip("-") or "ws"
 
 
-def _run_per_workspace_reports(parent_job_id: str, parent_config: dict,
-                                workspaces: list) -> None:
-    """Generate one report per workspace, save each separately, then mark
-    the parent job complete with a summary.
+def _run_per_silo_reports(parent_job_id: str, parent_config: dict,
+                          silos: list, silo_kind: str) -> None:
+    """Shared fanout core: generate one report per silo (Sentinel workspace
+    OR Jira project), save each separately, then mark the parent job
+    complete with a summary.
 
-    Children are executed serially to keep token usage predictable and to
-    avoid hammering the LLM with N parallel completion requests. Each child
+    ``silo_kind`` is ``"workspace"`` or ``"project"`` — it drives both the
+    config key passed to child jobs (``_workspace_filter`` vs
+    ``_project_filter``) and the wording in the summary text.
+
+    Children execute serially to keep LLM token usage predictable and to
+    avoid hammering the API with N parallel completion requests. Each child
     gets its own ``jobs[]`` entry so the History tab can show them
     individually; the parent job's ``text`` field gets a short summary
     pointing at the child IDs.
     """
-    import uuid
+    filter_key = "_workspace_filter" if silo_kind == "workspace" else "_project_filter"
+    name_label_key = "workspace_name" if silo_kind == "workspace" else "project_name"
+    summary_label = "Workspace" if silo_kind == "workspace" else "Project"
 
     customer_name = parent_config.get("customer_name", "?")
     log.info(
-        "[%s] per-workspace mode: fanning out to %d workspaces for %s",
-        parent_job_id[:8], len(workspaces), customer_name,
+        "[%s] per-%s mode: fanning out to %d %ss for %s",
+        parent_job_id[:8], silo_kind, len(silos), silo_kind, customer_name,
     )
 
-    child_ids: list[tuple[str, str]] = []  # [(workspace_name, child_job_id), ...]
+    child_ids: list[tuple[str, str]] = []
     errors: list[str] = []
 
-    for idx, ws in enumerate(workspaces, start=1):
-        ws_name = ws.get("name") or f"workspace-{idx}"
-        child_id = f"{parent_job_id}--{_slug(ws_name)}"
+    for idx, silo in enumerate(silos, start=1):
+        s_name = silo.get("name") or f"{silo_kind}-{idx}"
+        child_id = f"{parent_job_id}--{_slug(s_name)}"
         child_config = dict(parent_config)
-        child_config["_workspace_filter"] = ws_name
-        child_config["workspace_name"] = ws_name
-        # Mark the child as a leaf so the fanout block doesn't re-trigger
+        child_config[filter_key] = s_name
+        child_config[name_label_key] = s_name
+        # Mark the child as a leaf so the fanout block doesn't re-trigger.
         child_config["aggregation_mode"] = "merged"
 
         jobs[child_id] = {
@@ -1355,31 +1381,30 @@ def _run_per_workspace_reports(parent_job_id: str, parent_config: dict,
             "parent_job_id": parent_job_id,
         }
         jobs[parent_job_id]["progress"] = (
-            f"Workspace {idx} of {len(workspaces)}: {ws_name}"
+            f"{summary_label} {idx} of {len(silos)}: {s_name}"
         )
 
         try:
             run_report_job(child_id, child_config)
             child_status = jobs.get(child_id, {}).get("status")
             if child_status == "done":
-                child_ids.append((ws_name, child_id))
+                child_ids.append((s_name, child_id))
             else:
                 err = jobs.get(child_id, {}).get("error", "unknown error")
-                errors.append(f"{ws_name}: {err}")
+                errors.append(f"{s_name}: {err}")
                 log.warning(
-                    "[%s] child workspace %s ended with status=%s",
-                    parent_job_id[:8], ws_name, child_status,
+                    "[%s] child %s %s ended with status=%s",
+                    parent_job_id[:8], silo_kind, s_name, child_status,
                 )
         except Exception as exc:
-            errors.append(f"{ws_name}: {exc}")
-            log.error("[%s] child workspace %s raised: %s",
-                      parent_job_id[:8], ws_name, exc)
+            errors.append(f"{s_name}: {exc}")
+            log.error("[%s] child %s %s raised: %s",
+                      parent_job_id[:8], silo_kind, s_name, exc)
 
-    # Compose parent summary
     summary_lines = [
-        f"# {customer_name} — Per-Workspace Reports",
+        f"# {customer_name} — Per-{summary_label} Reports",
         "",
-        f"Generated {len(child_ids)} of {len(workspaces)} workspace reports "
+        f"Generated {len(child_ids)} of {len(silos)} {silo_kind} reports "
         f"for period {parent_config.get('start_date')} to "
         f"{parent_config.get('end_date')}.",
         "",
@@ -1387,8 +1412,8 @@ def _run_per_workspace_reports(parent_job_id: str, parent_config: dict,
     if child_ids:
         summary_lines.append("## Reports generated")
         summary_lines.append("")
-        for ws_name, cid in child_ids:
-            summary_lines.append(f"- **{ws_name}** — job `{cid}`")
+        for s_name, cid in child_ids:
+            summary_lines.append(f"- **{s_name}** — job `{cid}`")
         summary_lines.append("")
     if errors:
         summary_lines.append("## Errors")
@@ -1404,24 +1429,59 @@ def _run_per_workspace_reports(parent_job_id: str, parent_config: dict,
     jobs[parent_job_id]["children"] = [cid for _, cid in child_ids]
 
 
+def _run_per_workspace_reports(parent_job_id: str, parent_config: dict,
+                                workspaces: list) -> None:
+    """Thin compat shim — delegates to :func:`_run_per_silo_reports` with
+    ``silo_kind="workspace"``. Kept as a named entry point because the
+    Sentinel fanout call site reads more clearly with this name."""
+    _run_per_silo_reports(parent_job_id, parent_config, workspaces,
+                          silo_kind="workspace")
+
+
+def _run_per_project_reports(parent_job_id: str, parent_config: dict,
+                              projects: list) -> None:
+    """One child report per Jira project. Used when the customer has >1
+    Jira project but <=1 Sentinel workspace (Sentinel takes precedence)."""
+    _run_per_silo_reports(parent_job_id, parent_config, projects,
+                          silo_kind="project")
+
+
 def run_report_job(job_id: str, config: dict) -> None:
-    # Phase C — multi-workspace fanout.
-    # If aggregation_mode == "per_workspace" and the customer has >1 workspace
-    # AND this call isn't already scoped to a single workspace (i.e. no
-    # _workspace_filter set), spawn one child job per workspace and finish
-    # the parent. Each child runs the normal single-pass flow with
-    # _workspace_filter set, which sentinel_client + defender_client honour
-    # to scope their fetches.
+    # Per-silo fanout. ``aggregation_mode == "per_workspace"`` is the
+    # canonical name we kept from the Sentinel multi-workspace shipment, but
+    # it now means "split per silo" — Sentinel workspace OR Jira project,
+    # whichever the customer has multiple of.
     #
-    # When mode == "merged" (default) or the customer has only one
-    # workspace, this block is a no-op and the single-pass body below runs
-    # exactly like before.
+    # Resolution rule:
+    #   - >1 Sentinel workspaces → fan out per workspace (Jira merged inside
+    #     each child report). Sentinel takes precedence because tenant
+    #     boundary > project boundary; the Cartesian product (N×M reports)
+    #     is intentionally not supported because it confuses operators.
+    #   - else >1 Jira projects → fan out per Jira project (Sentinel data
+    #     shared identically across children).
+    #   - else single-pass (the merged or single-source case).
+    #
+    # Child calls carry _workspace_filter / _project_filter so the downstream
+    # clients scope their fetches. The child config is forced back to
+    # aggregation_mode='merged' to prevent recursive re-fanout.
     if (config.get("aggregation_mode") == "per_workspace"
-            and not config.get("_workspace_filter")):
+            and not config.get("_workspace_filter")
+            and not config.get("_project_filter")):
         _customer = get_customer(config.get("customer_id", "")) or {}
         _workspaces = _customer.get("sentinel_workspaces") or []
+        _projects = _customer.get("jira_projects") or []
         if len(_workspaces) > 1:
+            if len(_projects) > 1:
+                log.warning(
+                    "[%s] customer has >1 Sentinel workspaces AND >1 Jira "
+                    "projects; Sentinel takes precedence — fan-out by "
+                    "workspace, Jira merged inside each child.",
+                    job_id[:8],
+                )
             _run_per_workspace_reports(job_id, config, _workspaces)
+            return
+        if len(_projects) > 1:
+            _run_per_project_reports(job_id, config, _projects)
             return
 
     def _timeout():

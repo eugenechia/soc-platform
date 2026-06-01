@@ -85,8 +85,12 @@ def _migrate_columns(con: sqlite3.Connection) -> None:
     actually missing. Safe to call at every startup.
 
     Phase C (2026-06): adds ``aggregation_mode`` + ``workspace_name`` to
-    reports, ``aggregation_mode`` to schedules. Existing rows take the
-    column default ('merged' / '').
+    reports, ``aggregation_mode`` to schedules.
+
+    Multi-Jira-project (2026-06): adds ``project_name`` to reports so the
+    History tab can disambiguate per-project child reports the same way
+    ``workspace_name`` disambiguates per-workspace ones. Existing rows take
+    the column default ('merged' / '').
     """
     def existing_cols(table: str) -> set:
         rows = con.execute(f"PRAGMA table_info({table})").fetchall()
@@ -95,6 +99,7 @@ def _migrate_columns(con: sqlite3.Connection) -> None:
     additions = [
         ("reports",   "aggregation_mode", "TEXT DEFAULT 'merged'"),
         ("reports",   "workspace_name",   "TEXT DEFAULT ''"),
+        ("reports",   "project_name",     "TEXT DEFAULT ''"),
         ("schedules", "aggregation_mode", "TEXT DEFAULT 'merged'"),
     ]
     for table, col, decl in additions:
@@ -125,8 +130,8 @@ def save_report(report_dict: dict) -> None:
             INSERT OR REPLACE INTO reports
               (id, customer_id, customer_name, report_type, start_date, end_date,
                generated_at, markdown, stats_json, charts_b64, sections_json, logo_path,
-               aggregation_mode, workspace_name)
-            VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+               aggregation_mode, workspace_name, project_name)
+            VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
             """,
             (
                 report_dict.get("id", ""),
@@ -143,6 +148,7 @@ def save_report(report_dict: dict) -> None:
                 report_dict.get("customer_logo", report_dict.get("logo_path", "")),
                 report_dict.get("aggregation_mode", "merged"),
                 report_dict.get("workspace_name", ""),
+                report_dict.get("project_name", ""),
             )
         )
 
@@ -230,6 +236,7 @@ def _row_to_report(row: dict) -> dict:
         "customer_logo": row.get("logo_path", ""),
         "aggregation_mode": row.get("aggregation_mode", "merged") or "merged",
         "workspace_name":   row.get("workspace_name", "") or "",
+        "project_name":     row.get("project_name", "") or "",
         # data key is not stored in DB (too large / not needed for exports)
         "data": {"stats": stats},
     }
