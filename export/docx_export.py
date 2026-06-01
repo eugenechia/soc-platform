@@ -216,11 +216,12 @@ def _add_cover_page(doc, customer_name: str, report_date: str,
     run.font.size = Pt(14)
     run.font.color.rgb = _GREY
 
-    # Customer name
+    # Customer name — primary branding element on the cover. Bumped to 26pt
+    # to match the sample CAM report's customer-name prominence.
     p = doc.add_paragraph()
     p.alignment = WD_ALIGN_PARAGRAPH.CENTER
-    run = p.add_run(customer_name)
-    run.font.size = Pt(22)
+    run = p.add_run(customer_name or "")
+    run.font.size = Pt(26)
     run.font.bold = True
     run.font.color.rgb = _DARK
 
@@ -247,6 +248,22 @@ def _add_cover_page(doc, customer_name: str, report_date: str,
     run.font.size = Pt(18)
     run.font.bold = True
     run.font.color.rgb = _BLUE
+
+    # Report issue date (the day this report is produced) \u2014 mirrors the sample
+    # CAM cover's "8th March 2026" line. Distinct from `report_date`, which
+    # describes the *period covered*, not the issue date.
+    p = doc.add_paragraph()
+    p.alignment = WD_ALIGN_PARAGRAPH.CENTER
+    today = datetime.today()
+    day = today.day
+    if 10 <= day % 100 <= 20:
+        suffix = "th"
+    else:
+        suffix = {1: "st", 2: "nd", 3: "rd"}.get(day % 10, "th")
+    issue_date = f"{day}{suffix} {today.strftime('%B %Y')}"
+    run = p.add_run(f"Issued: {issue_date}")
+    run.font.size = Pt(12)
+    run.font.color.rgb = _GREY
 
     doc.add_paragraph()
 
@@ -334,6 +351,10 @@ _CHART_SECTION_MAP = {
     "resolution": "1.4",
     "sentinel_utilization": "1.10",
     "sentinel_top_alerts": "1.11",
+    "total_assets": "1.12",
+    "sensor_health": "1.13",
+    "vulnerability_severity": "1.14",
+    "vulnerability_exposed_devices": "1.16",
 }
 
 

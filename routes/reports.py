@@ -20,9 +20,21 @@ from tools.jira_client import (fetch_incidents_for_report, fetch_incidents_from_
                                 fetch_service_requests, fetch_change_requests,
                                 fetch_monthly_counts_12m, DEFAULT_INCIDENT_ISSUE_TYPE)
 from tools.jira_verifier import verify_monthly_counts, format_verification_error
-from tools.chart_generator import generate_all_charts, generate_sentinel_utilization_chart, generate_top_alerts_chart
+from tools.chart_generator import (
+    generate_all_charts,
+    generate_sentinel_utilization_chart,
+    generate_top_alerts_chart,
+    generate_total_assets_chart,
+    generate_sensor_health_chart,
+    generate_vulnerability_severity_chart,
+    generate_vulnerability_exposed_devices_chart,
+)
 from tools import sentinel_client, defender_client, splunk_client, socradar_rest as socradar_client, tavily_client
 from tools.customers import get_customer
+from tools.customer_advisories import (
+    load_threat_analytics_advisories,
+    load_ioc_advisories,
+)
 import tools.db as db
 
 log = logging.getLogger(__name__)
@@ -425,14 +437,66 @@ Otherwise, render based on sentinel.sensor_health_source:
 **### 1.14. Vulnerability Details** (if "vulnerability_details" is selected, REQUIRES SENTINEL)
 If Microsoft Sentinel is NOT connected, show the placeholder block.
 Otherwise, render based on whether `sentinel.vulnerability_by_severity` is populated:
-- If populated: Exposure score explanation, severity breakdown, Microsoft Secure Score details.
-- If empty: State "Vulnerability intelligence is currently unavailable for this customer. This section is populated by Microsoft Defender for Endpoint with the Threat & Vulnerability Management (TVM) module — specifically the `DeviceTvmSoftwareVulnerabilities` table. TVM is not currently active for this customer's Sentinel workspace. **Recommended action**: enable Microsoft Defender XDR's TVM module to populate this section."
+
+- **If populated**, produce these four blocks in this exact order. The narrative blocks are MANDATORY — do not skip them, do not paraphrase the Secure Score explainer, do not condense the three factors into one sentence:
+
+  1. **Sub-heading** `#### Exposure Score` followed by exactly these two paragraphs (substitute `{customer_name}` literally):
+
+     > Microsoft Secure Score is a measurement of an organisation's security posture, with a higher number indicating more improvement actions to implement. GSOC provides a weekly Vulnerability Report for {customer_name} to reduce the score and prevent any exploit from the exposed devices.
+     >
+     > Microsoft Secure Score is based on three important factors:
+     >
+     > - **Threat** — Characteristics of the vulnerabilities and exploits in your organisation's devices and breach history. Based on these factors, the security recommendations show the corresponding links to active alerts, ongoing threat campaigns, and their corresponding threat-analytic reports.
+     > - **Breach likelihood** — Your organisation's security posture and resilience against threats.
+     > - **Business value** — Your organisation's assets, critical processes, and intellectual properties.
+
+  2. The transitional sentence (verbatim, with `{customer_name}` substituted):
+
+     > Following chart provides an overview of {customer_name} vulnerability details by severity.
+
+  3. A markdown table titled `**Vulnerability counts by severity**` with columns `Severity | Count`, rows derived from `sentinel.vulnerability_by_severity` (sort Critical → High → Medium → Low → Informational → Unspecified; only include severities with count > 0). The chart for this section is auto-injected by the export layer immediately after the heading — do NOT attempt to embed it yourself.
+
+  4. The closing sentence (verbatim):
+
+     > Please refer to the attached Vulnerability Report for the full per-device breakdown.
+
+- **If empty**: State "Vulnerability intelligence is currently unavailable for this customer. This section is populated by Microsoft Defender for Endpoint with the Threat & Vulnerability Management (TVM) module — specifically the `DeviceTvmSoftwareVulnerabilities` table. TVM is not currently active for this customer's Sentinel workspace. **Recommended action**: enable Microsoft Defender XDR's TVM module to populate this section."
 
 **### 1.15. Threat Analytics Hunting** (if "threat_analytics" is selected, REQUIRES SENTINEL)
-If Microsoft Sentinel is NOT connected, show the placeholder block. If connected but no data for the period, write a brief note stating no activity was recorded.
-Otherwise: The data contains threat intelligence indicators grouped by ObservableKey (STIX observable type, e.g. "network-traffic:src_ref.value", "url:value", "domain-name:value", "file:hashes.MD5").
-Present a summary table with columns: Indicator Type | Count. Map STIX keys to human-readable labels (e.g. "network-traffic:src_ref.value" → "IP Address", "url:value" → "URL", "domain-name:value" → "Domain", "file:hashes.MD5" → "File Hash (MD5)", "file:hashes.'SHA-256'" → "File Hash (SHA-256)").
-Follow with 2-3 paragraphs of analysis covering the distribution of indicator types and what they indicate about the threat landscape.
+If Microsoft Sentinel is NOT connected, show the placeholder block.
+
+Produce the section in two distinct parts, in this exact order:
+
+**Part A — Microsoft Defender XDR Threat Analytics (advisory-driven)**
+
+1. Open with one short paragraph defining Microsoft Defender XDR Threat Analytics. Use this verbatim:
+   > Microsoft Defender XDR Threat Analytics is an in-product threat-intelligence solution from Microsoft security researchers. It surfaces active threat actors and their campaigns, popular and emerging attack techniques, critical vulnerabilities, common attack surfaces, and prevalent malware. GSOC hunts each published advisory across the {customer_name} estate via MDE/Sentinel and records the outcome.
+
+2. Then render a markdown table with columns: `Threat | Report Type | Published | Hunting Result`. Source the rows from `customer_advisories.threat_analytics` (each row has `threat`, `report_type`, `published`, `hunting_result`). Sort by `published` descending.
+
+3. If `customer_advisories.threat_analytics` is empty, replace the table with this line and skip to Part B:
+   > No Microsoft Defender XDR Threat Analytics advisories were tracked for this customer during the reporting period. To enable this view, GSOC maintains the advisory feed at `data/{{customer-slug}}/threat_analytics_advisories.json`.
+
+**Part B — Threat Intelligence Indicator Coverage (STIX feed summary)**
+
+1. Sub-heading `#### Threat Intelligence Indicator Coverage`.
+
+2. One short paragraph stating the total count of indicators ingested for hunting/correlation across the period.
+
+3. A markdown summary table from `sentinel.threat_analytics` (grouped by STIX ObservableKey) with columns: `Indicator Type | Count`. Map STIX keys to human-readable labels:
+   - `network-traffic:src_ref.value` → "IP Address"
+   - `url:value` → "URL"
+   - `domain-name:value` → "Domain"
+   - `file:hashes.MD5` → "File Hash (MD5)"
+   - `file:hashes.'SHA-1'` → "File Hash (SHA-1)"
+   - `file:hashes.'SHA-256'` → "File Hash (SHA-256)"
+   - `x509-certificate:hashes.'SHA-1'` → "Certificate Hash (SHA-1)"
+   - `email-addr:value` → "Email Address"
+   - `ipv4-addr:value` → "IP Address (IPv4)"
+   - `ipv6-addr:value` → "IP Address (IPv6)"
+   - For any unmapped key, render the key verbatim.
+
+4. One short paragraph (2-3 sentences) commenting on what the indicator-type mix says about the active threat landscape — what's dominant and what it implies for detection coverage. Do NOT repeat the table content row-by-row in prose.
 
 **### 1.16. Monthly Vulnerability Exposed Devices** (if "vulnerability_devices" is selected, REQUIRES SENTINEL)
 If Microsoft Sentinel is NOT connected, show the placeholder block.
@@ -441,14 +505,35 @@ Otherwise, render based on whether `sentinel.vulnerability_exposed_devices` is p
 - If empty: State "Per-device vulnerability exposure data is currently unavailable. This section requires Microsoft Defender for Endpoint with the Threat & Vulnerability Management (TVM) module — specifically the `DeviceTvmSoftwareVulnerabilities` table. TVM is not currently active for this customer. **Recommended action**: enable Microsoft Defender XDR's TVM module to populate this section."
 
 **### 1.17. Indicators of Compromise (IOC) Update** (if "ioc_update" is selected, REQUIRES SENTINEL)
-If Microsoft Sentinel is NOT connected, show the placeholder block. If connected but no data for the period, write a brief note stating no activity was recorded.
-Otherwise: The data contains IOC entries with fields: Id, ObservableKey, ObservableValue, Pattern, Tags, Confidence, TimeGenerated.
-Present a table with columns: Date | Indicator Type | Value | Confidence | Tags.
-- Map ObservableKey to a human-readable Indicator Type (same mapping as 1.15 above)
-- ObservableValue is the actual indicator value (IP, URL, domain, hash, etc.)
-- Confidence is an integer 0-100; display as a percentage
-- Tags is a comma-separated string; show the first 2-3 meaningful tags (skip internal ones like "p:default", "ic:*", "vic:*", "gid:*", "cid:*")
-Follow with a paragraph describing the IOC hunting process and how indicators are added to the blocklist.
+If Microsoft Sentinel is NOT connected, show the placeholder block.
+
+Produce the section in two distinct parts, in this exact order:
+
+**Part A — External Advisories Actioned**
+
+1. Open with one short paragraph stating that {customer_name} forwards external advisories (e.g. regulator circulars such as MASNET MAS-Tx, ISAC bulletins, vendor advisories) to GSOC for hunting and indicator ingestion.
+
+2. A markdown table with columns: `Advisory | Date | Hunt Outcome`. Source the rows from `customer_advisories.ioc` (each row has `advisory`, `date`, `hunt_outcome`). Sort by `date` descending.
+
+3. If `customer_advisories.ioc` is empty, replace the table with this line:
+   > No external advisories were forwarded for hunting during this reporting period. GSOC maintains the advisory feed at `data/{{customer-slug}}/ioc_advisories.json`.
+
+4. After the table (or the empty-state line), include these two bullets verbatim — they describe the standing process:
+   > - **Hunting** — GSOC searches each indicator across MDE and Sentinel over a 30-day rolling window and records any observed matches.
+   > - **Adding Indicator** — All actionable IOCs are added to the MDE Indicators allowlist/blocklist. On detection, the configured action (block, remediate, alert) is enforced and an incident is raised.
+
+**Part B — Indicator Repository Updates (Sentinel TI feed)**
+
+1. Sub-heading `#### Indicator Repository Updates`.
+
+2. One short paragraph stating the total IOC count added to the TI repository during the period, drawn from the length of `sentinel.ioc_updates`.
+
+3. A markdown table with columns: `Date | Indicator Type | Value | Confidence | Tags`. Source rows from `sentinel.ioc_updates` (fields: `Id`, `ObservableKey`, `ObservableValue`, `Pattern`, `Tags`, `Confidence`, `TimeGenerated`).
+   - Map `ObservableKey` to a human-readable Indicator Type (same mapping as §1.15 above).
+   - `ObservableValue` is the actual indicator value (IP, URL, domain, hash, etc.).
+   - `Confidence` is an integer 0-100; display as a percentage (e.g. "100%").
+   - `Tags` is a comma-separated string; show the first 2-3 meaningful tags (skip internal ones like `p:default`, `ic:*`, `vic:*`, `gid:*`, `cid:*`).
+   - **Cap the table at 50 rows** — append a final note "_…and N additional indicators._" if there are more, where N is the overflow count. The full list lives in the SIEM and is not duplicated here.
 
 **### Splunk Event Volume** (if "splunk_event_volume" is selected, REQUIRES SPLUNK)
 If Splunk is NOT connected (not listed in available data sources), show the placeholder block. If connected but no data for the period, write a brief note stating no activity was recorded.
@@ -845,6 +930,14 @@ def _collect_report_data(config: dict) -> dict:
                 "web_intel": fetch_results.get("industry_tavily"),
             }
 
+    # Per-customer advisory feeds (§1.15 Threat Analytics + §1.17 IOC Update).
+    # Local JSON, so loaded inline rather than via the threaded fetch_tasks block.
+    _cust_name = config.get("customer_name", "")
+    result["customer_advisories"] = {
+        "threat_analytics": load_threat_analytics_advisories(_cust_name, start_date, end_date),
+        "ioc": load_ioc_advisories(_cust_name, start_date, end_date),
+    }
+
     return result
 
 
@@ -1010,6 +1103,12 @@ def _build_report_context(data: dict, config: dict) -> dict:
         "web_intel": industry_intel_raw.get("web_intel"),
     }
 
+    advisories_raw = data.get("customer_advisories", {}) or {}
+    customer_advisories_data = {
+        "threat_analytics": advisories_raw.get("threat_analytics", []) or [],
+        "ioc": advisories_raw.get("ioc", []) or [],
+    }
+
     return {
         "section_meta": section_meta,
         "sections": sections,
@@ -1020,6 +1119,7 @@ def _build_report_context(data: dict, config: dict) -> dict:
         "splunk_data": splunk_data,
         "socradar_data": socradar_data,
         "industry_intel_data": industry_intel_data,
+        "customer_advisories_data": customer_advisories_data,
         # Pre-rendered HTML kept off `jira_data` so it does not bloat the LLM
         # input (a 1,400-row HTML table is ~250KB of text). The post-processor
         # in `_run_report_agent` substitutes it for INCIDENT_DETAILS_TOKEN.
@@ -1103,7 +1203,15 @@ async def _run_report_agent(data: dict, config: dict) -> str:
     industry_grp = [s for s in sections if section_meta.get(s, {}).get("source") == "general"]
 
     jira_payload = ctx["jira_data"]
-    sentinel_payload = {"sentinel": ctx["sentinel_data"]} if ctx["sentinel_data"] else {}
+    # Customer advisory feeds (§1.15 Threat Analytics, §1.17 IOC Update) ship
+    # alongside the Sentinel payload because both sections are in the sentinel
+    # source group. Empty lists are still passed — the prompt branches on
+    # "is the list empty?" rather than "is the key present?".
+    sentinel_payload = (
+        {"sentinel": ctx["sentinel_data"],
+         "customer_advisories": ctx["customer_advisories_data"]}
+        if ctx["sentinel_data"] else {}
+    )
     splunk_payload = {"splunk": ctx["splunk_data"]} if ctx["splunk_data"] else {}
     socradar_payload = {"socradar": ctx["socradar_data"]} if ctx["socradar_data"] else {}
     industry_payload = {"industry_intel": ctx["industry_intel_data"]} if industry_grp else {}
@@ -1201,6 +1309,46 @@ def run_report_job(job_id: str, config: dict) -> None:
                         charts["sentinel_top_alerts"] = generate_top_alerts_chart(alert_dict)
                 except Exception as e:
                     log.error(f"[{job_id[:8]}] Sentinel top alerts chart failed: {e}")
+
+            # Defender XDR overrides sentinel for device + vulnerability data.
+            # Mirror the precedence used in _build_report_context() so charts
+            # render the same numbers the LLM will narrate.
+            defender = data.get("defender") or {}
+            sensor_health = (defender.get("sensor_health")
+                             or sentinel.get("sensor_health") or [])
+            if sensor_health:
+                try:
+                    chart = generate_total_assets_chart(sensor_health)
+                    if chart:
+                        charts["total_assets"] = chart
+                except Exception as e:
+                    log.error(f"[{job_id[:8]}] Total assets chart failed: {e}")
+                try:
+                    chart = generate_sensor_health_chart(sensor_health)
+                    if chart:
+                        charts["sensor_health"] = chart
+                except Exception as e:
+                    log.error(f"[{job_id[:8]}] Sensor health chart failed: {e}")
+
+            vuln_root = (defender.get("vulnerabilities")
+                         or sentinel.get("vulnerabilities") or {})
+            vuln_by_severity = vuln_root.get("by_severity") or []
+            if vuln_by_severity:
+                try:
+                    chart = generate_vulnerability_severity_chart(vuln_by_severity)
+                    if chart:
+                        charts["vulnerability_severity"] = chart
+                except Exception as e:
+                    log.error(f"[{job_id[:8]}] Vuln severity chart failed: {e}")
+
+            vuln_exposed = vuln_root.get("exposed_devices") or []
+            if vuln_exposed:
+                try:
+                    chart = generate_vulnerability_exposed_devices_chart(vuln_exposed)
+                    if chart:
+                        charts["vulnerability_exposed_devices"] = chart
+                except Exception as e:
+                    log.error(f"[{job_id[:8]}] Vuln exposed devices chart failed: {e}")
 
         jobs[job_id]["progress"] = "Writing report sections..."
         output = asyncio.run(_run_report_agent(data, config))

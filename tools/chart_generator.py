@@ -299,6 +299,252 @@ def generate_sentinel_utilization_chart(daily_breakdown: list, end_date: str = "
     return _to_bytes(fig)
 
 
+def generate_total_assets_chart(sensor_health: list) -> bytes:
+    """Donut chart of monitored assets grouped by OS family.
+
+    Centre hole shows the total device count. The sample CAM report places
+    this under section 1.12 "Total Assets Under Monitoring".
+    """
+    if not sensor_health:
+        return b""
+
+    # Group raw OSPlatform strings into top-level families. The MDE/Heartbeat
+    # data ships values like "Windows11 10.0", "WindowsServer2022 10.0",
+    # "macOS 26.5", "Linux 9.7", "iOS 26.5" — too granular for a pie wedge.
+    def _family(raw: str) -> str:
+        s = (raw or "").strip()
+        low = s.lower()
+        if low.startswith("windowsserver"):
+            return "Windows Server"
+        if low.startswith("windows10wvd") or low.startswith("windows11wvd"):
+            return "Windows AVD"
+        if low.startswith("windows"):
+            return "Windows Client"
+        if low.startswith("macos"):
+            return "macOS"
+        if low.startswith("linux"):
+            return "Linux"
+        if low.startswith("ios"):
+            return "iOS"
+        if low.startswith("android"):
+            return "Android"
+        return "Other"
+
+    counts: dict[str, int] = {}
+    for row in sensor_health:
+        fam = _family(row.get("OSPlatform") or row.get("os_platform") or "")
+        counts[fam] = counts.get(fam, 0) + 1
+
+    # Sort families by count desc; cap to 6 wedges, lump rest into Other.
+    sorted_fams = sorted(counts.items(), key=lambda kv: kv[1], reverse=True)
+    if len(sorted_fams) > 6:
+        head, tail = sorted_fams[:5], sorted_fams[5:]
+        other_total = sum(c for _, c in tail) + counts.get("Other", 0)
+        sorted_fams = head + ([("Other", other_total)] if other_total else [])
+
+    labels = [k for k, _ in sorted_fams]
+    values = [v for _, v in sorted_fams]
+    total  = sum(values)
+
+    # Reuse the existing palette for visual consistency with other charts.
+    palette = [_BLUE, "#10B981", "#F59E0B", "#8B5CF6", "#DC2626", _GREY]
+    colors  = [palette[i % len(palette)] for i in range(len(labels))]
+
+    fig, ax = plt.subplots(figsize=(6.5, 4.5))
+    fig.patch.set_facecolor(_BG)
+    ax.set_facecolor(_BG)
+    wedges, _ = ax.pie(values, colors=colors, startangle=90,
+                       wedgeprops=dict(width=0.38, edgecolor=_BG, linewidth=2))
+    # Centre total
+    ax.text(0, 0.08, f"{total:,}", ha="center", va="center",
+            fontsize=22, fontweight="bold", color=_DARK)
+    ax.text(0, -0.18, "Total Assets", ha="center", va="center",
+            fontsize=10, color=_GREY)
+    ax.set_title("Total Assets Under Monitoring",
+                 fontsize=13, fontweight="bold", color=_DARK, pad=12)
+    legend_labels = [f"{lbl} ({cnt})" for lbl, cnt in zip(labels, values)]
+    ax.legend(wedges, legend_labels, loc="center left",
+              bbox_to_anchor=(1.0, 0.5), frameon=False, fontsize=9)
+    fig.tight_layout()
+    return _to_bytes(fig)
+
+
+def generate_sensor_health_chart(sensor_health: list) -> bytes:
+    """Pie chart of HealthStatus distribution across monitored devices.
+
+    Renders under section 1.13 "Managed Assets by Sensor Health State".
+    """
+    if not sensor_health:
+        return b""
+
+    status_colors = {
+        "Active":         _BLUE,
+        "Inactive":       "#F59E0B",
+        "No sensor data": "#DC2626",
+        "Impaired":       "#F97316",
+        "Unknown":        _GREY,
+    }
+
+    counts: dict[str, int] = {}
+    for row in sensor_health:
+        raw = (row.get("HealthStatus") or row.get("health_status") or "Unknown").strip()
+        # Defender XDR uses "ImpairedCommunication" — fold to "Impaired" for display.
+        if raw.lower().startswith("impair"):
+            label = "Impaired"
+        elif raw.lower() in ("active", "inactive", "unknown"):
+            label = raw.capitalize()
+        elif "no sensor" in raw.lower():
+            label = "No sensor data"
+        else:
+            label = raw
+        counts[label] = counts.get(label, 0) + 1
+
+    # Order: Active first, then everything else, Unknown last.
+    def _sort_key(item):
+        k = item[0]
+        if k == "Active":         return (0, k)
+        if k == "Unknown":        return (2, k)
+        return (1, k)
+    items = sorted(counts.items(), key=_sort_key)
+
+    labels = [k for k, _ in items]
+    values = [v for _, v in items]
+    colors = [status_colors.get(k, _GREY) for k in labels]
+    total  = sum(values)
+
+    fig, ax = plt.subplots(figsize=(6.5, 4.5))
+    fig.patch.set_facecolor(_BG)
+    ax.set_facecolor(_BG)
+    wedges, _ = ax.pie(values, colors=colors, startangle=90,
+                       wedgeprops=dict(edgecolor=_BG, linewidth=2))
+    ax.set_title("Managed Assets by Sensor Health State",
+                 fontsize=13, fontweight="bold", color=_DARK, pad=12)
+    legend_labels = [
+        f"{lbl}  {cnt}  ({cnt/total*100:.1f}%)" if total else lbl
+        for lbl, cnt in zip(labels, values)
+    ]
+    ax.legend(wedges, legend_labels, loc="center left",
+              bbox_to_anchor=(1.0, 0.5), frameon=False, fontsize=9)
+    fig.tight_layout()
+    return _to_bytes(fig)
+
+
+def generate_vulnerability_severity_chart(by_severity) -> bytes:
+    """Horizontal bar chart of vulnerability counts by severity.
+
+    Accepts either a dict {severity: count} or a list of rows like
+    [{"VulnerabilitySeverityLevel": "High", "Count": 64890}, ...] — the
+    Defender TVM hunt and the Sentinel fallback return slightly different
+    shapes so we normalise here.
+
+    Renders under section 1.14 "Vulnerability Details".
+    """
+    if not by_severity:
+        return b""
+
+    # Normalise input → {DisplayLabel: count}
+    raw: dict[str, int] = {}
+    if isinstance(by_severity, dict):
+        for k, v in by_severity.items():
+            raw[str(k).strip().capitalize()] = int(v or 0)
+    else:
+        for row in by_severity:
+            if not isinstance(row, dict):
+                continue
+            k = (row.get("VulnerabilitySeverityLevel")
+                 or row.get("severity") or row.get("Severity") or "").strip()
+            v = int(row.get("Count") or row.get("count") or 0)
+            if k:
+                raw[k.capitalize()] = raw.get(k.capitalize(), 0) + v
+
+    ordered = ["Critical", "High", "Medium", "Low", "Informational", "Unspecified"]
+    color_map = {
+        "Critical":      _SEVERITY_COLORS["Critical Severity"],
+        "High":          _SEVERITY_COLORS["High Severity"],
+        "Medium":        _SEVERITY_COLORS["Medium Severity"],
+        "Low":           _SEVERITY_COLORS["Low Severity"],
+        "Informational": _SEVERITY_COLORS["Informational"],
+        "Unspecified":   _GREY,
+    }
+
+    # Keep only categories present in the data, ordered by severity weight.
+    items = [(k, raw[k]) for k in ordered if raw.get(k, 0) > 0]
+    if not items:
+        return b""
+
+    # Bar chart: top (Critical) at top of plot — reverse for matplotlib barh.
+    labels = [k for k, _ in items][::-1]
+    values = [v for _, v in items][::-1]
+    colors = [color_map.get(k, _GREY) for k in labels]
+
+    fig, ax = plt.subplots(figsize=(7.5, max(2.5, len(labels) * 0.55 + 0.8)))
+    _setup_style(fig, ax)
+    bars = ax.barh(labels, values, color=colors, height=0.62,
+                   edgecolor="white", linewidth=0.5)
+    xmax = max(values)
+    offset = xmax * 0.012 if xmax else 0.5
+    for bar, val in zip(bars, values):
+        ax.text(bar.get_width() + offset, bar.get_y() + bar.get_height() / 2,
+                f"{val:,}", ha="left", va="center", fontsize=10,
+                fontweight="bold", color=_DARK)
+    ax.set_title("Vulnerability Details by Severity",
+                 fontsize=13, fontweight="bold", color=_DARK, pad=12)
+    ax.set_xlabel("Vulnerabilities", fontsize=10, color=_GREY)
+    ax.xaxis.set_major_formatter(ticker.FuncFormatter(lambda x, _: f"{int(x):,}"))
+    ax.set_xlim(0, xmax * 1.15 if xmax else 1)
+    fig.tight_layout()
+    return _to_bytes(fig)
+
+
+def generate_vulnerability_exposed_devices_chart(devices: list) -> bytes:
+    """Horizontal bar chart of the top 15 devices by vulnerability count.
+
+    Accepts the Defender TVM hunt shape ({"DeviceName", "VulnCount"}) or
+    the Sentinel fallback shape ({"device_name", "count"}).
+
+    Renders under section 1.16 "Monthly Vulnerability Exposed Devices".
+    """
+    if not devices:
+        return b""
+
+    rows: list[tuple[str, int]] = []
+    for row in devices:
+        if not isinstance(row, dict):
+            continue
+        name = (row.get("DeviceName") or row.get("device_name") or "").strip()
+        cnt  = int(row.get("VulnCount") or row.get("count") or 0)
+        if name and cnt:
+            rows.append((name, cnt))
+    if not rows:
+        return b""
+
+    rows.sort(key=lambda kv: kv[1], reverse=True)
+    rows = rows[:15]
+    # matplotlib barh stacks bottom-up; reverse so highest is on top.
+    rows = rows[::-1]
+
+    labels = [(n if len(n) <= 34 else n[:31] + "…") for n, _ in rows]
+    values = [v for _, v in rows]
+
+    fig, ax = plt.subplots(figsize=(9, max(3, len(labels) * 0.4 + 1)))
+    _setup_style(fig, ax)
+    bars = ax.barh(labels, values, color=_BLUE, height=0.62,
+                   edgecolor="white", linewidth=0.5)
+    xmax = max(values)
+    offset = xmax * 0.012 if xmax else 0.5
+    for bar, val in zip(bars, values):
+        ax.text(bar.get_width() + offset, bar.get_y() + bar.get_height() / 2,
+                f"{val:,}", ha="left", va="center", fontsize=9,
+                fontweight="bold", color=_DARK)
+    ax.set_title("Top Vulnerability-Exposed Devices",
+                 fontsize=13, fontweight="bold", color=_DARK, pad=12)
+    ax.set_xlabel("Vulnerabilities", fontsize=10, color=_GREY)
+    ax.xaxis.set_major_formatter(ticker.FuncFormatter(lambda x, _: f"{int(x):,}"))
+    ax.set_xlim(0, xmax * 1.18 if xmax else 1)
+    fig.tight_layout()
+    return _to_bytes(fig)
+
+
 def generate_all_charts(stats: dict, end_date: str = "") -> dict:
     """Generate all available charts from stats data.
 
