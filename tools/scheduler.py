@@ -70,34 +70,69 @@ def _is_due(schedule: dict, now: datetime) -> bool:
     """
     Return True if the schedule should run now based on frequency and last_run.
 
-    monthly: runs on day_of_month each month (defaults to 1st)
-    weekly:  runs on day_of_week each week (0=Mon … 6=Sun)
+    monthly: runs on day_of_month each month (defaults to 1st).
+             If the target day has already passed this month and no run has
+             happened yet for the current month, a catch-up fire is issued
+             on the next 5-minute poll — guarantees container restarts
+             across the fire moment don't silently drop a month's report.
+    weekly:  runs on day_of_week each week (0=Mon … 6=Sun).
+             Same catch-up semantics within the current calendar week.
+
+    last_run is the only de-duplication signal, so the calling code must
+    update it *before* (or atomically with) firing the report — otherwise
+    a slow report run that overlaps the next 5-min poll could double-fire.
+    See _fire_schedule() in this module: it writes last_run via
+    db.update_schedule_last_run() prior to spawning the report thread.
     """
     frequency = schedule.get("frequency", "monthly")
     last_run_str = schedule.get("last_run")
+    last_run = _parse_dt(last_run_str) if last_run_str else None
 
     if frequency == "monthly":
         target_day = schedule.get("day_of_month") or 1
-        if now.day != target_day:
+        # Already fired this calendar month? Done.
+        if last_run and last_run.year == now.year and last_run.month == now.month:
             return False
-        if last_run_str:
-            last_run = _parse_dt(last_run_str)
-            # Already ran this month
-            if last_run and last_run.year == now.year and last_run.month == now.month:
-                return False
-        return True
+        # On-time fire — exactly the target day this month.
+        if now.day == target_day:
+            return True
+        # Catch-up fire — target day has passed this month and we never ran.
+        # Skips months where the schedule was created after the target day:
+        # if the schedule was created today (now.day=15) targeting day 1, we
+        # would NOT fire retroactively for "this month" because a fresh
+        # schedule with no last_run shouldn't fire until next month. The
+        # `created_at < first_of_this_month` check enforces that.
+        if now.day > target_day:
+            created_at = _parse_dt(schedule.get("created_at", "")) if schedule.get("created_at") else None
+            first_of_month = now.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
+            if created_at and created_at < first_of_month:
+                return True
+            # No created_at field — be permissive (legacy schedules).
+            if not created_at:
+                return True
+        return False
 
     elif frequency == "weekly":
         target_dow = schedule.get("day_of_week")
         if target_dow is None:
             target_dow = 0
-        if now.weekday() != target_dow:
+        # Already fired this week? Done.
+        if last_run and (now - last_run) < timedelta(days=6):
             return False
-        if last_run_str:
-            last_run = _parse_dt(last_run_str)
-            if last_run and (now - last_run) < timedelta(days=6):
-                return False
-        return True
+        # On-time fire.
+        if now.weekday() == target_dow:
+            return True
+        # Catch-up: target day-of-week has passed this calendar week
+        # (Mon-Sun) and we never ran.
+        days_since_monday = now.weekday()
+        start_of_week = (now - timedelta(days=days_since_monday)).replace(
+            hour=0, minute=0, second=0, microsecond=0,
+        )
+        if now.weekday() > target_dow:
+            created_at = _parse_dt(schedule.get("created_at", "")) if schedule.get("created_at") else None
+            if not created_at or created_at < start_of_week:
+                return True
+        return False
 
     return False
 
