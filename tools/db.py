@@ -34,7 +34,12 @@ def _conn() -> sqlite3.Connection:
 
 
 def init_db() -> None:
-    """Create tables if they do not exist. Called once at app startup."""
+    """Create tables if they do not exist. Called once at app startup.
+
+    Also runs idempotent ALTER TABLE migrations for columns added after the
+    initial schema (see ``_migrate_columns`` below). New deployments and
+    long-running ones converge on the same schema.
+    """
     with _conn() as con:
         con.executescript("""
             CREATE TABLE IF NOT EXISTS reports (
@@ -68,7 +73,34 @@ def init_db() -> None:
                 created_at       TEXT
             );
         """)
+        _migrate_columns(con)
     logger.info("Database initialised at %s", _DB_PATH)
+
+
+def _migrate_columns(con: sqlite3.Connection) -> None:
+    """Idempotent column additions for live DBs.
+
+    SQLite's ALTER TABLE only supports ADD COLUMN (no IF NOT EXISTS), so we
+    introspect PRAGMA table_info and only issue ADDs for columns that are
+    actually missing. Safe to call at every startup.
+
+    Phase C (2026-06): adds ``aggregation_mode`` + ``workspace_name`` to
+    reports, ``aggregation_mode`` to schedules. Existing rows take the
+    column default ('merged' / '').
+    """
+    def existing_cols(table: str) -> set:
+        rows = con.execute(f"PRAGMA table_info({table})").fetchall()
+        return {r[1] for r in rows}  # row[1] = column name
+
+    additions = [
+        ("reports",   "aggregation_mode", "TEXT DEFAULT 'merged'"),
+        ("reports",   "workspace_name",   "TEXT DEFAULT ''"),
+        ("schedules", "aggregation_mode", "TEXT DEFAULT 'merged'"),
+    ]
+    for table, col, decl in additions:
+        if col not in existing_cols(table):
+            con.execute(f"ALTER TABLE {table} ADD COLUMN {col} {decl}")
+            logger.info("Migrated: added %s.%s", table, col)
 
 
 # ── Reports ──────────────────────────────────────────────────────────────────
@@ -92,8 +124,9 @@ def save_report(report_dict: dict) -> None:
             """
             INSERT OR REPLACE INTO reports
               (id, customer_id, customer_name, report_type, start_date, end_date,
-               generated_at, markdown, stats_json, charts_b64, sections_json, logo_path)
-            VALUES (?,?,?,?,?,?,?,?,?,?,?,?)
+               generated_at, markdown, stats_json, charts_b64, sections_json, logo_path,
+               aggregation_mode, workspace_name)
+            VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)
             """,
             (
                 report_dict.get("id", ""),
@@ -108,6 +141,8 @@ def save_report(report_dict: dict) -> None:
                 json.dumps(charts_b64_raw) if charts_b64_raw else None,
                 json.dumps(report_dict.get("sections", [])),
                 report_dict.get("customer_logo", report_dict.get("logo_path", "")),
+                report_dict.get("aggregation_mode", "merged"),
+                report_dict.get("workspace_name", ""),
             )
         )
 
@@ -193,6 +228,8 @@ def _row_to_report(row: dict) -> dict:
         "charts_b64": charts_b64,
         "sections": sections,
         "customer_logo": row.get("logo_path", ""),
+        "aggregation_mode": row.get("aggregation_mode", "merged") or "merged",
+        "workspace_name":   row.get("workspace_name", "") or "",
         # data key is not stored in DB (too large / not needed for exports)
         "data": {"stats": stats},
     }
@@ -240,8 +277,9 @@ def save_schedule(schedule: dict) -> None:
             INSERT OR REPLACE INTO schedules
               (id, customer_id, frequency, day_of_month, day_of_week,
                sections_json, use_sentinel, use_splunk, use_socradar,
-               email_recipients, enabled, last_run, created_at)
-            VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)
+               email_recipients, enabled, last_run, created_at,
+               aggregation_mode)
+            VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)
             """,
             (
                 schedule["id"],
@@ -257,6 +295,7 @@ def save_schedule(schedule: dict) -> None:
                 1 if schedule.get("enabled", True) else 0,
                 schedule.get("last_run"),
                 schedule.get("created_at", datetime.now().strftime("%Y-%m-%d %H:%M:%S")),
+                schedule.get("aggregation_mode", "merged") or "merged",
             )
         )
 
@@ -307,4 +346,5 @@ def _row_to_schedule(row: dict) -> dict:
         "enabled": bool(row.get("enabled", 1)),
         "last_run": row.get("last_run"),
         "created_at": row.get("created_at"),
+        "aggregation_mode": row.get("aggregation_mode", "merged") or "merged",
     }

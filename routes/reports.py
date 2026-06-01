@@ -656,6 +656,11 @@ def _save_report(job_id: str, config: dict, markdown: str, data: dict,
         "end_date": config.get("end_date", ""),
         "sections": config.get("sections", []),
         "customer_logo": config.get("customer_logo", ""),
+        # Phase C — per-workspace reports carry the workspace name so the
+        # History tab can group them and the file name can disambiguate
+        # multiple reports for the same customer in the same month.
+        "aggregation_mode": config.get("aggregation_mode", "merged"),
+        "workspace_name":   config.get("workspace_name", ""),
         "generated_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
         "markdown": markdown,
         "data": data,
@@ -1304,7 +1309,121 @@ async def _run_report_agent(data: dict, config: dict) -> str:
     return assembled
 
 
+def _slug(s: str) -> str:
+    """Convert a workspace name to a filesystem/url-safe slug."""
+    import re
+    return re.sub(r"[^a-z0-9]+", "-", (s or "").lower()).strip("-") or "ws"
+
+
+def _run_per_workspace_reports(parent_job_id: str, parent_config: dict,
+                                workspaces: list) -> None:
+    """Generate one report per workspace, save each separately, then mark
+    the parent job complete with a summary.
+
+    Children are executed serially to keep token usage predictable and to
+    avoid hammering the LLM with N parallel completion requests. Each child
+    gets its own ``jobs[]`` entry so the History tab can show them
+    individually; the parent job's ``text`` field gets a short summary
+    pointing at the child IDs.
+    """
+    import uuid
+
+    customer_name = parent_config.get("customer_name", "?")
+    log.info(
+        "[%s] per-workspace mode: fanning out to %d workspaces for %s",
+        parent_job_id[:8], len(workspaces), customer_name,
+    )
+
+    child_ids: list[tuple[str, str]] = []  # [(workspace_name, child_job_id), ...]
+    errors: list[str] = []
+
+    for idx, ws in enumerate(workspaces, start=1):
+        ws_name = ws.get("name") or f"workspace-{idx}"
+        child_id = f"{parent_job_id}--{_slug(ws_name)}"
+        child_config = dict(parent_config)
+        child_config["_workspace_filter"] = ws_name
+        child_config["workspace_name"] = ws_name
+        # Mark the child as a leaf so the fanout block doesn't re-trigger
+        child_config["aggregation_mode"] = "merged"
+
+        jobs[child_id] = {
+            "status": "running",
+            "text": "",
+            "data": None,
+            "error": None,
+            "config": child_config,
+            "parent_job_id": parent_job_id,
+        }
+        jobs[parent_job_id]["progress"] = (
+            f"Workspace {idx} of {len(workspaces)}: {ws_name}"
+        )
+
+        try:
+            run_report_job(child_id, child_config)
+            child_status = jobs.get(child_id, {}).get("status")
+            if child_status == "done":
+                child_ids.append((ws_name, child_id))
+            else:
+                err = jobs.get(child_id, {}).get("error", "unknown error")
+                errors.append(f"{ws_name}: {err}")
+                log.warning(
+                    "[%s] child workspace %s ended with status=%s",
+                    parent_job_id[:8], ws_name, child_status,
+                )
+        except Exception as exc:
+            errors.append(f"{ws_name}: {exc}")
+            log.error("[%s] child workspace %s raised: %s",
+                      parent_job_id[:8], ws_name, exc)
+
+    # Compose parent summary
+    summary_lines = [
+        f"# {customer_name} — Per-Workspace Reports",
+        "",
+        f"Generated {len(child_ids)} of {len(workspaces)} workspace reports "
+        f"for period {parent_config.get('start_date')} to "
+        f"{parent_config.get('end_date')}.",
+        "",
+    ]
+    if child_ids:
+        summary_lines.append("## Reports generated")
+        summary_lines.append("")
+        for ws_name, cid in child_ids:
+            summary_lines.append(f"- **{ws_name}** — job `{cid}`")
+        summary_lines.append("")
+    if errors:
+        summary_lines.append("## Errors")
+        summary_lines.append("")
+        for e in errors:
+            summary_lines.append(f"- {e}")
+        summary_lines.append("")
+
+    jobs[parent_job_id]["text"] = "\n".join(summary_lines)
+    jobs[parent_job_id]["status"] = "done" if not errors else "error"
+    if errors:
+        jobs[parent_job_id]["error"] = "; ".join(errors)
+    jobs[parent_job_id]["children"] = [cid for _, cid in child_ids]
+
+
 def run_report_job(job_id: str, config: dict) -> None:
+    # Phase C — multi-workspace fanout.
+    # If aggregation_mode == "per_workspace" and the customer has >1 workspace
+    # AND this call isn't already scoped to a single workspace (i.e. no
+    # _workspace_filter set), spawn one child job per workspace and finish
+    # the parent. Each child runs the normal single-pass flow with
+    # _workspace_filter set, which sentinel_client + defender_client honour
+    # to scope their fetches.
+    #
+    # When mode == "merged" (default) or the customer has only one
+    # workspace, this block is a no-op and the single-pass body below runs
+    # exactly like before.
+    if (config.get("aggregation_mode") == "per_workspace"
+            and not config.get("_workspace_filter")):
+        _customer = get_customer(config.get("customer_id", "")) or {}
+        _workspaces = _customer.get("sentinel_workspaces") or []
+        if len(_workspaces) > 1:
+            _run_per_workspace_reports(job_id, config, _workspaces)
+            return
+
     def _timeout():
         if jobs.get(job_id, {}).get("status") == "running":
             log.warning(f"[{job_id[:8]}] Report job timed out")
@@ -1468,6 +1587,7 @@ def generate():
         customer_industry = request.form.get("customer_industry", "").strip()
         jira_request_type = request.form.get("jira_request_type", "Report an Incident").strip()
         sentinel_workspace_id = request.form.get("sentinel_workspace_id", "").strip()
+        aggregation_mode = request.form.get("aggregation_mode", "merged").strip() or "merged"
         csv_file = request.files.get("csv_file")
     else:
         body = request.json or {}
@@ -1487,6 +1607,7 @@ def generate():
         customer_industry = body.get("customer_industry", "").strip()
         jira_request_type = body.get("jira_request_type", "Report an Incident").strip()
         sentinel_workspace_id = body.get("sentinel_workspace_id", "").strip()
+        aggregation_mode = (body.get("aggregation_mode") or "merged").strip() or "merged"
         csv_file = None
 
     if not customer_name:
@@ -1523,6 +1644,7 @@ def generate():
         "use_socradar": use_socradar,
         "customer_industry": customer_industry,
         "sentinel_workspace_id": sentinel_workspace_id,
+        "aggregation_mode": aggregation_mode,
     }
     jobs[job_id] = {
         "status": "running", "text": "", "data": None,

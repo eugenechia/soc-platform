@@ -183,6 +183,10 @@ def _fire_schedule(app, schedule: dict, now: datetime) -> None:
         "use_sentinel": schedule.get("use_sentinel", False),
         "use_splunk": schedule.get("use_splunk", False),
         "use_socradar": schedule.get("use_socradar", False),
+        # Phase C — "merged" (default, single roll-up report) vs
+        # "per_workspace" (one report per workspace, run sequentially by
+        # run_report_job's fan-out block in routes/reports.py).
+        "aggregation_mode": schedule.get("aggregation_mode", "merged") or "merged",
         "_schedule_id": schedule["id"],
         "_email_recipients": schedule.get("email_recipients", ""),
     }

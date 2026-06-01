@@ -248,6 +248,15 @@
         </div>
 
         <div class="form-group">
+          <label>Aggregation Mode</label>
+          <select id="schedAggregationMode">
+            <option value="merged">Merged — one rollup report combining all workspaces</option>
+            <option value="per_workspace">Per-workspace — one report per Sentinel workspace</option>
+          </select>
+          <p class="form-hint">Only affects multi-workspace customers. Single-workspace customers always render one report.</p>
+        </div>
+
+        <div class="form-group">
           <label class="toggle-switch">
             <input type="checkbox" id="schedEnabled" checked>
             <div class="toggle-track"></div>
@@ -394,6 +403,7 @@
       document.getElementById('scheduleForm').reset();
       document.getElementById('scheduleId').value = '';
       document.getElementById('schedEnabled').checked = true;
+      document.getElementById('schedAggregationMode').value = 'merged';
       updateDayField();
       document.getElementById('scheduleModal').classList.add('active');
     }
@@ -418,6 +428,7 @@
       document.getElementById('schedSplunk').checked = s.use_splunk;
       document.getElementById('schedSocradar').checked = s.use_socradar;
       document.getElementById('schedEmail').value = s.email_recipients || '';
+      document.getElementById('schedAggregationMode').value = s.aggregation_mode || 'merged';
       document.getElementById('schedEnabled').checked = s.enabled;
       document.getElementById('scheduleModal').classList.add('active');
     }
@@ -440,6 +451,7 @@
         use_socradar: document.getElementById('schedSocradar').checked,
         email_recipients: document.getElementById('schedEmail').value.trim(),
         enabled: document.getElementById('schedEnabled').checked,
+        aggregation_mode: document.getElementById('schedAggregationMode').value || 'merged',
         sections: [],
       };
 

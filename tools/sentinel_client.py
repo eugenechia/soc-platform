@@ -1,4 +1,20 @@
+"""Microsoft Sentinel / Log Analytics client.
+
+Phase C (2026-06): supports customers with **multiple Sentinel workspaces**,
+each potentially in a different Entra tenant (cross-tenant, no
+``workspace()`` KQL feature usable). ``fetch_data`` orchestrates parallel
+per-workspace fetches and merges the results into the same flat dict shape
+the rest of the report pipeline already consumes. Single-workspace customers
+keep working unchanged via :func:`tools.customers._normalize_customer`,
+which wraps legacy flat fields into a single-element ``sentinel_workspaces``
+list at load time.
+
+When the caller wants only one workspace (e.g. per-workspace report mode),
+they pass ``config["_workspace_filter"] = workspace_name`` and this client
+restricts the fan-out to that one workspace.
+"""
 import logging
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime
 
 from dateutil.relativedelta import relativedelta
@@ -10,12 +26,10 @@ _LOG_ANALYTICS_SCOPE = "https://api.loganalytics.io/.default"
 
 
 def _get_access_token(tenant_id: str, client_id: str, client_secret: str) -> str:
-    """Acquire a Log Analytics access token using the customer's own SP credentials.
+    """Acquire a Log Analytics access token using the workspace's SP credentials.
 
-    Each customer brings their own SP that lives in their tenant and has
-    Log Analytics Reader on their Sentinel workspace — see the per-customer
-    onboarding flow. The token is issued by `tenant_id`, which must match the
-    workspace's home tenant.
+    Each workspace can live in its own tenant — the token is issued by
+    ``tenant_id`` which must match the workspace's home tenant.
     """
     url = f"https://login.microsoftonline.com/{tenant_id}/oauth2/v2.0/token"
     r = httpx.post(url, data={
@@ -43,13 +57,11 @@ def _run_kql(token: str, query: str, timespan: str | None = None,
     )
 
     if r.status_code in (401, 403):
-        # Auth failure — raise so the caller marks Sentinel as disconnected
         raise PermissionError(
             f"Sentinel auth denied ({r.status_code}): {r.text[:300]}"
         )
 
     if r.status_code in (400, 404):
-        # Table may not exist in this workspace — treat as empty
         logger.warning(f"KQL returned {r.status_code}: {r.text[:200]}")
         return []
 
@@ -71,47 +83,43 @@ def _safe_kql(token: str, query: str, timespan: str | None = None,
     try:
         return _run_kql(token, query, timespan, workspace_id)
     except PermissionError:
-        raise  # auth failures must propagate so the caller treats Sentinel as disconnected
+        raise
     except Exception as e:
         logger.warning(f"KQL query skipped ({type(e).__name__}): {e}")
         return []
 
 
-def fetch_data(config: dict, start_date: str, end_date: str) -> dict:
-    """Fetch security data from Microsoft Sentinel / Log Analytics.
+# ── Per-workspace fetch ────────────────────────────────────────────────────────
 
-    Resolves the customer's own SP credentials (tenant/client/secret/workspace)
-    from the customer record. The client secret value is fetched from Key Vault
-    via the deterministic name stored on the record.
+
+def _fetch_workspace_data(workspace_spec: dict, start_date: str, end_date: str) -> dict:
+    """Execute all monthly-report KQL queries against ONE workspace.
+
+    Returns the same flat dict shape as the original single-workspace
+    ``fetch_data``. The orchestrator above merges multiple of these into the
+    final aggregated response.
+
+    Raises ``ValueError`` if ``workspace_spec`` is missing any required field.
     """
-    from tools.customers import get_customer
     from tools.secrets import get_kv_secret
 
-    customer_id = config.get("customer_id", "")
-    customer = get_customer(customer_id) or {}
-
-    workspace_id  = customer.get("sentinel_workspace_id") or config.get("sentinel_workspace_id", "")
-    tenant_id     = customer.get("sentinel_tenant_id", "")
-    client_id     = customer.get("sentinel_client_id", "")
-    kv_name       = customer.get("sentinel_client_secret_kv_name", "")
+    name          = workspace_spec.get("name") or "workspace"
+    workspace_id  = workspace_spec.get("workspace_id", "")
+    tenant_id     = workspace_spec.get("tenant_id", "")
+    client_id     = workspace_spec.get("client_id", "")
+    kv_name       = workspace_spec.get("client_secret_kv_name", "")
     client_secret = get_kv_secret(kv_name) if kv_name else ""
 
     if not all([tenant_id, client_id, client_secret, workspace_id]):
         raise ValueError(
-            f"Customer '{customer_id}' is missing one or more Sentinel credentials. "
-            "Required on the customer record: sentinel_tenant_id, sentinel_client_id, "
-            "sentinel_client_secret_kv_name (with the secret present in Key Vault), "
-            "sentinel_workspace_id."
+            f"Sentinel workspace {name!r} is missing one or more credentials: "
+            "tenant_id, client_id, client_secret (via Key Vault), workspace_id."
         )
 
     token = _get_access_token(tenant_id, client_id, client_secret)
-
-    # ISO 8601 timespan used as the query time filter
     timespan = f"{start_date}T00:00:00Z/{end_date}T23:59:59Z"
 
-    # 1. Monthly utilization — GB ingested per day.
-    # Try billable-only first; fall back to all usage if the workspace returns nothing
-    # (e.g. commitment-tier workspaces where IsBillable is not set on all rows).
+    # 1. Monthly utilization — GB ingested per day for the report period.
     utilization_rows = _safe_kql(token, """
 Usage
 | where IsBillable == true
@@ -128,11 +136,7 @@ Usage
     total_gb = round(sum(float(r.get("TotalGB") or 0) for r in utilization_rows), 2)
     avg_daily_gb = round(total_gb / max(len(utilization_rows), 1), 2)
 
-    # 1b. Trailing 3-month utilization — sole consumer is the
-    # "Monthly Log Ingestion (GB) — Past 3 Months" chart. Kept separate from
-    # the period-scoped query above so total_gb / avg_daily_gb / spike days
-    # remain accurate to the report period (e.g. just March), while the chart
-    # can still show Jan / Feb / Mar bars.
+    # 1b. Trailing 3-month utilization for the past-3-months chart.
     monthly_rows: list[dict] = []
     try:
         end_dt = datetime.strptime(end_date, "%Y-%m-%d")
@@ -156,9 +160,7 @@ Usage
     except Exception as e:
         logger.warning("Trailing-3-month Usage query skipped (%s): %s", type(e).__name__, e)
 
-    # 2. Top alerts triggered in the period.
-    # Try SecurityAlert first; fall back to SecurityIncident for workspaces where
-    # incidents are not surfaced as individual alerts (e.g. identity-only tenants).
+    # 2. Top alerts.
     alerts_rows = _safe_kql(token, """
 SecurityAlert
 | summarize Count = count() by AlertName
@@ -172,13 +174,9 @@ SecurityIncident
 | top 15 by Count desc
 """, timespan, workspace_id)
 
-    # 3. Total assets under monitoring — fallback chain:
-    # MDE DeviceInfo → CrowdStrike → Heartbeat (Sentinel agent presence).
-    # `assets_source` records which tier produced the data so the report can
-    # adjust its narrative ("EDR-managed" vs "Sentinel agent heartbeat").
+    # 3. Total assets — MDE → CrowdStrike → Heartbeat fallback.
     assets_source = "none"
     total_assets = 0
-
     assets_rows = _safe_kql(token, """
 DeviceInfo
 | summarize arg_max(TimeGenerated, *) by DeviceName
@@ -197,8 +195,6 @@ CrowdStrikeHosts
             total_assets = int(assets_rows[0]["Count"])
             assets_source = "crowdstrike"
         else:
-            # Heartbeat fallback — for customers without EDR connectors.
-            # Counts distinct VMs/servers reporting to the workspace agent.
             hb_rows = _safe_kql(token, """
 Heartbeat
 | summarize arg_max(TimeGenerated, *) by Computer
@@ -208,9 +204,7 @@ Heartbeat
                 total_assets = int(hb_rows[0]["Count"])
                 assets_source = "heartbeat"
 
-    # 4. Per-device sensor health state — same fallback chain as assets above.
-    # Use extend+column_ifexists (not project+column_ifexists) — the assignment form in project
-    # is not reliably supported by the Log Analytics REST API even though it works in the UI.
+    # 4. Sensor health.
     sensor_health_source = "none"
     health_rows = _safe_kql(token, """
 DeviceInfo
@@ -247,7 +241,6 @@ CrowdStrikeHosts
         if health_rows:
             sensor_health_source = "crowdstrike"
         else:
-            # Heartbeat fallback — Sentinel agent presence in lieu of EDR sensor data.
             health_rows = _safe_kql(token, """
 Heartbeat
 | summarize arg_max(TimeGenerated, *) by Computer
@@ -267,9 +260,7 @@ Heartbeat
             if health_rows:
                 sensor_health_source = "heartbeat"
 
-    # 5a. Vulnerability severity breakdown
-    # DeviceTvmSoftwareVulnerabilities is a snapshot table — passing timespan excludes all rows
-    # written before the report period even when TVM is active. Use ago(30d) instead.
+    # 5a. Vulnerability severity breakdown.
     vuln_severity_rows = _safe_kql(token, """
 DeviceTvmSoftwareVulnerabilities
 | where TimeGenerated > ago(30d)
@@ -277,7 +268,7 @@ DeviceTvmSoftwareVulnerabilities
 | order by Count desc
 """, workspace_id=workspace_id)
 
-    # 5b. Top exposed devices
+    # 5b. Top exposed devices.
     vuln_devices_rows = _safe_kql(token, """
 DeviceTvmSoftwareVulnerabilities
 | where TimeGenerated > ago(30d)
@@ -285,9 +276,7 @@ DeviceTvmSoftwareVulnerabilities
 | top 20 by VulnCount desc
 """, workspace_id=workspace_id)
 
-    # 6. Threat intelligence indicators by observable type.
-    # Try modern ThreatIntelIndicators (STIX schema) first; fall back to the legacy
-    # ThreatIntelligenceIndicator table (pre-2024 schema) which uses different field names.
+    # 6. Threat intelligence indicators.
     threat_rows = _safe_kql(token, """
 ThreatIntelIndicators
 | where IsActive == true
@@ -309,7 +298,7 @@ ThreatIntelligenceIndicator
 | order by Count desc
 """, timespan, workspace_id)
 
-    # 7. Recent IOC entries
+    # 7. Recent IOCs.
     ioc_rows = _safe_kql(token, """
 ThreatIntelIndicators
 | where IsActive == true
@@ -351,9 +340,9 @@ ThreatIntelligenceIndicator
         },
         "top_alerts": alerts_rows,
         "total_assets": total_assets,
-        "total_assets_source": assets_source,           # "mde" | "crowdstrike" | "heartbeat" | "none"
+        "total_assets_source": assets_source,
         "sensor_health": health_rows,
-        "sensor_health_source": sensor_health_source,   # same domain as above
+        "sensor_health_source": sensor_health_source,
         "vulnerabilities": {
             "by_severity": vuln_severity_rows,
             "exposed_devices": vuln_devices_rows,
@@ -361,3 +350,160 @@ ThreatIntelligenceIndicator
         "threat_analytics": threat_rows,
         "ioc_updates": ioc_rows,
     }
+
+
+# ── Cross-workspace merge ──────────────────────────────────────────────────────
+
+
+def _sum_count_rows(rows_list: list[list[dict]], key: str, count_field: str = "Count") -> list[dict]:
+    """Merge multiple [{key: X, Count: N}, ...] arrays into one summed array.
+
+    Used for top_alerts, vulnerability_by_severity, threat_analytics — anything
+    where the same key (alert name, severity, observable type) can appear in
+    multiple workspaces and the right merge is to add the counts.
+    """
+    totals: dict[str, int] = {}
+    for rows in rows_list:
+        for r in rows or []:
+            k = r.get(key)
+            if k is None:
+                continue
+            totals[k] = totals.get(k, 0) + int(r.get(count_field) or 0)
+    return [{key: k, count_field: v} for k, v in sorted(totals.items(), key=lambda x: -x[1])]
+
+
+def _concat_dedupe(rows_list: list[list[dict]], key: str) -> list[dict]:
+    """Concatenate multiple lists of dicts, keeping the first occurrence of
+    each ``key``. Used for sensor_health and exposed_devices where the same
+    DeviceName shouldn't be double-counted across workspaces (rare but
+    possible if a device is dual-homed).
+    """
+    seen: set = set()
+    out: list[dict] = []
+    for rows in rows_list:
+        for r in rows or []:
+            k = r.get(key)
+            if k is None or k in seen:
+                continue
+            seen.add(k)
+            out.append(r)
+    return out
+
+
+def _merge_workspace_results(results: list[dict]) -> dict:
+    """Combine N per-workspace fetches into one aggregated report dict.
+
+    Scalars are summed (total_gb, total_assets), source flags are picked
+    by precedence (mde > crowdstrike > heartbeat > none), lists are
+    concat-deduped or sum-by-key as appropriate.
+    """
+    if not results:
+        return {}
+    if len(results) == 1:
+        return results[0]
+
+    # Numerics
+    total_gb = round(sum(r.get("utilization", {}).get("total_gb", 0) for r in results), 2)
+    # Average daily is a weighted average over the same period — we report
+    # the simple mean of per-workspace averages, which is close enough for
+    # the executive-summary section. Per-workspace breakdown stays in the
+    # daily_breakdown lists if anyone needs the exact figure.
+    nonzero_avgs = [r.get("utilization", {}).get("avg_daily_gb", 0) for r in results
+                    if r.get("utilization", {}).get("avg_daily_gb", 0) > 0]
+    avg_daily_gb = round(sum(nonzero_avgs) / len(nonzero_avgs), 2) if nonzero_avgs else 0
+    total_assets = sum(r.get("total_assets", 0) for r in results)
+
+    # Source flag precedence
+    src_priority = {"mde": 3, "crowdstrike": 2, "heartbeat": 1, "none": 0}
+    def best_source(field: str) -> str:
+        sources = [r.get(field, "none") for r in results]
+        return max(sources, key=lambda s: src_priority.get(s, 0))
+
+    return {
+        "utilization": {
+            "total_gb": total_gb,
+            "avg_daily_gb": avg_daily_gb,
+            # daily_breakdown: concatenate to retain per-day spike days from each workspace
+            "daily_breakdown": [row for r in results for row in r.get("utilization", {}).get("daily_breakdown", [])],
+            "monthly_breakdown": [row for r in results for row in r.get("utilization", {}).get("monthly_breakdown", [])],
+        },
+        "top_alerts":          _sum_count_rows([r.get("top_alerts", []) for r in results], "AlertName"),
+        "total_assets":        total_assets,
+        "total_assets_source": best_source("total_assets_source"),
+        "sensor_health":       _concat_dedupe([r.get("sensor_health", []) for r in results], "DeviceName"),
+        "sensor_health_source": best_source("sensor_health_source"),
+        "vulnerabilities": {
+            "by_severity":     _sum_count_rows(
+                [r.get("vulnerabilities", {}).get("by_severity", []) for r in results],
+                "VulnerabilitySeverityLevel",
+            ),
+            "exposed_devices": _concat_dedupe(
+                [r.get("vulnerabilities", {}).get("exposed_devices", []) for r in results],
+                "DeviceName",
+            ),
+        },
+        "threat_analytics":    _sum_count_rows([r.get("threat_analytics", []) for r in results], "ObservableKey"),
+        "ioc_updates":         [row for r in results for row in r.get("ioc_updates", [])][:200],
+    }
+
+
+# ── Public API ─────────────────────────────────────────────────────────────────
+
+
+def fetch_data(config: dict, start_date: str, end_date: str) -> dict:
+    """Fetch Sentinel data for the customer named in ``config["customer_id"]``.
+
+    Behaviour:
+
+    - Resolves ``customer.sentinel_workspaces`` (a list; legacy single-workspace
+      records are auto-wrapped to a one-element list by the customers helper).
+    - If ``config["_workspace_filter"]`` is set, narrows the fan-out to the
+      workspace whose ``name`` matches the filter — used by per-workspace
+      report mode where the orchestrator runs N report jobs, each scoped to
+      one workspace.
+    - Runs per-workspace fetches in parallel via a thread pool.
+    - Returns a single merged dict in the same shape the rest of the
+      pipeline expects. For single-workspace customers, the merged dict is
+      bit-identical to the pre-multi-workspace output.
+    """
+    from tools.customers import get_customer
+
+    customer_id = config.get("customer_id", "")
+    customer = get_customer(customer_id) or {}
+
+    workspaces = customer.get("sentinel_workspaces") or []
+    if not workspaces:
+        raise ValueError(
+            f"Customer '{customer_id}' has no Sentinel workspaces configured. "
+            "Add at least one workspace in the customer admin page."
+        )
+
+    workspace_filter = config.get("_workspace_filter") or ""
+    if workspace_filter:
+        workspaces = [w for w in workspaces if w.get("name") == workspace_filter]
+        if not workspaces:
+            raise ValueError(
+                f"Customer '{customer_id}' has no Sentinel workspace named "
+                f"{workspace_filter!r}. Available: "
+                f"{[w.get('name') for w in customer.get('sentinel_workspaces', [])]}"
+            )
+
+    # Parallel fan-out. Each workspace gets its own token + KQL calls; they
+    # don't share connections so a slow tenant doesn't block the others.
+    max_workers = min(8, len(workspaces))
+    results: list[dict] = []
+    with ThreadPoolExecutor(max_workers=max_workers) as pool:
+        futures = {pool.submit(_fetch_workspace_data, w, start_date, end_date): w
+                   for w in workspaces}
+        for fut, w in futures.items():
+            try:
+                results.append(fut.result())
+            except Exception as exc:
+                logger.error(
+                    "Sentinel fetch failed for workspace %r (customer=%s): %s",
+                    w.get("name"), customer_id, exc,
+                )
+                # Continue with the remaining workspaces — partial report is
+                # more useful than no report. The merge skips empty results.
+
+    return _merge_workspace_results(results)

@@ -573,6 +573,19 @@
           </label>
         </div>
 
+        <div style="margin-top: 16px;">
+          <label for="aggregationMode" style="font-weight: 600; display:block; margin-bottom: 6px;">
+            Aggregation Mode (multi-workspace customers)
+          </label>
+          <select id="aggregationMode" style="padding: 8px 12px; min-width: 360px;">
+            <option value="merged">Merged — one rollup report combining all workspaces</option>
+            <option value="per_workspace">Per-workspace — one report per Sentinel workspace</option>
+          </select>
+          <p style="font-size:12px; color:var(--text-muted); margin-top:4px;">
+            Single-workspace customers always generate one report regardless of this setting.
+          </p>
+        </div>
+
         <div id="jiraSourceOptions" style="margin-top: 16px;">
           <p style="font-weight: 600; margin-bottom: 8px;">Jira Data Source</p>
           <div style="display: flex; gap: 16px; margin-bottom: 12px;">
@@ -976,6 +989,11 @@
         formData.append('use_socradar', useSocradar ? 'true' : 'false');
         formData.append('customer_industry', selectedCustomer ? selectedCustomer.industry || '' : '');
         formData.append('sentinel_workspace_id', selectedCustomer ? selectedCustomer.sentinel_workspace_id || '' : '');
+        // Phase C — multi-workspace aggregation. The wizard always emits the
+        // current dropdown value; the backend ignores it when the customer
+        // has only one workspace.
+        formData.append('aggregation_mode',
+          (document.getElementById('aggregationMode')?.value) || 'merged');
         formData.append('csv_file', csvFileInput.files[0]);
         fetchOptions = { method: 'POST', body: formData };
       } else {
@@ -995,6 +1013,7 @@
           use_socradar: useSocradar,
           customer_industry: selectedCustomer ? selectedCustomer.industry || '' : '',
           sentinel_workspace_id: selectedCustomer ? selectedCustomer.sentinel_workspace_id || '' : '',
+          aggregation_mode: (document.getElementById('aggregationMode')?.value) || 'merged',
         };
         fetchOptions = {
           method: 'POST',

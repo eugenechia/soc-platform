@@ -268,6 +268,25 @@
           <div style="font-size:12px; color:var(--text-muted); margin-top:4px;">Stored in Azure Key Vault. Never displayed back after save.</div>
         </div>
         <div class="form-group">
+          <label>Additional Sentinel Workspaces (JSON, optional)</label>
+          <textarea id="addSentinelWorkspacesJson" rows="6" placeholder='[
+  {"name": "Malaysia",  "workspace_id": "...", "tenant_id": "...", "client_id": "...", "client_secret": "..."},
+  {"name": "Singapore", "workspace_id": "...", "tenant_id": "...", "client_id": "...", "client_secret": "..."}
+]' style="font-family:monospace; font-size:12px; width:100%;"></textarea>
+          <div style="font-size:12px; color:var(--text-muted); margin-top:4px;">
+            For customers spanning multiple Sentinel workspaces (e.g. one per country/tenant). When non-empty, this list <strong>overrides</strong> the four single-workspace fields above. Each <code>client_secret</code> is written to Key Vault and never persisted on the record.
+          </div>
+        </div>
+        <div class="form-group">
+          <label>Defender XDR Tenants (JSON, optional)</label>
+          <textarea id="addDefenderWorkspacesJson" rows="4" placeholder='[
+  {"name": "Malaysia", "tenant_id": "...", "client_id": "...", "client_secret": "..."}
+]' style="font-family:monospace; font-size:12px; width:100%;"></textarea>
+          <div style="font-size:12px; color:var(--text-muted); margin-top:4px;">
+            Only needed if the customer has multiple Defender XDR tenants. Leave blank to use the global <code>DEFENDER_*</code> env-var creds.
+          </div>
+        </div>
+        <div class="form-group">
           <label>Industry</label>
           <select id="addIndustry">
             <option value="">-- Select industry --</option>
@@ -390,6 +409,20 @@
         <label>Sentinel Client Secret</label>
         <input type="password" id="editSentinelClientSecret" autocomplete="new-password" placeholder="••••• (already set — leave blank to keep)">
         <div style="font-size:12px; color:var(--text-muted); margin-top:4px;">Type a new value to rotate. Leave blank to keep the existing Key Vault secret untouched.</div>
+      </div>
+      <div class="form-group">
+        <label>Sentinel Workspaces (JSON)</label>
+        <textarea id="editSentinelWorkspacesJson" rows="8" style="font-family:monospace; font-size:12px; width:100%;"></textarea>
+        <div style="font-size:12px; color:var(--text-muted); margin-top:4px;">
+          Authoritative multi-workspace list. Pre-filled from the saved record. Omit <code>client_secret</code> on entries you want to leave alone in Key Vault. Non-empty content overrides the four single-workspace fields above on save.
+        </div>
+      </div>
+      <div class="form-group">
+        <label>Defender XDR Tenants (JSON)</label>
+        <textarea id="editDefenderWorkspacesJson" rows="6" style="font-family:monospace; font-size:12px; width:100%;"></textarea>
+        <div style="font-size:12px; color:var(--text-muted); margin-top:4px;">
+          Optional per-tenant Defender XDR credentials. Empty list uses the global <code>DEFENDER_*</code> env-var fallback.
+        </div>
       </div>
       <div class="form-group">
         <label>New Logo (optional)</label>
@@ -674,6 +707,11 @@
       fd.append('sentinel_tenant_id', document.getElementById('addSentinelTenantId').value.trim());
       fd.append('sentinel_client_id', document.getElementById('addSentinelClientId').value.trim());
       fd.append('sentinel_client_secret', document.getElementById('addSentinelClientSecret').value);
+      // Multi-workspace JSON — when non-empty, overrides the four single-workspace fields above.
+      const addWsJson = document.getElementById('addSentinelWorkspacesJson').value.trim();
+      if (addWsJson) fd.append('sentinel_workspaces_json', addWsJson);
+      const addDefJson = document.getElementById('addDefenderWorkspacesJson').value.trim();
+      if (addDefJson) fd.append('defender_workspaces_json', addDefJson);
       fd.append('industry', document.getElementById('addIndustry').value);
       const logo = document.getElementById('addLogo');
       if (logo.files.length) fd.append('logo', logo.files[0]);
@@ -728,6 +766,29 @@
       secretEl.placeholder = c.sentinel_client_secret_kv_name
         ? '••••• (already set — leave blank to keep)'
         : 'Paste the secret value';
+      // Pre-fill multi-workspace JSON from the saved record. Strip the
+      // client_secret on display (it's never exposed back) and surface the
+      // kv_name so operators can see which Key Vault entry is referenced.
+      const sentinelWs = Array.isArray(c.sentinel_workspaces) ? c.sentinel_workspaces : [];
+      const sentinelWsDisplay = sentinelWs.map(w => ({
+        name: w.name || '',
+        workspace_id: w.workspace_id || '',
+        tenant_id: w.tenant_id || '',
+        client_id: w.client_id || '',
+        client_secret_kv_name: w.client_secret_kv_name || '',
+        // client_secret intentionally omitted on display
+      }));
+      document.getElementById('editSentinelWorkspacesJson').value =
+        sentinelWsDisplay.length ? JSON.stringify(sentinelWsDisplay, null, 2) : '';
+      const defenderWs = Array.isArray(c.defender_workspaces) ? c.defender_workspaces : [];
+      const defenderWsDisplay = defenderWs.map(w => ({
+        name: w.name || '',
+        tenant_id: w.tenant_id || '',
+        client_id: w.client_id || '',
+        client_secret_kv_name: w.client_secret_kv_name || '',
+      }));
+      document.getElementById('editDefenderWorkspacesJson').value =
+        defenderWsDisplay.length ? JSON.stringify(defenderWsDisplay, null, 2) : '';
       document.getElementById('editLogo').value = '';
 
       // Render the section grid using the customer's saved order. If the
@@ -761,6 +822,13 @@
       // "leave existing KV secret untouched" (handled server-side).
       const secretVal = document.getElementById('editSentinelClientSecret').value;
       if (secretVal) fd.append('sentinel_client_secret', secretVal);
+      // Multi-workspace JSON — non-empty content REPLACES the saved list.
+      // Per-entry secrets are written to Key Vault only if non-empty in the
+      // JSON; otherwise the existing KV reference is preserved.
+      const editWsJson = document.getElementById('editSentinelWorkspacesJson').value.trim();
+      if (editWsJson) fd.append('sentinel_workspaces_json', editWsJson);
+      const editDefJson = document.getElementById('editDefenderWorkspacesJson').value.trim();
+      if (editDefJson) fd.append('defender_workspaces_json', editDefJson);
       fd.append('industry', document.getElementById('editIndustry').value);
       const logo = document.getElementById('editLogo');
       if (logo.files.length) fd.append('logo', logo.files[0]);

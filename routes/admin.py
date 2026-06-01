@@ -33,8 +33,93 @@ os.makedirs(REPORTS_DIR, exist_ok=True)
 
 
 def _customer_secret_kv_name(customer_id: str) -> str:
-    """Deterministic KV name for a customer's Sentinel client secret."""
+    """Deterministic KV name for a customer's primary Sentinel client secret.
+
+    Retained for backwards compatibility with single-workspace records. New
+    multi-workspace records use :func:`_workspace_secret_kv_name` which
+    namespaces by workspace slug.
+    """
     return f"customer-{customer_id}-sentinel-client-secret"
+
+
+def _workspace_secret_kv_name(customer_id: str, workspace_name: str, kind: str = "sentinel") -> str:
+    """Deterministic KV name for a per-workspace client secret.
+
+    ``customer-{cid}-{kind}-{workspace-slug}-secret`` — e.g.
+    ``customer-logicalis-asia-sentinel-malaysia-secret``. Slugged so that
+    workspace renames don't accidentally collide.
+    """
+    import re
+    slug = re.sub(r"[^a-z0-9]+", "-", (workspace_name or "").lower()).strip("-") or "ws"
+    return f"customer-{customer_id}-{kind}-{slug}-secret"
+
+
+def _parse_workspaces_json(raw: str) -> list[dict]:
+    """Parse and validate the ``sentinel_workspaces_json`` (or
+    ``defender_workspaces_json``) form field.
+
+    Accepts an empty/missing string and returns ``[]``. Strict-validates
+    each element to be a dict with the required keys; raises ValueError
+    on malformed input so the route returns 400 instead of silently
+    persisting garbage.
+    """
+    if not raw or not raw.strip():
+        return []
+    try:
+        parsed = json.loads(raw)
+    except json.JSONDecodeError as e:
+        raise ValueError(f"workspaces JSON is malformed: {e}")
+    if not isinstance(parsed, list):
+        raise ValueError("workspaces JSON must be a list of workspace objects")
+    out: list[dict] = []
+    for i, w in enumerate(parsed):
+        if not isinstance(w, dict):
+            raise ValueError(f"workspaces[{i}] must be an object")
+        out.append({
+            "name":          (w.get("name") or "").strip() or f"Workspace {i + 1}",
+            "workspace_id":  (w.get("workspace_id") or "").strip(),
+            "tenant_id":     (w.get("tenant_id") or "").strip(),
+            "client_id":     (w.get("client_id") or "").strip(),
+            # client_secret is the raw value; keep it in-memory only until
+            # we write to KV — it's never persisted on the customer record.
+            "client_secret": w.get("client_secret") or "",
+            # client_secret_kv_name on the input is optional; if present, the
+            # caller is using the rotation-by-name path instead of providing
+            # a raw secret. We preserve it verbatim.
+            "client_secret_kv_name": (w.get("client_secret_kv_name") or "").strip(),
+        })
+    return out
+
+
+def _persist_workspace_secrets(customer_id: str, workspaces: list[dict],
+                               kind: str = "sentinel") -> list[dict]:
+    """For each workspace dict with a non-empty client_secret, write the
+    value to Key Vault and rewrite the dict to carry only the kv_name
+    reference. Workspaces with an empty client_secret keep their existing
+    client_secret_kv_name (rotation semantics: empty means "leave KV alone").
+
+    Returns the cleaned list ready for persistence on the customer record.
+    Raises RuntimeError on KV write failure so the calling route returns
+    500 rather than silently storing dangling references.
+    """
+    cleaned: list[dict] = []
+    for w in workspaces:
+        secret = w.pop("client_secret", "")
+        kv_name = w.get("client_secret_kv_name", "") or _workspace_secret_kv_name(
+            customer_id, w.get("name", ""), kind=kind,
+        )
+        if secret:
+            try:
+                set_kv_secret(kv_name, secret)
+            except Exception as e:
+                log.error("Failed to write %s secret for %s/%s: %s",
+                          kind, customer_id, w.get("name"), e)
+                raise RuntimeError(
+                    f"Could not save {kind} client secret to Key Vault: {e}"
+                ) from e
+        w["client_secret_kv_name"] = kv_name
+        cleaned.append(w)
+    return cleaned
 
 
 # ── Pages ──────────────────────────────────────────────────────────────────────
@@ -89,6 +174,10 @@ def api_customers_create():
     sentinel_tenant_id = request.form.get("sentinel_tenant_id", "").strip()
     sentinel_client_id = request.form.get("sentinel_client_id", "").strip()
     sentinel_client_secret = request.form.get("sentinel_client_secret", "").strip()
+    # Multi-workspace input — JSON-encoded list of workspace objects. When
+    # present and non-empty, takes precedence over the legacy 4 flat fields.
+    sentinel_workspaces_json = request.form.get("sentinel_workspaces_json", "")
+    defender_workspaces_json = request.form.get("defender_workspaces_json", "")
     default_sections = request.form.getlist("default_sections")
 
     if not name or not short_name:
@@ -109,14 +198,45 @@ def api_customers_create():
         logo_file.save(os.path.join(LOGOS_DIR, logo_filename))
         logo_path = f"data/logos/{logo_filename}"
 
+    # Resolve sentinel_workspaces list. Priority: JSON array (multi-workspace
+    # form path) → legacy 4 flat fields (single-workspace fallback).
+    try:
+        sentinel_workspaces = _parse_workspaces_json(sentinel_workspaces_json)
+        defender_workspaces = _parse_workspaces_json(defender_workspaces_json)
+    except ValueError as e:
+        return jsonify({"error": str(e)}), 400
+
     kv_name = ""
-    if sentinel_client_secret:
-        kv_name = _customer_secret_kv_name(cid)
+    if sentinel_workspaces:
         try:
-            set_kv_secret(kv_name, sentinel_client_secret)
-        except Exception as e:
-            log.error("Failed to write Sentinel client secret to KV for %s: %s", cid, e)
-            return jsonify({"error": f"Could not save client secret to Key Vault: {e}"}), 500
+            sentinel_workspaces = _persist_workspace_secrets(cid, sentinel_workspaces, kind="sentinel")
+        except RuntimeError as e:
+            return jsonify({"error": str(e)}), 500
+    elif sentinel_client_secret or any([sentinel_workspace_id, sentinel_tenant_id, sentinel_client_id]):
+        # Legacy single-workspace path — collapse into a one-element array
+        # under the canonical schema. Operators upgrading the customer record
+        # can keep using the existing single-row form fields; the multi-ws
+        # editor is a superset.
+        if sentinel_client_secret:
+            kv_name = _customer_secret_kv_name(cid)
+            try:
+                set_kv_secret(kv_name, sentinel_client_secret)
+            except Exception as e:
+                log.error("Failed to write Sentinel client secret to KV for %s: %s", cid, e)
+                return jsonify({"error": f"Could not save client secret to Key Vault: {e}"}), 500
+        sentinel_workspaces = [{
+            "name":          name or "Primary",
+            "workspace_id":  sentinel_workspace_id,
+            "tenant_id":     sentinel_tenant_id,
+            "client_id":     sentinel_client_id,
+            "client_secret_kv_name": kv_name,
+        }]
+
+    if defender_workspaces:
+        try:
+            defender_workspaces = _persist_workspace_secrets(cid, defender_workspaces, kind="defender")
+        except RuntimeError as e:
+            return jsonify({"error": str(e)}), 500
 
     customer = {
         "id": cid,
@@ -128,6 +248,14 @@ def api_customers_create():
         "jira_service_request_issuetype": jira_service_request_issuetype or "Service Request",
         "jira_change_request_issuetype": jira_change_request_issuetype or "Change",
         "industry": industry,
+        # Phase C — canonical multi-workspace fields. Empty list is OK; the
+        # client will refuse to fetch but the record is still valid.
+        "sentinel_workspaces": sentinel_workspaces,
+        "defender_workspaces": defender_workspaces,
+        # Legacy flat fields kept on the record for backwards-compat with
+        # any out-of-tree consumers reading customers.json. The normalize
+        # layer in tools/customers.py treats sentinel_workspaces as
+        # authoritative when present.
         "sentinel_workspace_id": sentinel_workspace_id,
         "sentinel_tenant_id": sentinel_tenant_id,
         "sentinel_client_id": sentinel_client_id,
@@ -196,6 +324,29 @@ def api_customers_update(cid):
                 log.error("Failed to update Sentinel client secret in KV for %s: %s", cid, e)
                 return jsonify({"error": f"Could not save client secret to Key Vault: {e}"}), 500
             customer["sentinel_client_secret_kv_name"] = kv_name
+        # Multi-workspace JSON path (form-data variant)
+        sentinel_workspaces_json = request.form.get("sentinel_workspaces_json", "")
+        defender_workspaces_json = request.form.get("defender_workspaces_json", "")
+        if sentinel_workspaces_json:
+            try:
+                new_workspaces = _parse_workspaces_json(sentinel_workspaces_json)
+                customer["sentinel_workspaces"] = _persist_workspace_secrets(
+                    cid, new_workspaces, kind="sentinel",
+                )
+            except ValueError as e:
+                return jsonify({"error": str(e)}), 400
+            except RuntimeError as e:
+                return jsonify({"error": str(e)}), 500
+        if defender_workspaces_json:
+            try:
+                new_d = _parse_workspaces_json(defender_workspaces_json)
+                customer["defender_workspaces"] = _persist_workspace_secrets(
+                    cid, new_d, kind="defender",
+                )
+            except ValueError as e:
+                return jsonify({"error": str(e)}), 400
+            except RuntimeError as e:
+                return jsonify({"error": str(e)}), 500
         if request.form.get("default_sections_submitted"):
             customer["default_sections"] = request.form.getlist("default_sections")
         logo_file = request.files.get("logo")
@@ -225,6 +376,31 @@ def api_customers_update(cid):
                 log.error("Failed to update Sentinel client secret in KV for %s: %s", cid, e)
                 return jsonify({"error": f"Could not save client secret to Key Vault: {e}"}), 500
             customer["sentinel_client_secret_kv_name"] = kv_name
+
+        # Multi-workspace JSON path: replaces sentinel_workspaces wholesale.
+        # Callers wanting to add/remove one workspace should fetch the
+        # current list, mutate, and PUT the full array — this matches the
+        # "REST PUT" idempotent-replacement semantic.
+        if "sentinel_workspaces" in data and isinstance(data["sentinel_workspaces"], list):
+            try:
+                new_workspaces = _parse_workspaces_json(json.dumps(data["sentinel_workspaces"]))
+                customer["sentinel_workspaces"] = _persist_workspace_secrets(
+                    cid, new_workspaces, kind="sentinel",
+                )
+            except ValueError as e:
+                return jsonify({"error": str(e)}), 400
+            except RuntimeError as e:
+                return jsonify({"error": str(e)}), 500
+        if "defender_workspaces" in data and isinstance(data["defender_workspaces"], list):
+            try:
+                new_d = _parse_workspaces_json(json.dumps(data["defender_workspaces"]))
+                customer["defender_workspaces"] = _persist_workspace_secrets(
+                    cid, new_d, kind="defender",
+                )
+            except ValueError as e:
+                return jsonify({"error": str(e)}), 400
+            except RuntimeError as e:
+                return jsonify({"error": str(e)}), 500
 
     _save_customers(customers)
     return jsonify(customer)
@@ -326,6 +502,11 @@ def api_schedules_create():
         "enabled": bool(data.get("enabled", True)),
         "last_run": None,
         "created_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+        # Phase C — "merged" (single rollup) | "per_workspace" (N reports per
+        # multi-workspace customer). Validated to those two values only.
+        "aggregation_mode": (data.get("aggregation_mode") or "merged").strip()
+            if (data.get("aggregation_mode") or "merged").strip() in ("merged", "per_workspace")
+            else "merged",
     }
     db.save_schedule(schedule)
     return jsonify(schedule), 201
@@ -339,9 +520,13 @@ def api_schedules_update(schedule_id):
         return jsonify({"error": "Schedule not found."}), 404
     data = request.json or {}
     for key in ("frequency", "day_of_month", "day_of_week", "sections",
-                "use_sentinel", "use_splunk", "use_socradar", "email_recipients", "enabled"):
+                "use_sentinel", "use_splunk", "use_socradar", "email_recipients",
+                "enabled", "aggregation_mode"):
         if key in data:
             existing[key] = data[key]
+    # Normalise aggregation_mode to the two valid values.
+    if existing.get("aggregation_mode") not in ("merged", "per_workspace"):
+        existing["aggregation_mode"] = "merged"
     db.save_schedule(existing)
     return jsonify(existing)
 
