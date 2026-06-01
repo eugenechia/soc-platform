@@ -134,9 +134,15 @@ _PDF_STYLES = """
     margin: 24px 0 12px 0;
   }
   .cover-customer {
-    font-size: 18pt;
+    font-size: 26pt;
+    font-weight: 700;
     color: #1a1a2e;
     margin-bottom: 48px;
+  }
+  .cover-issued {
+    font-size: 11pt;
+    color: #888;
+    margin-top: 8px;
   }
   .cover-date {
     font-size: 11pt;
@@ -261,13 +267,20 @@ def _build_chart_img_tag(png_bytes: bytes) -> str:
     return f'<div style="text-align:center;margin:16px 0;"><img src="data:image/png;base64,{b64}" style="max-width:100%;height:auto;"></div>'
 
 
-# Map chart names to section heading keywords for injection
+# Map chart names to section heading keywords for injection.
+# Keep in sync with export/docx_export.py:_CHART_SECTION_MAP — both exporters
+# call generate_all_charts() and the surrounding job code, so the chart_name
+# keys must place the same image under the same section in both formats.
 _CHART_SECTION_MAP = {
     "monthly_trend": "1.2",
     "severity": "1.3",
     "resolution": "1.4",
     "sentinel_utilization": "1.10",
     "sentinel_top_alerts": "1.11",
+    "total_assets": "1.12",
+    "sensor_health": "1.13",
+    "vulnerability_severity": "1.14",
+    "vulnerability_exposed_devices": "1.16",
 }
 
 
@@ -383,6 +396,17 @@ def generate_pdf(markdown_content: str, customer_name: str, report_date: str,
 
     report_month = _get_report_month(report_date)
 
+    # Issue date (today, with ordinal suffix) — mirrors the DOCX cover so the
+    # PDF and DOCX renders match. Distinct from `report_date`, which describes
+    # the *period covered*, not the issue date.
+    _today = datetime.today()
+    _day = _today.day
+    if 10 <= _day % 100 <= 20:
+        _suffix = "th"
+    else:
+        _suffix = {1: "st", 2: "nd", 3: "rd"}.get(_day % 10, "th")
+    issue_date = f"{_day}{_suffix} {_today.strftime('%B %Y')}"
+
     # Build cover page logos
     logos_html = ""
     if logicalis_logo_uri:
@@ -409,6 +433,7 @@ def generate_pdf(markdown_content: str, customer_name: str, report_date: str,
     <div class="cover-divider"></div>
     <div class="cover-title">Logicalis Managed Security Services</div>
     <div class="cover-report-title">GSOC Monthly Report &mdash; {report_month}</div>
+    <div class="cover-issued">Issued: {issue_date}</div>
   </div>
   {content_html}
 </body>
