@@ -460,11 +460,12 @@ REPORT_SECTIONS = [
     {"id": "socradar_threat_intel", "label": "SOCRadar Threat Intelligence", "source": "socradar"},
     {"id": "industry_threat_intel", "label": "Industry Threat Landscape", "source": "general"},
     # ── AI-driven meta-analysis sections (placed last to summarise the report) ──
-    # All three use source "general" so they ship in a single composite payload
+    # All four use source "general" so they ship in a single composite payload
     # that includes Jira derived stats + Sentinel/Splunk/SOCRadar summaries —
     # needed for cross-source recommendations and Trends & Insights narrative.
     {"id": "trends_insights", "label": "1.18 Trends & Insights", "source": "general"},
     {"id": "recommendations", "label": "1.19 GSOC Recommendation Summary", "source": "general"},
+    {"id": "posture_improvements", "label": "1.20 Security Posture Improvements", "source": "general"},
     # ── Appendix: detailed lists deferred from the executive sections above ──
     {"id": "appendix", "label": "2. Appendix", "source": "general"},
 ]
@@ -798,6 +799,48 @@ Data root for this section: `jira`, `sentinel`, `splunk`, `socradar`, `industry_
 5. **Sub-heading** `#### Cross-Source Observations`. One short paragraph (2-4 sentences) drawing a connection across data sources, e.g. "Sentinel utilization grew 18% MoM while incident volume held flat — the new log source is generating signal without false-positive load" or "Incident volume up 22% MoM correlates with the SOCRadar campaign activity flagged in §SOCRadar Threat Intelligence". Only assert cross-source links the data actually supports. If only Jira is connected, write a single sentence stating that cross-source analysis requires additional data sources to be onboarded.
 
 ABSOLUTE RULE for this section: every number you write must come from the data JSON. No estimates, no rounding, no "approximately". If a value is `null` or the parent has `insufficient_data: true`, say so explicitly.
+
+**### 1.20. Security Posture Improvements** (if "posture_improvements" is selected)
+
+Use the heading: `### <a id="120-security-posture-improvements"></a>1.20. Security Posture Improvements`
+
+This section is FORWARD-LOOKING and THREAT-INFORMED. Unlike §1.19 (which is tactical and triggered by observed metrics), this section recommends defensive controls against the *active threat landscape* surrounding the customer. The goal is to help the client improve their security posture by mapping concrete defensive actions to the adversaries and techniques most likely to target them right now.
+
+Data sources you MUST synthesize:
+- `socradar.threat_actors` — active actors flagged for this customer (name, origin, target industries, TTPs, status).
+- `socradar.cve_intel` — critical CVEs with exploit availability and affected products.
+- `socradar.dark_web_alarms` — leaked credentials or domain mentions.
+- `industry_intel.threat_actors` and `industry_intel.web_intel` — sector-level actor activity.
+- `jira.by_severity`, `jira.top_alerts`, incident category labels — what the customer has actually observed.
+- `sentinel.sensor_health` and `sentinel.total_assets_source` — visibility gaps in their monitoring stack.
+
+Structure the section as follows:
+
+1. **Opening paragraph** (2-3 sentences) — set context: the active threat landscape as observed for this customer this period. Reference the count of SOCRadar threat actors flagged, the most prominent industry-level actor, and any dark-web mentions or critical CVEs that warrant attention. If `socradar.connected` is false AND `industry_intel.threat_actors` is empty, state that no external threat intelligence was available for this period and proceed to recommendations based on internal incident patterns only.
+
+2. **Threat-to-Control Mapping table** — the primary output. Columns: `Threat / Adversary | TTP or Technique | Defensive Control Recommendation | Customer Action | Priority`
+
+   - **Threat / Adversary**: the named threat actor, malware family, or attack technique (cite SOCRadar threat actor name, CVE ID, or MITRE technique). If recommending against a generic technique observed in `jira.top_alerts`, name the alert category.
+   - **TTP or Technique**: the MITRE ATT&CK tactic or technique (e.g. "T1078 - Valid Accounts", "T1566 - Phishing", "Initial Access via Exploited Public-Facing Application"). If unknown, use the incident category from Jira labels.
+   - **Defensive Control Recommendation**: SPECIFIC, IMPLEMENTABLE control. Examples of the right level of specificity: "Enable MDE attack surface reduction rule 'Block executable content from email client'", "Deploy KQL hunting query for SOCRadar IOC IPs against `SigninLogs`", "Enforce conditional access policy requiring compliant device for privileged role activation", "Patch CVE-2024-XXXX on N exposed devices identified in §1.16". NOT generic advice like "improve email security" or "enhance monitoring".
+   - **Customer Action**: concrete next step the customer must take (e.g. "Approve MDE ASR rule deployment", "Schedule patching window", "Review and approve new correlation rule").
+   - **Priority**: Critical / High / Medium / Low — driven by exploit availability, observed activity in customer's tenant, and asset exposure.
+
+3. **Generate AT LEAST 5 recommendations** in this table. Each row MUST cite a specific data point — a threat actor name, a CVE ID, an alert category, a sensor-health gap, or an asset count. Generic recommendations are forbidden.
+
+4. **Coverage rules**:
+   - If `socradar.threat_actors` is non-empty → at least 2 rows must reference specific named actors.
+   - If `socradar.cve_intel` is non-empty → at least 1 row must reference a specific CVE.
+   - If `jira.by_severity` shows any Critical or High severity counts > 0 → at least 1 row must address the most common observed technique.
+   - If `sentinel.total_assets_source` is "heartbeat" or "none" (no EDR) → at least 1 row must recommend EDR onboarding.
+   - If `sentinel.sensor_health_source` is "none" → at least 1 row must address agent visibility.
+
+5. **Closing paragraph** (1-2 sentences) — note that these recommendations supplement the tactical fixes in §1.19, and that GSOC can assist with implementation planning during the next review cycle.
+
+ABSOLUTE RULES:
+- No generic recommendations ("improve security", "enhance training") — every row must name a specific control, query, rule, policy, or patch.
+- Do NOT repeat recommendations already covered in §1.19 Recommendations. §1.19 is about responding to observed metrics; §1.20 is about preempting external threats.
+- Do NOT fabricate threat actors, CVEs, or TTPs not present in the data. If you don't have enough external intel to write 5 recommendations, fill the gap with internal-pattern-driven recommendations (e.g., from `jira.top_alerts` categories) and clearly note the section is operating with limited external intelligence.
 
 IMPORTANT: Do NOT generate a table of contents. Do NOT generate a References section, Confidentiality Statement, or Appendix. Only generate the assigned sections listed above. ToC, References, Confidentiality, and Appendix are appended automatically after all sections are combined.
 

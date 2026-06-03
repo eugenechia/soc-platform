@@ -331,7 +331,8 @@ def api_customers_create():
             "incident_status", "incident_details",
             "service_requests", "change_requests",
             "pending_tickets", "monitoring_scope",
-            "trends_insights", "recommendations", "appendix",
+            "trends_insights", "recommendations", "posture_improvements",
+            "appendix",
             "industry_threat_intel"
         ],
         "created_at": datetime.now().strftime("%Y-%m-%d"),
