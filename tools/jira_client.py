@@ -253,6 +253,7 @@ def fetch_incidents_for_report(project_key: str, start_date: str, end_date: str,
     logger.info("fetch_incidents_for_report(%s): total=%d", project_key, len(all_issues))
     incidents = [_normalize_issue(i) for i in all_issues]
     stats = _compute_stats(incidents)
+    stats["derived"] = _compute_incident_derived_stats(incidents, end_date)
     return {"incidents": incidents, "stats": stats}
 
 
@@ -294,6 +295,215 @@ def _compute_stats(incidents: list[dict]) -> dict:
         "top_alerts": top_alerts,
         "monthly_trend": monthly_trend,
         "assignee_distribution": assignee_counts,
+    }
+
+
+# Closed-state vocabulary mirrors `_closed_statuses` in routes/reports.py. Kept
+# here so derived metrics that classify "pending" can be computed at the data
+# layer without importing from the routes module.
+_CLOSED_STATUSES = {"closed", "resolved", "done", "complete", "completed"}
+
+# Severity ranking used to surface "top critical" incidents and to bucket MTTR.
+# Higher number = more severe. Unknown / blank severities sort last (0).
+_SEVERITY_RANK = {
+    "critical": 5,
+    "high": 4,
+    "medium": 3,
+    "low": 2,
+    "informational": 1,
+    "info": 1,
+}
+
+
+def _parse_any_date(value: str) -> datetime | None:
+    """Parse either Jira ISO or CSV date strings. Returns timezone-naive datetime
+    (Jira ISO is converted by stripping tzinfo) — caller only needs ordering
+    and day-diff arithmetic, not exact UTC alignment."""
+    if not value:
+        return None
+    dt = _parse_jira_date(value) or _parse_csv_date(value)
+    if dt is None:
+        return None
+    if dt.tzinfo is not None:
+        dt = dt.replace(tzinfo=None)
+    return dt
+
+
+def _compute_incident_derived_stats(incidents: list[dict], end_date: str) -> dict:
+    """Compute derived/grounded statistics for AI consumption.
+
+    Returned under `stats["derived"]` so the system prompt can reference a
+    stable contract (e.g. `derived.mom_delta.delta_pct`). Every numeric field
+    AI is allowed to cite must come from here — never from inline computation.
+
+    Edge cases:
+    - <2 months of history → mom_delta.insufficient_data = True
+    - No resolved tickets → mttr.insufficient_data = True
+    - No pending tickets → pending_aging all zero, oldest_pending empty list
+    """
+    end_dt = _parse_any_date(end_date) or datetime.now()
+
+    # --- Month-over-month deltas for incident volume ---
+    monthly_trend = Counter()
+    for i in incidents:
+        dt = _parse_any_date(i.get("created", ""))
+        if dt:
+            monthly_trend[dt.strftime("%Y-%m")] += 1
+    monthly_trend = dict(sorted(monthly_trend.items()))
+
+    months_sorted = list(monthly_trend.keys())
+    if len(months_sorted) >= 2:
+        cur_month, prev_month = months_sorted[-1], months_sorted[-2]
+        cur_count = monthly_trend[cur_month]
+        prev_count = monthly_trend[prev_month]
+        delta_abs = cur_count - prev_count
+        delta_pct = (delta_abs / prev_count * 100.0) if prev_count else None
+        recent_three = months_sorted[-3:] if len(months_sorted) >= 3 else months_sorted
+        three_month_avg = sum(monthly_trend[m] for m in recent_three) / len(recent_three)
+        vs_avg_pct = ((cur_count - three_month_avg) / three_month_avg * 100.0) if three_month_avg else None
+        mom_delta = {
+            "current_month": cur_month,
+            "current_count": cur_count,
+            "previous_month": prev_month,
+            "previous_count": prev_count,
+            "delta_abs": delta_abs,
+            "delta_pct": round(delta_pct, 1) if delta_pct is not None else None,
+            "three_month_avg": round(three_month_avg, 1),
+            "vs_avg_pct": round(vs_avg_pct, 1) if vs_avg_pct is not None else None,
+            "insufficient_data": False,
+        }
+    else:
+        mom_delta = {
+            "current_month": months_sorted[-1] if months_sorted else None,
+            "current_count": monthly_trend.get(months_sorted[-1], 0) if months_sorted else 0,
+            "previous_month": None,
+            "previous_count": None,
+            "delta_abs": None,
+            "delta_pct": None,
+            "three_month_avg": None,
+            "vs_avg_pct": None,
+            "insufficient_data": True,
+        }
+
+    # --- MTTR (Mean Time To Resolution) ---
+    resolution_hours: list[float] = []
+    resolution_hours_by_severity: dict[str, list[float]] = {}
+    mttr_by_month: dict[str, list[float]] = {}
+    for i in incidents:
+        created_dt = _parse_any_date(i.get("created", ""))
+        resolved_dt = _parse_any_date(i.get("resolved", ""))
+        if not created_dt or not resolved_dt or resolved_dt < created_dt:
+            continue
+        hours = (resolved_dt - created_dt).total_seconds() / 3600.0
+        resolution_hours.append(hours)
+        sev = (i.get("severity") or "Unspecified").strip() or "Unspecified"
+        resolution_hours_by_severity.setdefault(sev, []).append(hours)
+        mttr_by_month.setdefault(resolved_dt.strftime("%Y-%m"), []).append(hours)
+
+    if resolution_hours:
+        mean_hours = sum(resolution_hours) / len(resolution_hours)
+        by_sev_mean = {
+            sev: round(sum(vals) / len(vals), 1)
+            for sev, vals in resolution_hours_by_severity.items()
+        }
+        # MoM MTTR delta — anchor to the report's end_date month rather than
+        # "whichever YYYY-MM key happened to sort last", which can be a
+        # spillover month (e.g. 2 stragglers resolved after the report period
+        # closed) and produces statistically meaningless deltas. Require ≥3
+        # samples in each side of the comparison; otherwise mark None.
+        _MTTR_MIN_SAMPLES = 3
+        cur_key = end_dt.strftime("%Y-%m")
+        prev_dt = (end_dt.replace(day=1) - timedelta(days=1))
+        prev_key = prev_dt.strftime("%Y-%m")
+        cur_samples = mttr_by_month.get(cur_key, [])
+        prev_samples = mttr_by_month.get(prev_key, [])
+        if len(cur_samples) >= _MTTR_MIN_SAMPLES and len(prev_samples) >= _MTTR_MIN_SAMPLES:
+            cur_mttr = sum(cur_samples) / len(cur_samples)
+            prev_mttr = sum(prev_samples) / len(prev_samples)
+            mttr_delta_pct = ((cur_mttr - prev_mttr) / prev_mttr * 100.0) if prev_mttr else None
+        else:
+            mttr_delta_pct = None
+        mttr = {
+            "mean_hours": round(mean_hours, 1),
+            "mean_hours_by_severity": by_sev_mean,
+            "resolved_count": len(resolution_hours),
+            "mom_delta_pct": round(mttr_delta_pct, 1) if mttr_delta_pct is not None else None,
+            "insufficient_data": False,
+        }
+    else:
+        mttr = {
+            "mean_hours": None,
+            "mean_hours_by_severity": {},
+            "resolved_count": 0,
+            "mom_delta_pct": None,
+            "insufficient_data": True,
+        }
+
+    # --- Pending ticket aging ---
+    pending = [
+        i for i in incidents
+        if (i.get("status") or "").strip().lower() not in _CLOSED_STATUSES
+    ]
+    aging_buckets = {"lt_7d": 0, "7_to_14d": 0, "14_to_30d": 0, "gt_30d": 0}
+    pending_with_age: list[tuple[int, dict]] = []
+    for p in pending:
+        created_dt = _parse_any_date(p.get("created", ""))
+        if not created_dt:
+            continue
+        age_days = max(0, (end_dt - created_dt).days)
+        if age_days < 7:
+            aging_buckets["lt_7d"] += 1
+        elif age_days < 14:
+            aging_buckets["7_to_14d"] += 1
+        elif age_days < 30:
+            aging_buckets["14_to_30d"] += 1
+        else:
+            aging_buckets["gt_30d"] += 1
+        pending_with_age.append((age_days, p))
+
+    pending_with_age.sort(key=lambda pair: pair[0], reverse=True)
+    oldest_pending = [
+        {
+            "key": rec.get("key", ""),
+            "summary": rec.get("summary", ""),
+            "severity": rec.get("severity", ""),
+            "status": rec.get("status", ""),
+            "created": rec.get("created", ""),
+            "age_days": age_days,
+        }
+        for age_days, rec in pending_with_age[:5]
+    ]
+    pending_aging = {
+        **aging_buckets,
+        "total": len(pending),
+        "oldest_age_days": pending_with_age[0][0] if pending_with_age else 0,
+    }
+
+    # --- Top 5 critical incidents (by severity rank, then created date desc) ---
+    def _sev_sort_key(rec: dict) -> tuple[int, datetime]:
+        sev = (rec.get("severity") or "").strip().lower()
+        rank = _SEVERITY_RANK.get(sev, 0)
+        created_dt = _parse_any_date(rec.get("created", "")) or datetime.min
+        return (rank, created_dt)
+
+    incidents_ranked = sorted(incidents, key=_sev_sort_key, reverse=True)
+    top_critical_incidents = [
+        {
+            "key": rec.get("key", ""),
+            "summary": rec.get("summary", ""),
+            "severity": rec.get("severity", ""),
+            "status": rec.get("status", ""),
+            "created": rec.get("created", ""),
+        }
+        for rec in incidents_ranked[:5]
+    ]
+
+    return {
+        "mom_delta": mom_delta,
+        "mttr": mttr,
+        "pending_aging": pending_aging,
+        "top_critical_incidents": top_critical_incidents,
+        "oldest_pending": oldest_pending,
     }
 
 
@@ -360,6 +570,7 @@ def fetch_incidents_from_csv(project_key: str, start_date: str, end_date: str,
             })
 
     stats = _compute_stats(incidents)
+    stats["derived"] = _compute_incident_derived_stats(incidents, end_date)
     return {"incidents": incidents, "stats": stats}
 
 

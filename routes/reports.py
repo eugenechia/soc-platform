@@ -121,6 +121,10 @@ def _render_socradar_alarms_html(alarms: list) -> str:
 # keeps a 1,400-row table out of the LLM output budget (max_completion_tokens=
 # 16000), which was previously truncating the table with a "..." row and a "for
 # brevity" warning.
+#
+# As of the 2026 restructure, the full incident details table now lives in the
+# Appendix (section 2.1) rather than in section 1.5. The token still works the
+# same way — only the section it lands in has changed.
 INCIDENT_DETAILS_TOKEN = "<!--INCIDENT_DETAILS_TABLE-->"
 
 # Same pattern for pending tickets. Ticket summaries contain literal `|`
@@ -128,7 +132,17 @@ INCIDENT_DETAILS_TOKEN = "<!--INCIDENT_DETAILS_TABLE-->"
 # break markdown pipe-tables when the LLM emits them — pipes get parsed as
 # column separators and the row's cells shift one column right. Pre-rendered
 # HTML cells side-step that entirely.
+#
+# Full pending tickets table lives in Appendix section 2.2 post-restructure.
 PENDING_TICKETS_TOKEN = "<!--PENDING_TICKETS_TABLE-->"
+
+# Summary tokens for sections 1.5 and 1.8 in the report body. These resolve
+# to small "executive-glance" tables — severity/status counters plus the top
+# 5 most critical / oldest pending tickets — instead of the full row list.
+# Full lists live in the Appendix; readers who want detail follow the
+# cross-reference there.
+INCIDENT_SUMMARY_TOKEN = "<!--INCIDENT_SUMMARY_TABLE-->"
+PENDING_SUMMARY_TOKEN = "<!--PENDING_SUMMARY_TABLE-->"
 
 
 def _render_incident_details_html(incidents: list) -> str:
@@ -276,6 +290,203 @@ def _render_pending_tickets_html(pending: list) -> str:
         "</table>"
     )
 
+
+def _render_incident_summary_html(stats: dict) -> str:
+    """Pre-render the Section 1.5 executive summary.
+
+    Two stacked blocks: (1) a key-metrics card grid (total, severity mix, avg
+    MTTR, MoM delta) and (2) a "Top 5 critical incidents" mini-table. All
+    numbers must come from ``stats`` — no recomputation here so the AI
+    narrative below it cites the same figures the reader sees.
+
+    The full incident table is in Appendix section 2.1; we add a hint line at
+    the bottom telling readers where to find detail.
+    """
+    import html as _html
+
+    def _esc(value) -> str:
+        return _html.escape(str(value or "").strip())
+
+    derived = stats.get("derived") or {}
+    mom = derived.get("mom_delta") or {}
+    mttr = derived.get("mttr") or {}
+    top_critical = derived.get("top_critical_incidents") or []
+
+    total = stats.get("total", 0)
+    by_severity = stats.get("by_severity") or {}
+    severity_str = ", ".join(f"{_esc(k)}: {v}" for k, v in by_severity.items()) or "None"
+
+    if mom.get("insufficient_data"):
+        mom_str = "Insufficient historical data for MoM comparison"
+    else:
+        delta_pct = mom.get("delta_pct")
+        delta_abs = mom.get("delta_abs")
+        if delta_pct is None or delta_abs is None:
+            mom_str = "MoM comparison unavailable"
+        else:
+            sign = "+" if delta_abs >= 0 else ""
+            mom_str = f"{sign}{delta_abs} ({sign}{delta_pct}% vs {_esc(mom.get('previous_month'))})"
+
+    if mttr.get("insufficient_data") or mttr.get("mean_hours") is None:
+        mttr_str = "No resolved incidents in period"
+    else:
+        mttr_str = f"{mttr.get('mean_hours')} hours (across {mttr.get('resolved_count')} resolved)"
+
+    cards = (
+        '<table class="incident-summary-cards" style="width:100%;border-collapse:collapse;margin-bottom:8px;">'
+        "<tbody>"
+        f"<tr><td><strong>Total Incidents</strong></td><td>{total}</td>"
+        f"<td><strong>Avg MTTR</strong></td><td>{_esc(mttr_str)}</td></tr>"
+        f"<tr><td><strong>Severity Mix</strong></td><td colspan=\"3\">{severity_str}</td></tr>"
+        f"<tr><td><strong>MoM Delta</strong></td><td colspan=\"3\">{_esc(mom_str)}</td></tr>"
+        "</tbody></table>"
+    )
+
+    if not top_critical:
+        return cards + (
+            '<p class="appendix-hint"><em>See Appendix 2.1 for the full incident ticket list.</em></p>'
+        )
+
+    rows_html = []
+    for rec in top_critical:
+        rows_html.append(
+            "<tr>"
+            f"<td>{_esc(rec.get('key'))}</td>"
+            f"<td>{_esc(rec.get('summary'))}</td>"
+            f"<td>{_esc(rec.get('severity'))}</td>"
+            f"<td>{_esc(rec.get('status'))}</td>"
+            f"<td>{_esc((rec.get('created') or '')[:10])}</td>"
+            "</tr>"
+        )
+
+    top_table = (
+        '<p><strong>Top 5 Critical Incidents</strong></p>'
+        '<table class="incident-summary-top">'
+        "<thead><tr>"
+        "<th>Incident ID</th><th>Subject</th><th>Severity</th>"
+        "<th>Status</th><th>Created</th>"
+        "</tr></thead>"
+        "<tbody>" + "".join(rows_html) + "</tbody>"
+        "</table>"
+        '<p class="appendix-hint"><em>See Appendix 2.1 for the full incident ticket list.</em></p>'
+    )
+
+    return cards + top_table
+
+
+def _render_pending_summary_html(derived: dict) -> str:
+    """Pre-render the Section 1.8 executive summary.
+
+    Two blocks: aging-bucket breakdown + top 5 oldest pending tickets. Same
+    rationale as the incident summary — full list lives in Appendix 2.2.
+    """
+    import html as _html
+
+    def _esc(value) -> str:
+        return _html.escape(str(value or "").strip())
+
+    aging = derived.get("pending_aging") or {}
+    oldest = derived.get("oldest_pending") or []
+
+    total = aging.get("total", 0)
+    if total == 0:
+        return (
+            '<p>No pending tickets at the close of the reporting period.</p>'
+            '<p class="appendix-hint"><em>See Appendix 2.2 for the full pending tickets list.</em></p>'
+        )
+
+    cards = (
+        '<table class="pending-summary-cards" style="width:100%;border-collapse:collapse;margin-bottom:8px;">'
+        "<tbody>"
+        f"<tr><td><strong>Total Pending</strong></td><td>{total}</td>"
+        f"<td><strong>Oldest (days)</strong></td><td>{aging.get('oldest_age_days', 0)}</td></tr>"
+        f"<tr><td><strong>&lt; 7 days</strong></td><td>{aging.get('lt_7d', 0)}</td>"
+        f"<td><strong>7&ndash;14 days</strong></td><td>{aging.get('7_to_14d', 0)}</td></tr>"
+        f"<tr><td><strong>14&ndash;30 days</strong></td><td>{aging.get('14_to_30d', 0)}</td>"
+        f"<td><strong>&gt; 30 days</strong></td><td>{aging.get('gt_30d', 0)}</td></tr>"
+        "</tbody></table>"
+    )
+
+    if not oldest:
+        return cards + (
+            '<p class="appendix-hint"><em>See Appendix 2.2 for the full pending tickets list.</em></p>'
+        )
+
+    rows_html = []
+    for rec in oldest:
+        rows_html.append(
+            "<tr>"
+            f"<td>{_esc(rec.get('key'))}</td>"
+            f"<td>{_esc(rec.get('summary'))}</td>"
+            f"<td>{_esc(rec.get('severity'))}</td>"
+            f"<td>{_esc(rec.get('status'))}</td>"
+            f"<td>{_esc((rec.get('created') or '')[:10])}</td>"
+            f"<td>{rec.get('age_days', 0)}</td>"
+            "</tr>"
+        )
+
+    top_table = (
+        '<p><strong>Top 5 Oldest Pending</strong></p>'
+        '<table class="pending-summary-top">'
+        "<thead><tr>"
+        "<th>Incident ID</th><th>Subject</th><th>Severity</th>"
+        "<th>Status</th><th>Created</th><th>Age (days)</th>"
+        "</tr></thead>"
+        "<tbody>" + "".join(rows_html) + "</tbody>"
+        "</table>"
+        '<p class="appendix-hint"><em>See Appendix 2.2 for the full pending tickets list.</em></p>'
+    )
+
+    return cards + top_table
+
+
+def _compute_sentinel_mom(monthly_history: dict) -> dict:
+    """Compute MoM and 3-month-average deltas from a `{YYYY-MM: gb}` dict.
+
+    Mirrors the shape returned by `_compute_incident_derived_stats.mom_delta`
+    so the AI prompt can reference both Jira and Sentinel deltas with one
+    schema. Returns the same insufficient_data flag when <2 months of history
+    are available (which is the case for many customers in their first month).
+    """
+    if not monthly_history:
+        return {"insufficient_data": True}
+
+    months = sorted(monthly_history.keys())
+    if len(months) < 2:
+        return {
+            "current_month": months[-1] if months else None,
+            "current_value": monthly_history.get(months[-1], 0) if months else 0,
+            "previous_month": None,
+            "previous_value": None,
+            "delta_abs": None,
+            "delta_pct": None,
+            "three_month_avg": None,
+            "vs_avg_pct": None,
+            "insufficient_data": True,
+        }
+
+    cur_month, prev_month = months[-1], months[-2]
+    cur_val = float(monthly_history[cur_month] or 0)
+    prev_val = float(monthly_history[prev_month] or 0)
+    delta_abs = cur_val - prev_val
+    delta_pct = (delta_abs / prev_val * 100.0) if prev_val else None
+    recent_three = months[-3:] if len(months) >= 3 else months
+    three_month_avg = sum(float(monthly_history[m] or 0) for m in recent_three) / len(recent_three)
+    vs_avg_pct = ((cur_val - three_month_avg) / three_month_avg * 100.0) if three_month_avg else None
+
+    return {
+        "current_month": cur_month,
+        "current_value": round(cur_val, 2),
+        "previous_month": prev_month,
+        "previous_value": round(prev_val, 2),
+        "delta_abs": round(delta_abs, 2),
+        "delta_pct": round(delta_pct, 1) if delta_pct is not None else None,
+        "three_month_avg": round(three_month_avg, 2),
+        "vs_avg_pct": round(vs_avg_pct, 1) if vs_avg_pct is not None else None,
+        "insufficient_data": False,
+    }
+
+
 BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 DATA_DIR = os.path.join(BASE_DIR, "data")
 REPORTS_DIR = os.path.join(DATA_DIR, "reports")
@@ -296,12 +507,11 @@ REPORT_SECTIONS = [
     {"id": "incident_overview", "label": "1.2 Incident Overview", "source": "jira"},
     {"id": "incident_severity", "label": "1.3 Incident Severity", "source": "jira"},
     {"id": "incident_status", "label": "1.4 Incident Status", "source": "jira"},
-    {"id": "incident_details", "label": "1.5 Incident Ticket Details", "source": "jira"},
+    {"id": "incident_details", "label": "1.5 Incident Ticket Summary", "source": "jira"},
     {"id": "service_requests", "label": "1.6 Service Requests Summary", "source": "jira"},
     {"id": "change_requests", "label": "1.7 Change Requests Summary", "source": "jira"},
-    {"id": "pending_tickets", "label": "1.8 Pending Tickets", "source": "jira"},
+    {"id": "pending_tickets", "label": "1.8 Pending Tickets Summary", "source": "jira"},
     {"id": "monitoring_scope", "label": "1.9 GSOC Monitoring Scope", "source": "jira"},
-    {"id": "recommendations", "label": "GSOC Recommendation Summary", "source": "jira"},
     {"id": "sentinel_utilization", "label": "1.10 Sentinel Monthly Utilization", "source": "sentinel"},
     {"id": "top_alerts_sentinel", "label": "1.11 Top Alert Triggered on Sentinel", "source": "sentinel"},
     {"id": "total_assets", "label": "1.12 Total Assets Under Monitoring", "source": "sentinel"},
@@ -314,6 +524,14 @@ REPORT_SECTIONS = [
     {"id": "splunk_top_alerts", "label": "Top Alerts from Splunk", "source": "splunk"},
     {"id": "socradar_threat_intel", "label": "SOCRadar Threat Intelligence", "source": "socradar"},
     {"id": "industry_threat_intel", "label": "Industry Threat Landscape", "source": "general"},
+    # ── AI-driven meta-analysis sections (placed last to summarise the report) ──
+    # All three use source "general" so they ship in a single composite payload
+    # that includes Jira derived stats + Sentinel/Splunk/SOCRadar summaries —
+    # needed for cross-source recommendations and Trends & Insights narrative.
+    {"id": "trends_insights", "label": "1.18 Trends & Insights", "source": "general"},
+    {"id": "recommendations", "label": "1.19 GSOC Recommendation Summary", "source": "general"},
+    # ── Appendix: detailed lists deferred from the executive sections above ──
+    {"id": "appendix", "label": "2. Appendix", "source": "general"},
 ]
 
 _REPORT_TAIL = """
@@ -341,6 +559,7 @@ CRITICAL RULES:
 - Use markdown formatting throughout
 - Include specific numbers, dates, and details from the provided data
 - Do NOT fabricate or hallucinate data - use only what is provided
+- **NUMBERS RULE**: When citing derived metrics (month-over-month deltas, percent change, three-month averages, mean time to resolution, ticket aging buckets), you MUST take the exact value from the pre-computed `derived` block in the data. Do NOT compute, estimate, or round these yourself. Field paths depend on which sections you are generating: for Jira-source sections (1.1–1.9), look at `derived.*` at the JSON root; for the meta-analysis sections (1.18 Trends & Insights, 1.19 Recommendations, 2. Appendix), look at `jira.derived.*` and `sentinel.utilization_mom_delta`. If a derived field has `insufficient_data: true` or is `null`, say so explicitly (e.g. "insufficient historical data for MoM comparison") rather than inventing a figure.
 - For an assigned section whose data source is NOT connected (marked as UNAVAILABLE below), generate a placeholder block exactly like this:
   > **Data Source Pending Integration** — This section requires data from [source name] which is not yet connected. Data will be populated once the integration is configured.
 - If a data source IS connected but returned no data for the period (empty lists, zero counts), do NOT show the placeholder. Instead write a brief note such as: "No data was recorded for this section during the reporting period." Then continue with any context or analysis that can be drawn from zero activity.
@@ -390,15 +609,21 @@ Write 2-4 paragraphs covering:
   - Incident resolution rate (percentage closed)
   - True vs Benign Positive breakdown and implications
 
-**### 1.5. Incident Ticket Details** (if "incident_details" is selected)
-The full incident table is pre-rendered as HTML in Python (covering every incident, sorted by date descending) and will be substituted in by the report assembly step. Do NOT generate the table yourself — generating it would exceed your output token budget and cause truncation.
+**### 1.5. Incident Ticket Summary** (if "incident_details" is selected)
+This is an EXECUTIVE SUMMARY section, not a row-by-row dump. The full incident list lives in the Appendix (section 2.1). The summary cards + top-5-critical table are pre-rendered as HTML in Python and will be substituted in by the report assembly step.
 
-Output exactly these three things, in order, and nothing else for this section:
-1. The heading line: `### <a id="15-incident-ticket-details"></a>1.5. Incident Ticket Details`
-2. A single sentence stating the total number of incidents listed in the table (use the `incident_details` array length from the data).
-3. The literal token `<!--INCIDENT_DETAILS_TABLE-->` on its own line. Output it character-for-character — including the `<!--` and `-->` — exactly as shown.
+Output exactly these four things, in this exact order, and nothing else for this section:
 
-Do NOT emit any markdown table for this section. Do NOT paraphrase the rows. Do NOT comment on individual incidents — that belongs in the analysis sections (Severity, Status, Recommendations).
+1. The heading line: `### <a id="15-incident-ticket-summary"></a>1.5. Incident Ticket Summary`
+2. A 2-3 paragraph AI-driven narrative that:
+   - Opens with the total number of incidents (`total_incidents`) and the severity mix (cite from `by_severity`).
+   - Quantifies the month-over-month change using `derived.mom_delta` — name the previous month, the delta, the percent change, and how the current month compares to the three-month average. If `derived.mom_delta.insufficient_data` is true, say so explicitly.
+   - Comments on mean time to resolution (`derived.mttr.mean_hours` overall, plus the by-severity breakdown if it reveals anything notable). If `derived.mttr.insufficient_data` is true, state that no incidents were resolved in the period.
+   - Closes with a one-sentence interpretation of what this volume + MTTR pattern says about the customer's posture this period.
+3. The literal token `<!--INCIDENT_SUMMARY_TABLE-->` on its own line. Output it character-for-character — including the `<!--` and `-->` — exactly as shown. This token expands to the summary cards (totals, severity mix, MoM, MTTR) and the top-5 critical incidents table.
+4. The literal token `<!--INCIDENT_DETAILS_TABLE-->` must NOT appear in this section — it belongs in Appendix 2.1.
+
+Do NOT emit any markdown table for this section. Do NOT paraphrase the top-5 rows. Do NOT list individual incidents in prose.
 
 **### 1.6. Service Requests Summary** (if "service_requests" is selected)
 If service_requests.unavailable is true, show the placeholder block noting the issue type is not configured in this Jira project.
@@ -551,45 +776,61 @@ Otherwise: Total event count ingested during the period, breakdown by index, and
 If Splunk is NOT connected (not listed in available data sources), show the placeholder block. If connected but no data for the period, write a brief note stating no activity was recorded.
 Otherwise: Table showing top Splunk correlation rules / notable events with count, sorted by frequency. Include severity breakdown if available.
 
-**### 1.8. Pending Tickets** (if "pending_tickets" is selected)
-The pending tickets table is pre-rendered as HTML in Python (covering every non-closed ticket, sorted by created date descending) and will be substituted in by the report assembly step. Do NOT generate the table yourself — ticket summaries contain literal pipe characters that break markdown table rendering.
+**### 1.8. Pending Tickets Summary** (if "pending_tickets" is selected)
+This is an EXECUTIVE SUMMARY section. The full pending tickets list lives in Appendix 2.2. The aging-bucket summary cards + top-5 oldest table are pre-rendered as HTML in Python and substituted in by the report assembly step.
 
-Output exactly these three things, in order, and nothing else for this section:
-1. The heading line: `### <a id="18-pending-tickets"></a>1.8. Pending Tickets`
-2. A single sentence stating the total number of pending tickets (use the `pending_tickets` array length from the data).
-3. The literal token `<!--PENDING_TICKETS_TABLE-->` on its own line. Output it character-for-character — including the `<!--` and `-->` — exactly as shown.
+Output exactly these four things, in this exact order, and nothing else for this section:
 
-Do NOT emit any markdown table for this section. Do NOT paraphrase the rows.
+1. The heading line: `### <a id="18-pending-tickets-summary"></a>1.8. Pending Tickets Summary`
+2. A 2-3 paragraph AI-driven narrative that:
+   - Opens with the total pending ticket count (`derived.pending_aging.total`).
+   - Quantifies the aging profile — name the bucket counts (`derived.pending_aging.lt_7d`, `7_to_14d`, `14_to_30d`, `gt_30d`) and what they say about backlog accumulation. Cite the oldest ticket's age in days (`derived.pending_aging.oldest_age_days`).
+   - Identifies bottleneck patterns: if `gt_30d > 0` flag this as an SLA / process concern; if the bulk sits in `14_to_30d` flag escalation risk; if all sit in `lt_7d` describe this as healthy ticket flow.
+   - Closes with one sentence on what concrete next-action GSOC will take (e.g. "GSOC will pursue closure on the X tickets older than 30 days during the next week").
+3. The literal token `<!--PENDING_SUMMARY_TABLE-->` on its own line. Output it character-for-character — including the `<!--` and `-->` — exactly as shown. This token expands to the aging bucket cards and top-5 oldest pending table.
+4. The literal token `<!--PENDING_TICKETS_TABLE-->` must NOT appear in this section — it belongs in Appendix 2.2.
+
+Do NOT emit any markdown table for this section. Do NOT paraphrase the top-5 rows.
 
 **### 1.9. GSOC Monitoring Scope** (if "monitoring_scope" is selected)
 Write: "Below are the log sources that are onboarded to Microsoft Sentinel SIEM currently for GSOC monitoring."
 Then list common log sources as bullet points. If specific log source data is not available, list typical enterprise sources:
 - Azure Activity, Azure Firewall, Microsoft 365, Microsoft Defender for Cloud Apps, Microsoft Defender for Endpoint, Microsoft Defender for Identity, Microsoft Defender XDR, Microsoft Entra ID, etc.
 
-**## GSOC Recommendation Summary** (if "recommendations" is selected)
+**### 1.19. GSOC Recommendation Summary** (if "recommendations" is selected)
 
-Analyse the incident data provided and generate 3-5 SPECIFIC, ACTIONABLE recommendations. Each recommendation must be grounded in a pattern observed in the data — do not fabricate generic advice.
+Use the heading: `### <a id="119-gsoc-recommendation-summary"></a>1.19. GSOC Recommendation Summary`
 
-Patterns to detect and act on:
-- False Positive rate > 40% of closed incidents → recommend tuning the specific alert rules generating FPs
-- Repeated True Positives of the same category (e.g. Exfiltration, DefenceEvasion) → recommend controls improvement or additional detection coverage
-- High volume of Benign Positives → recommend allowlist/whitelist review for that alert type
-- Pending/Open tickets older than reporting period → recommend SLA review or escalation process improvement
-- Single severity level dominates (>70%) → recommend review of alert thresholds for that level
-- If SOCRadar threat intelligence data is present → add one recommendation cross-referencing active threat actors with the customer's observed incident categories
+Generate AT LEAST 5 SPECIFIC, ACTIONABLE recommendations. Each recommendation MUST cite a concrete metric from the data — generic advice is forbidden. The data root for this section contains: `jira`, `sentinel`, `splunk`, `socradar`, `industry_intel`. Reference field paths accordingly.
+
+Pattern → metric grounding (this is mandatory; tie each recommendation to a metric):
+- MTTR for any severity tier > 48h → recommend SLA review for that tier. Cite `jira.derived.mttr.mean_hours_by_severity`.
+- MTTR worsened MoM (`jira.derived.mttr.mom_delta_pct > 0`) → recommend resourcing or triage process review. Cite the delta percent.
+- Pending aging `jira.derived.pending_aging.gt_30d > 0` → recommend escalation process. Cite the count and `oldest_age_days`.
+- Incident volume `jira.derived.mom_delta.delta_pct > 25` → recommend correlation rule tuning or detection coverage review. Cite the percent change.
+- Incident volume `jira.derived.mom_delta.delta_pct < -25` → either improved posture OR detection gap; flag for investigation. Cite the percent.
+- False Positive rate > 40% of closed incidents (compute from `jira.by_close_justification`) → recommend tuning the alert rules generating FPs. Cite the FP count.
+- Repeated True Positives in the same category → recommend controls improvement. Cite the category and count.
+- Single severity dominates (>70% from `jira.by_severity`) → recommend threshold review for that level. Cite the percent.
+- If `socradar` data is present (i.e. `socradar.connected` is not false) → at least ONE recommendation must cross-reference active threat actors from `socradar.threat_actors` with observed incident categories from `jira.by_severity` / labels.
+- If Sentinel utilization MoM delta is materially positive (`sentinel.utilization_mom_delta.delta_pct > 30`) → recommend capacity / cost review. Cite the percent.
+
+Format requirements:
 
 For each recommendation assign a Priority: Critical / High / Medium.
 
-Output format — present a markdown table with these exact columns:
+Output a markdown table with these exact columns:
 S.No | Priority | Recommendation | Affected Area | GSOC Action | Customer Action | Status
 
 - **S.No**: sequential number
 - **Priority**: Critical / High / Medium
-- **Recommendation**: concise description of the specific finding and what should be done
-- **Affected Area**: the specific alert rule, incident category, or process area
+- **Recommendation**: MUST include the specific metric value that triggered this recommendation (e.g. "MTTR for High-severity rose to 62.4h, +28% MoM — tune alert prioritisation"). NEVER generic.
+- **Affected Area**: the specific alert rule, incident category, severity tier, or process area
 - **GSOC Action**: what GSOC will do (e.g. "Tune correlation rule threshold", "Submit IOC to blocklist")
 - **Customer Action**: what the customer must do (e.g. "Review allowlist entries", "Apply patch MS-XXXX")
 - **Status**: New / Ongoing / Resolved
+
+If you cannot find 5 metric-grounded recommendations, output as many as you can ground (minimum 3) — do NOT pad with generic advice to reach 5.
 
 **### SOCRadar Threat Intelligence** (if "socradar_threat_intel" is selected, REQUIRES SOCRADAR)
 If SOCRadar data is unavailable, show the placeholder block.
@@ -614,6 +855,41 @@ Otherwise, write a current threat intelligence briefing for the {customer_indust
 4. **Defensive Recommendations**: A bulleted list of 3-4 prioritised actions organisations in the {customer_industry} sector should take based on the current threat landscape.
 
 If industry_intel.web_intel contains open-source intelligence, synthesise it throughout — do not fabricate threat actors or CVEs that are not supported by the data provided. If web_intel is absent and threat_actors is empty, write that no current threat intelligence was available for this sector during the period.
+
+**### 1.18. Trends & Insights** (if "trends_insights" is selected)
+
+Use the heading: `### <a id="118-trends-and-insights"></a>1.18. Trends & Insights`
+
+This section is the AI's primary value-add: an analytical narrative grounded entirely in `stats.derived.*` fields and Sentinel/Splunk equivalents. Structure as follows:
+
+Data root for this section: `jira`, `sentinel`, `splunk`, `socradar`, `industry_intel`. Reference field paths accordingly.
+
+1. **Sub-heading** `#### Incident Volume Trend`. One short paragraph quantifying month-over-month change. Cite `jira.derived.mom_delta`: current_month, current_count, previous_month, previous_count, delta_abs, delta_pct, three_month_avg, vs_avg_pct. If `jira.derived.mom_delta.insufficient_data: true`, state "insufficient historical data for trend comparison this period" and skip the rest of this paragraph. Then one interpretive sentence: is this within normal variance (within ±15% of three-month average) or a notable swing?
+
+2. **Sub-heading** `#### Resolution Performance (MTTR)`. One short paragraph citing `jira.derived.mttr.mean_hours`, `jira.derived.mttr.resolved_count`, and the most notable entry from `jira.derived.mttr.mean_hours_by_severity`. If `jira.derived.mttr.mom_delta_pct` is non-null, state whether resolution is faster or slower vs prior month and by what percent. Then one interpretive sentence: is current MTTR healthy (e.g. <24h for Critical, <72h for High)?
+
+3. **Sub-heading** `#### Ticket Backlog & Aging`. One short paragraph citing `jira.derived.pending_aging` — total, oldest_age_days, and the bucket distribution (`lt_7d`, `7_to_14d`, `14_to_30d`, `gt_30d`). Interpret whether the backlog is healthy (mostly `lt_7d`), stretched (mass in `14_to_30d`), or concerning (any tickets `gt_30d`).
+
+4. **Sub-heading** `#### Platform Utilization Trend` (only if Sentinel is connected — i.e. `sentinel.connected` is not false). Cite `sentinel.utilization_mom_delta` — current_value (GB), previous_value, delta_pct, vs_avg_pct. If `sentinel.utilization_mom_delta.insufficient_data: true`, state "insufficient historical data" and skip the paragraph. Then one interpretive sentence: is ingestion stable, ramping, or contracting, and what might explain it (new log source onboarded, retention change, infrastructure event)?
+
+5. **Sub-heading** `#### Cross-Source Observations`. One short paragraph (2-4 sentences) drawing a connection across data sources, e.g. "Sentinel utilization grew 18% MoM while incident volume held flat — the new log source is generating signal without false-positive load" or "Incident volume up 22% MoM correlates with the SOCRadar campaign activity flagged in §SOCRadar Threat Intelligence". Only assert cross-source links the data actually supports. If only Jira is connected, write a single sentence stating that cross-source analysis requires additional data sources to be onboarded.
+
+ABSOLUTE RULE for this section: every number you write must come from the data JSON. No estimates, no rounding, no "approximately". If a value is `null` or the parent has `insufficient_data: true`, say so explicitly.
+
+**## 2. Appendix** (if "appendix" is selected)
+
+Use the heading: `## <a id="2-appendix"></a>2. Appendix`
+
+Then emit exactly the following two subsections in this exact order, and nothing else. Do NOT add an introductory paragraph, do NOT comment on the data, do NOT generate any prose. This section is pure reference data.
+
+1. Sub-heading line: `### <a id="21-full-incident-ticket-list"></a>2.1. Full Incident Ticket List`
+2. One sentence stating the total number of incidents (use `jira.incident_details_count` from the data).
+3. The literal token `<!--INCIDENT_DETAILS_TABLE-->` on its own line, character-for-character.
+4. Sub-heading line: `### <a id="22-full-pending-tickets-list"></a>2.2. Full Pending Tickets List`
+5. One sentence stating the total number of pending tickets (use `jira.pending_tickets_count` from the data).
+6. The literal token `<!--PENDING_TICKETS_TABLE-->` on its own line, character-for-character.
+
+If `jira.incident_details_count` is zero, omit subsection 2.1 entirely (heading and token). If `jira.pending_tickets_count` is zero, omit subsection 2.2 entirely. If both are zero, write a single line "No detail data to append for this period." after the section heading.
 
 IMPORTANT: Do NOT generate a table of contents. Do NOT generate a References section. Do NOT generate a Confidentiality Statement. Only generate the assigned sections listed above. These boilerplate sections will be appended automatically after all sections are combined.
 
@@ -1062,15 +1338,21 @@ def _build_report_context(data: dict, config: dict) -> dict:
         }
         for i in data.get("incidents", [])
     ]
+    _stats = data.get("stats", {}) or {}
     jira_data = {
-        "total_incidents": data.get("stats", {}).get("total", 0),
-        "by_severity": data.get("stats", {}).get("by_severity", {}),
-        "by_status": data.get("stats", {}).get("by_status", {}),
-        "by_priority": data.get("stats", {}).get("by_priority", {}),
-        "by_close_justification": data.get("stats", {}).get("by_close_justification", {}),
-        "top_alerts": data.get("stats", {}).get("top_alerts", {}),
-        "monthly_trend": data.get("stats", {}).get("monthly_trend", {}),
-        "assignee_distribution": data.get("stats", {}).get("assignee_distribution", {}),
+        "total_incidents": _stats.get("total", 0),
+        "by_severity": _stats.get("by_severity", {}),
+        "by_status": _stats.get("by_status", {}),
+        "by_priority": _stats.get("by_priority", {}),
+        "by_close_justification": _stats.get("by_close_justification", {}),
+        "top_alerts": _stats.get("top_alerts", {}),
+        "monthly_trend": _stats.get("monthly_trend", {}),
+        "assignee_distribution": _stats.get("assignee_distribution", {}),
+        # Derived metrics computed in tools.jira_client._compute_incident_derived_stats:
+        # mom_delta, mttr, pending_aging, top_critical_incidents, oldest_pending.
+        # The system prompt instructs the LLM to source all trend/aging numbers
+        # from here — never from inline computation.
+        "derived": _stats.get("derived", {}),
         "incident_details": _incident_records,
         "pending_tickets": [
             {
@@ -1123,9 +1405,16 @@ def _build_report_context(data: dict, config: dict) -> dict:
             key=lambda d: d["gb"], reverse=True,
         )[:3]
 
+        # MoM delta computed from `utilization.monthly_history` populated by the
+        # sentinel_history backfill in _collect_report_data. Shape mirrors
+        # jira_data.derived.mom_delta so the prompt can reference both with the
+        # same schema. Returns `insufficient_data: true` when <2 months exist.
+        _utilization_history = sentinel.get("utilization", {}).get("monthly_history", {}) or {}
         sentinel_data = {
             "utilization_total_gb": sentinel.get("utilization", {}).get("total_gb"),
             "utilization_avg_daily_gb": sentinel.get("utilization", {}).get("avg_daily_gb"),
+            "utilization_monthly_history": _utilization_history,
+            "utilization_mom_delta": _compute_sentinel_mom(_utilization_history),
             "utilization_top_spike_days": _spike_days,
             "top_alerts": sentinel.get("top_alerts", []),
             "total_assets": sentinel.get("total_assets"),
@@ -1158,11 +1447,17 @@ def _build_report_context(data: dict, config: dict) -> dict:
     splunk_data = {}
     splunk = data.get("splunk")
     if splunk:
+        # Splunk client does not currently maintain a monthly history, so MoM
+        # is reported as insufficient_data. When historical retention is wired
+        # in, populate `event_volume.monthly_history` and route it through
+        # _compute_sentinel_mom (the schema is value-agnostic, despite the
+        # name — it treats whatever scalar lives in the dict as the metric).
         splunk_data = {
             "total_events": splunk.get("event_volume", {}).get("total_events"),
             "events_by_index": splunk.get("event_volume", {}).get("by_index", []),
             "top_alerts": splunk.get("top_alerts", []),
             "severity_breakdown": splunk.get("severity_breakdown", []),
+            "event_volume_mom_delta": {"insufficient_data": True},
         }
 
     socradar_data = {}
@@ -1203,11 +1498,15 @@ def _build_report_context(data: dict, config: dict) -> dict:
         "customer_advisories_data": customer_advisories_data,
         # Pre-rendered HTML kept off `jira_data` so it does not bloat the LLM
         # input (a 1,400-row HTML table is ~250KB of text). The post-processor
-        # in `_run_report_agent` substitutes it for INCIDENT_DETAILS_TOKEN.
+        # in `_run_report_agent` substitutes these for their respective tokens.
+        # Full tables now land in Appendix 2.1 / 2.2; summary tables land in
+        # sections 1.5 / 1.8 — both substitutions happen blind to placement.
         "incident_details_html_table": _render_incident_details_html(_incident_records),
         "pending_tickets_html_table": _render_pending_tickets_html(
             jira_data["pending_tickets"]
         ),
+        "incident_summary_html_table": _render_incident_summary_html(_stats),
+        "pending_summary_html_table": _render_pending_summary_html(_stats.get("derived", {}) or {}),
     }
 
 
@@ -1295,7 +1594,32 @@ async def _run_report_agent(data: dict, config: dict) -> str:
     )
     splunk_payload = {"splunk": ctx["splunk_data"]} if ctx["splunk_data"] else {}
     socradar_payload = {"socradar": ctx["socradar_data"]} if ctx["socradar_data"] else {}
-    industry_payload = {"industry_intel": ctx["industry_intel_data"]} if industry_grp else {}
+
+    # The "general" source group hosts both topical industry analysis AND the
+    # meta-analysis sections (trends_insights, recommendations, appendix).
+    # Build a composite payload so AI synthesis sections can reference data
+    # from every connected source — jira derived stats for MoM / MTTR / aging,
+    # sentinel utilization MoM, splunk totals, socradar threat actors. We
+    # strip out the heavy raw arrays (incident_details, pending_tickets) since
+    # the LLM only needs counts — the full tables are token-substituted.
+    if industry_grp:
+        _jira_meta = dict(ctx["jira_data"])
+        _jira_meta["incident_details_count"] = len(_jira_meta.get("incident_details") or [])
+        _jira_meta["pending_tickets_count"] = len(_jira_meta.get("pending_tickets") or [])
+        # Drop the raw arrays to keep the prompt under token budget. The
+        # appendix subsections only need the counts to write the lead line;
+        # the actual tables are post-rendered HTML.
+        _jira_meta.pop("incident_details", None)
+        _jira_meta.pop("pending_tickets", None)
+        industry_payload = {
+            "industry_intel": ctx["industry_intel_data"],
+            "jira": _jira_meta,
+            "sentinel": ctx["sentinel_data"] or {"connected": False},
+            "splunk": ctx["splunk_data"] or {"connected": False},
+            "socradar": ctx["socradar_data"] or {"connected": False},
+        }
+    else:
+        industry_payload = {}
 
     groups = [
         (jira_grp, jira_payload),
@@ -1324,6 +1648,14 @@ async def _run_report_agent(data: dict, config: dict) -> str:
     pending_html = ctx.get("pending_tickets_html_table") or ""
     if PENDING_TICKETS_TOKEN in assembled:
         assembled = assembled.replace(PENDING_TICKETS_TOKEN, pending_html)
+
+    incident_summary_html = ctx.get("incident_summary_html_table") or ""
+    if INCIDENT_SUMMARY_TOKEN in assembled:
+        assembled = assembled.replace(INCIDENT_SUMMARY_TOKEN, incident_summary_html)
+
+    pending_summary_html = ctx.get("pending_summary_html_table") or ""
+    if PENDING_SUMMARY_TOKEN in assembled:
+        assembled = assembled.replace(PENDING_SUMMARY_TOKEN, pending_summary_html)
 
     return assembled
 
