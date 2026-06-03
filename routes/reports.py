@@ -852,7 +852,7 @@ Otherwise, write the section in this exact order:
    - Then, on a new line, INSERT THE EXACT VALUE of `socradar.company_alarms_html_table` VERBATIM. Do not modify it, do not re-format the rows, do not wrap it in code fences, do not paraphrase the values. The table is pre-rendered HTML and must reach the PDF unchanged.
    - After the table, write 1 sentence noting any patterns (e.g. all related to one repository, mostly closed as false positives, etc.).
 2. **Active Threat Actors**: Table with columns: Threat Actor | Origin | Target Industries | TTPs | Status. List top actors from socradar.threat_actors data.
-3. **Critical CVEs**: Table with columns: CVE ID | CVSS Score | Affected Products | Exploit Available | Recommendation. List top CVEs from socradar.cve_intel.
+3. **Critical CVEs**: Sourced from `customer_advisories.cves` — vulnerability advisories supplied by GSOC/customer for hunting this period. If non-empty, render a markdown table with columns: `CVE / Threat | Report Type | Published | Hunting Result`. Map directly from each row's fields: `threat`, `report_type`, `published`, `hunting_result`. Sort by `published` descending. If `customer_advisories.cves` is empty, write the line: "No CVE-related advisories were tracked for this customer during the reporting period. GSOC maintains the CVE advisory feed within the customer's Threat Analytics advisory file."
 4. **Dark Web Monitoring**: Summary of any dark web mentions, leaked credentials, or mentions of the company domain. If socradar.dark_web_alarms is empty, state "No dark web mentions detected during this period."
 Close with a paragraph of analyst commentary tying SOCRadar intelligence to the observed incident patterns.
 
@@ -895,7 +895,7 @@ This section is FORWARD-LOOKING and THREAT-INFORMED. Unlike §1.19 (which is tac
 
 Data sources you MUST synthesize:
 - `socradar.threat_actors` — active actors flagged for this customer (name, origin, target industries, TTPs, status).
-- `socradar.cve_intel` — critical CVEs with exploit availability and affected products.
+- `customer_advisories.cves` — vulnerability advisories supplied by GSOC for hunting this period (each row has `threat` like "CVE-YYYY-NNNN - Product", `published`, `hunting_result`). This is the canonical CVE list — do NOT reference `socradar.cve_intel`, which is currently unavailable.
 - `socradar.dark_web_alarms` — leaked credentials or domain mentions.
 - `industry_intel.threat_actors` and `industry_intel.web_intel` — sector-level actor activity.
 - `jira.by_severity`, `jira.top_alerts`, incident category labels — what the customer has actually observed.
@@ -917,7 +917,7 @@ Structure the section as follows:
 
 4. **Coverage rules**:
    - If `socradar.threat_actors` is non-empty → at least 2 rows must reference specific named actors.
-   - If `socradar.cve_intel` is non-empty → at least 1 row must reference a specific CVE.
+   - If `customer_advisories.cves` is non-empty → at least 1 row must reference a specific CVE from that list (cite the exact `threat` value, e.g. "CVE-2025-54948 - Trend Micro Apex One").
    - If `jira.by_severity` shows any Critical or High severity counts > 0 → at least 1 row must address the most common observed technique.
    - If `sentinel.total_assets_source` is "heartbeat" or "none" (no EDR) → at least 1 row must recommend EDR onboarding.
    - If `sentinel.sensor_health_source` is "none" → at least 1 row must address agent visibility.
@@ -1533,9 +1533,24 @@ def _build_report_context(data: dict, config: dict) -> dict:
     }
 
     advisories_raw = data.get("customer_advisories", {}) or {}
+    _ta_rows = advisories_raw.get("threat_analytics", []) or []
+    # Pre-filter the threat_analytics list for CVE-prefixed rows so the
+    # "Critical CVEs" sub-section of the SOCRadar Threat Intelligence block
+    # (and §1.20) have a clean source. Historically Critical CVEs was sourced
+    # from `socradar.cve_intel`, but that endpoint is stubbed in
+    # tools/socradar_rest.py (SOCRadar API path not publicly documented).
+    # Customer/GSOC-supplied CVE advisories live in
+    # data/{customer-slug}/threat_analytics_advisories.json and are the actual
+    # canonical source of vulnerability hunting data for the report.
+    _cve_rows = [
+        r for r in _ta_rows
+        if isinstance(r, dict)
+        and (r.get("threat") or "").strip().upper().startswith("CVE-")
+    ]
     customer_advisories_data = {
-        "threat_analytics": advisories_raw.get("threat_analytics", []) or [],
+        "threat_analytics": _ta_rows,
         "ioc": advisories_raw.get("ioc", []) or [],
+        "cves": _cve_rows,
     }
 
     return {
@@ -1715,7 +1730,17 @@ async def _run_report_agent(data: dict, config: dict) -> str:
         if ctx["sentinel_data"] else {}
     )
     splunk_payload = {"splunk": ctx["splunk_data"]} if ctx["splunk_data"] else {}
-    socradar_payload = {"socradar": ctx["socradar_data"]} if ctx["socradar_data"] else {}
+    # SOCRadar group also needs customer_advisories so the "Critical CVEs"
+    # sub-section of SOCRadar Threat Intelligence can read CVE-filtered
+    # advisories (the SOCRadar API path for CVE intel is stubbed). The
+    # threat_analytics / ioc lists are also passed even though SOCRadar
+    # sections don't render them — small payload, simpler than threading
+    # only `cves` through.
+    socradar_payload = (
+        {"socradar": ctx["socradar_data"],
+         "customer_advisories": ctx["customer_advisories_data"]}
+        if ctx["socradar_data"] else {}
+    )
 
     # The "general" source group hosts both topical industry analysis AND the
     # meta-analysis sections (trends_insights, recommendations, appendix).
@@ -1739,6 +1764,10 @@ async def _run_report_agent(data: dict, config: dict) -> str:
             "sentinel": ctx["sentinel_data"] or {"connected": False},
             "splunk": ctx["splunk_data"] or {"connected": False},
             "socradar": ctx["socradar_data"] or {"connected": False},
+            # customer_advisories.cves is the canonical CVE list (SOCRadar's
+            # cve_intel endpoint is stubbed). §1.20 references it for the
+            # "at least one CVE-cited recommendation" coverage rule.
+            "customer_advisories": ctx["customer_advisories_data"],
         }
     else:
         industry_payload = {}
