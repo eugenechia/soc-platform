@@ -623,7 +623,7 @@ Write 2-4 paragraphs covering:
 **### 1.4. Incident Status** (if "incident_status" is selected)
 - State total incidents categorized by resolution status.
 - List exactly four rows with counts:
-  - **Pending**: take this value verbatim from `derived.pending_aging.total` (this is the authoritative pending count, computed as "incidents whose status is not in {Closed, Resolved, Done, Complete, Completed}"). Do NOT count "Pending" from `by_status` directly — Jira workflows use varied status names ("Pending with Customer", "Open", "In Progress") that all roll up to pending.
+  - **Pending**: take this value verbatim from `derived.pending_aging.total` (this is the authoritative pending count, computed as "incidents whose status is not Closed, Resolved, Done, Complete, or Completed"). Do NOT count "Pending" from `by_status` directly — Jira workflows use varied status names ("Pending with Customer", "Open", "In Progress") that all roll up to pending.
   - **True Positive**: `by_close_justification["True Positive"]` (or 0 if missing).
   - **False Positive**: `by_close_justification["False Positive"]` (or 0 if missing).
   - **Benign Positive**: `by_close_justification["Benign Positive"]` (or 0 if missing).
