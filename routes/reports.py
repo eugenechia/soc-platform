@@ -292,152 +292,87 @@ def _render_pending_tickets_html(pending: list) -> str:
 
 
 def _render_incident_summary_html(stats: dict) -> str:
-    """Pre-render the Section 1.5 executive summary.
+    """Pre-render the Section 1.5 executive summary as a single at-a-glance table.
 
-    Two stacked blocks: (1) a key-metrics card grid (total, severity mix, avg
-    MTTR, MoM delta) and (2) a "Top 5 critical incidents" mini-table. All
-    numbers must come from ``stats`` — no recomputation here so the AI
-    narrative below it cites the same figures the reader sees.
-
-    The full incident table is in Appendix section 2.1; we add a hint line at
-    the bottom telling readers where to find detail.
+    Per client feedback (Jun 2026): execs want numbers in one table, no prose,
+    no MTTR, no MoM, no top-5 list. One row for Total, one row per severity
+    tier present (Critical → Lowest), in canonical order. The full ticket list
+    lives in the report's final Appendix section.
     """
     import html as _html
 
     def _esc(value) -> str:
         return _html.escape(str(value or "").strip())
 
-    derived = stats.get("derived") or {}
-    mom = derived.get("mom_delta") or {}
-    mttr = derived.get("mttr") or {}
-    top_critical = derived.get("top_critical_incidents") or []
-
     total = stats.get("total", 0)
-    by_severity = stats.get("by_severity") or {}
-    severity_str = ", ".join(f"{_esc(k)}: {v}" for k, v in by_severity.items()) or "None"
+    by_severity = dict(stats.get("by_severity") or {})
 
-    if mom.get("insufficient_data"):
-        mom_str = "Insufficient historical data for MoM comparison"
-    else:
-        delta_pct = mom.get("delta_pct")
-        delta_abs = mom.get("delta_abs")
-        if delta_pct is None or delta_abs is None:
-            mom_str = "MoM comparison unavailable"
-        else:
-            sign = "+" if delta_abs >= 0 else ""
-            mom_str = f"{sign}{delta_abs} ({sign}{delta_pct}% vs {_esc(mom.get('previous_month'))})"
+    # Canonical severity order. Lowercase compare so "Low" / "low" / "LOW" all
+    # collapse into the same bucket. Severities the data doesn't have are
+    # skipped — we never show "Critical: 0" if the source returned no Criticals.
+    _CANONICAL_ORDER = ["Critical", "High", "Medium", "Low", "Informational", "Lowest"]
+    _by_sev_lc = {(k or "").strip().lower(): (k, v) for k, v in by_severity.items()}
 
-    if mttr.get("insufficient_data") or mttr.get("mean_hours") is None:
-        mttr_str = "No resolved incidents in period"
-    else:
-        mttr_str = f"{mttr.get('mean_hours')} hours (across {mttr.get('resolved_count')} resolved)"
+    rows = []
+    seen = set()
+    for sev in _CANONICAL_ORDER:
+        entry = _by_sev_lc.get(sev.lower())
+        if entry:
+            _, count = entry
+            rows.append((sev, count))
+            seen.add(sev.lower())
+    # Anything not in canonical order (e.g. "Unspecified", custom tiers) tacks
+    # on at the bottom so nothing silently disappears.
+    for lc_key, (orig_key, count) in _by_sev_lc.items():
+        if lc_key not in seen:
+            rows.append((orig_key or "Unspecified", count))
 
-    cards = (
-        '<table class="incident-summary-cards" style="width:100%;border-collapse:collapse;margin-bottom:8px;">'
+    rows_html = "".join(
+        f"<tr><td>{_esc(label)}</td><td>{count}</td></tr>" for label, count in rows
+    )
+
+    return (
+        '<table class="incident-summary">'
+        "<thead><tr><th>Metric</th><th>Count</th></tr></thead>"
         "<tbody>"
-        f"<tr><td><strong>Total Incidents</strong></td><td>{total}</td>"
-        f"<td><strong>Avg MTTR</strong></td><td>{_esc(mttr_str)}</td></tr>"
-        f"<tr><td><strong>Severity Mix</strong></td><td colspan=\"3\">{severity_str}</td></tr>"
-        f"<tr><td><strong>MoM Delta</strong></td><td colspan=\"3\">{_esc(mom_str)}</td></tr>"
-        "</tbody></table>"
-    )
-
-    if not top_critical:
-        return cards + (
-            '<p class="appendix-hint"><em>See Appendix 2.1 for the full incident ticket list.</em></p>'
-        )
-
-    rows_html = []
-    for rec in top_critical:
-        rows_html.append(
-            "<tr>"
-            f"<td>{_esc(rec.get('key'))}</td>"
-            f"<td>{_esc(rec.get('summary'))}</td>"
-            f"<td>{_esc(rec.get('severity'))}</td>"
-            f"<td>{_esc(rec.get('status'))}</td>"
-            f"<td>{_esc((rec.get('created') or '')[:10])}</td>"
-            "</tr>"
-        )
-
-    top_table = (
-        '<p><strong>Top 5 Critical Incidents</strong></p>'
-        '<table class="incident-summary-top">'
-        "<thead><tr>"
-        "<th>Incident ID</th><th>Subject</th><th>Severity</th>"
-        "<th>Status</th><th>Created</th>"
-        "</tr></thead>"
-        "<tbody>" + "".join(rows_html) + "</tbody>"
+        f"<tr><td><strong>Total Incidents</strong></td><td><strong>{total}</strong></td></tr>"
+        f"{rows_html}"
+        "</tbody>"
         "</table>"
-        '<p class="appendix-hint"><em>See Appendix 2.1 for the full incident ticket list.</em></p>'
+        '<p class="appendix-hint"><em>See Appendix for the full incident ticket list.</em></p>'
     )
-
-    return cards + top_table
 
 
 def _render_pending_summary_html(derived: dict) -> str:
-    """Pre-render the Section 1.8 executive summary.
+    """Pre-render the Section 1.8 executive summary as a single aging table.
 
-    Two blocks: aging-bucket breakdown + top 5 oldest pending tickets. Same
-    rationale as the incident summary — full list lives in Appendix 2.2.
+    Per client feedback (Jun 2026): execs want one at-a-glance table. No top-5
+    oldest list, no narrative. Total + aging buckets + oldest-age value, period.
+    Full pending list lives in the report's final Appendix section.
     """
-    import html as _html
-
-    def _esc(value) -> str:
-        return _html.escape(str(value or "").strip())
-
     aging = derived.get("pending_aging") or {}
-    oldest = derived.get("oldest_pending") or []
-
     total = aging.get("total", 0)
+
     if total == 0:
         return (
             '<p>No pending tickets at the close of the reporting period.</p>'
-            '<p class="appendix-hint"><em>See Appendix 2.2 for the full pending tickets list.</em></p>'
+            '<p class="appendix-hint"><em>See Appendix for the full pending tickets list.</em></p>'
         )
 
-    cards = (
-        '<table class="pending-summary-cards" style="width:100%;border-collapse:collapse;margin-bottom:8px;">'
+    return (
+        '<table class="pending-summary">'
+        "<thead><tr><th>Aging Bucket</th><th>Count</th></tr></thead>"
         "<tbody>"
-        f"<tr><td><strong>Total Pending</strong></td><td>{total}</td>"
-        f"<td><strong>Oldest (days)</strong></td><td>{aging.get('oldest_age_days', 0)}</td></tr>"
-        f"<tr><td><strong>&lt; 7 days</strong></td><td>{aging.get('lt_7d', 0)}</td>"
-        f"<td><strong>7&ndash;14 days</strong></td><td>{aging.get('7_to_14d', 0)}</td></tr>"
-        f"<tr><td><strong>14&ndash;30 days</strong></td><td>{aging.get('14_to_30d', 0)}</td>"
-        f"<td><strong>&gt; 30 days</strong></td><td>{aging.get('gt_30d', 0)}</td></tr>"
-        "</tbody></table>"
-    )
-
-    if not oldest:
-        return cards + (
-            '<p class="appendix-hint"><em>See Appendix 2.2 for the full pending tickets list.</em></p>'
-        )
-
-    rows_html = []
-    for rec in oldest:
-        rows_html.append(
-            "<tr>"
-            f"<td>{_esc(rec.get('key'))}</td>"
-            f"<td>{_esc(rec.get('summary'))}</td>"
-            f"<td>{_esc(rec.get('severity'))}</td>"
-            f"<td>{_esc(rec.get('status'))}</td>"
-            f"<td>{_esc((rec.get('created') or '')[:10])}</td>"
-            f"<td>{rec.get('age_days', 0)}</td>"
-            "</tr>"
-        )
-
-    top_table = (
-        '<p><strong>Top 5 Oldest Pending</strong></p>'
-        '<table class="pending-summary-top">'
-        "<thead><tr>"
-        "<th>Incident ID</th><th>Subject</th><th>Severity</th>"
-        "<th>Status</th><th>Created</th><th>Age (days)</th>"
-        "</tr></thead>"
-        "<tbody>" + "".join(rows_html) + "</tbody>"
+        f"<tr><td><strong>Total Pending</strong></td><td><strong>{total}</strong></td></tr>"
+        f"<tr><td>&lt; 7 days</td><td>{aging.get('lt_7d', 0)}</td></tr>"
+        f"<tr><td>7&ndash;14 days</td><td>{aging.get('7_to_14d', 0)}</td></tr>"
+        f"<tr><td>14&ndash;30 days</td><td>{aging.get('14_to_30d', 0)}</td></tr>"
+        f"<tr><td>&gt; 30 days</td><td>{aging.get('gt_30d', 0)}</td></tr>"
+        f"<tr><td><strong>Oldest (days)</strong></td><td><strong>{aging.get('oldest_age_days', 0)}</strong></td></tr>"
+        "</tbody>"
         "</table>"
-        '<p class="appendix-hint"><em>See Appendix 2.2 for the full pending tickets list.</em></p>'
+        '<p class="appendix-hint"><em>See Appendix for the full pending tickets list.</em></p>'
     )
-
-    return cards + top_table
 
 
 def _compute_sentinel_mom(monthly_history: dict) -> dict:
@@ -610,20 +545,14 @@ Write 2-4 paragraphs covering:
   - True vs Benign Positive breakdown and implications
 
 **### 1.5. Incident Ticket Summary** (if "incident_details" is selected)
-This is an EXECUTIVE SUMMARY section, not a row-by-row dump. The full incident list lives in the Appendix (section 2.1). The summary cards + top-5-critical table are pre-rendered as HTML in Python and will be substituted in by the report assembly step.
+EXECUTIVE AT-A-GLANCE SECTION — no prose, no analysis, no narrative. Just the heading and the pre-rendered summary table, nothing else. The summary table is built in Python and substituted by the report assembly step; it shows Total Incidents and a per-severity count breakdown (Critical / High / Medium / Low / Informational / Lowest, only severities present in the data).
 
-Output exactly these four things, in this exact order, and nothing else for this section:
+Output exactly these two things, in this exact order, and nothing else for this section:
 
 1. The heading line: `### <a id="15-incident-ticket-summary"></a>1.5. Incident Ticket Summary`
-2. A 2-3 paragraph AI-driven narrative that:
-   - Opens with the total number of incidents (`total_incidents`) and the severity mix (cite from `by_severity`).
-   - Quantifies the month-over-month change using `derived.mom_delta` — name the previous month, the delta, the percent change, and how the current month compares to the three-month average. If `derived.mom_delta.insufficient_data` is true, say so explicitly.
-   - Comments on mean time to resolution (`derived.mttr.mean_hours` overall, plus the by-severity breakdown if it reveals anything notable). If `derived.mttr.insufficient_data` is true, state that no incidents were resolved in the period.
-   - Closes with a one-sentence interpretation of what this volume + MTTR pattern says about the customer's posture this period.
-3. The literal token `<!--INCIDENT_SUMMARY_TABLE-->` on its own line. Output it character-for-character — including the `<!--` and `-->` — exactly as shown. This token expands to the summary cards (totals, severity mix, MoM, MTTR) and the top-5 critical incidents table.
-4. The literal token `<!--INCIDENT_DETAILS_TABLE-->` must NOT appear in this section — it belongs in Appendix 2.1.
+2. The literal token `<!--INCIDENT_SUMMARY_TABLE-->` on its own line. Output it character-for-character — including the `<!--` and `-->` — exactly as shown.
 
-Do NOT emit any markdown table for this section. Do NOT paraphrase the top-5 rows. Do NOT list individual incidents in prose.
+Do NOT emit any markdown table, narrative paragraph, MTTR commentary, MoM commentary, or top-N list for this section. Do NOT output the `<!--INCIDENT_DETAILS_TABLE-->` token here — it belongs in the Appendix. The detailed narrative analysis lives in §1.18 Trends & Insights.
 
 **### 1.6. Service Requests Summary** (if "service_requests" is selected)
 If service_requests.unavailable is true, show the placeholder block noting the issue type is not configured in this Jira project.
@@ -777,20 +706,14 @@ If Splunk is NOT connected (not listed in available data sources), show the plac
 Otherwise: Table showing top Splunk correlation rules / notable events with count, sorted by frequency. Include severity breakdown if available.
 
 **### 1.8. Pending Tickets Summary** (if "pending_tickets" is selected)
-This is an EXECUTIVE SUMMARY section. The full pending tickets list lives in Appendix 2.2. The aging-bucket summary cards + top-5 oldest table are pre-rendered as HTML in Python and substituted in by the report assembly step.
+EXECUTIVE AT-A-GLANCE SECTION — no prose, no analysis. Just the heading and the pre-rendered aging table, nothing else. The aging table is built in Python and substituted by the report assembly step; it shows Total Pending plus counts in each bucket (&lt;7d / 7-14d / 14-30d / &gt;30d) and the oldest age in days.
 
-Output exactly these four things, in this exact order, and nothing else for this section:
+Output exactly these two things, in this exact order, and nothing else for this section:
 
 1. The heading line: `### <a id="18-pending-tickets-summary"></a>1.8. Pending Tickets Summary`
-2. A 2-3 paragraph AI-driven narrative that:
-   - Opens with the total pending ticket count (`derived.pending_aging.total`).
-   - Quantifies the aging profile — name the bucket counts (`derived.pending_aging.lt_7d`, `7_to_14d`, `14_to_30d`, `gt_30d`) and what they say about backlog accumulation. Cite the oldest ticket's age in days (`derived.pending_aging.oldest_age_days`).
-   - Identifies bottleneck patterns: if `gt_30d > 0` flag this as an SLA / process concern; if the bulk sits in `14_to_30d` flag escalation risk; if all sit in `lt_7d` describe this as healthy ticket flow.
-   - Closes with one sentence on what concrete next-action GSOC will take (e.g. "GSOC will pursue closure on the X tickets older than 30 days during the next week").
-3. The literal token `<!--PENDING_SUMMARY_TABLE-->` on its own line. Output it character-for-character — including the `<!--` and `-->` — exactly as shown. This token expands to the aging bucket cards and top-5 oldest pending table.
-4. The literal token `<!--PENDING_TICKETS_TABLE-->` must NOT appear in this section — it belongs in Appendix 2.2.
+2. The literal token `<!--PENDING_SUMMARY_TABLE-->` on its own line. Output it character-for-character — including the `<!--` and `-->` — exactly as shown.
 
-Do NOT emit any markdown table for this section. Do NOT paraphrase the top-5 rows.
+Do NOT emit any markdown table, narrative paragraph, top-N list, or "next-action" commentary for this section. Do NOT output the `<!--PENDING_TICKETS_TABLE-->` token here — it belongs in the Appendix. Backlog analysis and bottleneck commentary live in §1.18 Trends & Insights.
 
 **### 1.9. GSOC Monitoring Scope** (if "monitoring_scope" is selected)
 Write: "Below are the log sources that are onboarded to Microsoft Sentinel SIEM currently for GSOC monitoring."
@@ -876,22 +799,7 @@ Data root for this section: `jira`, `sentinel`, `splunk`, `socradar`, `industry_
 
 ABSOLUTE RULE for this section: every number you write must come from the data JSON. No estimates, no rounding, no "approximately". If a value is `null` or the parent has `insufficient_data: true`, say so explicitly.
 
-**## 2. Appendix** (if "appendix" is selected)
-
-Use the heading: `## <a id="2-appendix"></a>2. Appendix`
-
-Then emit exactly the following two subsections in this exact order, and nothing else. Do NOT add an introductory paragraph, do NOT comment on the data, do NOT generate any prose. This section is pure reference data.
-
-1. Sub-heading line: `### <a id="21-full-incident-ticket-list"></a>2.1. Full Incident Ticket List`
-2. One sentence stating the total number of incidents (use `jira.incident_details_count` from the data).
-3. The literal token `<!--INCIDENT_DETAILS_TABLE-->` on its own line, character-for-character.
-4. Sub-heading line: `### <a id="22-full-pending-tickets-list"></a>2.2. Full Pending Tickets List`
-5. One sentence stating the total number of pending tickets (use `jira.pending_tickets_count` from the data).
-6. The literal token `<!--PENDING_TICKETS_TABLE-->` on its own line, character-for-character.
-
-If `jira.incident_details_count` is zero, omit subsection 2.1 entirely (heading and token). If `jira.pending_tickets_count` is zero, omit subsection 2.2 entirely. If both are zero, write a single line "No detail data to append for this period." after the section heading.
-
-IMPORTANT: Do NOT generate a table of contents. Do NOT generate a References section. Do NOT generate a Confidentiality Statement. Only generate the assigned sections listed above. These boilerplate sections will be appended automatically after all sections are combined.
+IMPORTANT: Do NOT generate a table of contents. Do NOT generate a References section, Confidentiality Statement, or Appendix. Only generate the assigned sections listed above. ToC, References, Confidentiality, and Appendix are appended automatically after all sections are combined.
 
 SECTION HEADING FORMAT:
 Each section heading must use an HTML anchor tag so the TOC links work:
@@ -1571,16 +1479,75 @@ async def _generate_group(group_sections: list, data_subset: dict, ctx: dict, co
     return (response.choices[0].message.content or "").strip()
 
 
+def _build_appendix_markdown(jira_data: dict) -> str:
+    """Build the Appendix section markdown directly in Python — no LLM.
+
+    The appendix is pure reference data (full incident list + full pending
+    list, both rendered as HTML tables via post-substitution tokens). There's
+    no narrative to generate, so we skip the LLM entirely. Per client feedback
+    (Jun 2026) the appendix is also placed AFTER the References and
+    Confidentiality blocks; the caller is responsible for splicing it in at
+    the correct position.
+
+    Returns markdown with anchored headings so the ToC builder still picks up
+    `2. Appendix`, `2.1. Full Incident Ticket List`, and `2.2. Full Pending
+    Tickets List` entries.
+
+    If a list is empty the corresponding subsection is omitted. If both are
+    empty the whole appendix collapses to a single "no detail data" line.
+    """
+    incident_count = len(jira_data.get("incident_details") or [])
+    pending_count = len(jira_data.get("pending_tickets") or [])
+
+    lines: list[str] = ['## <a id="2-appendix"></a>2. Appendix', ""]
+
+    if incident_count == 0 and pending_count == 0:
+        lines.append("No detail data to append for this period.")
+        return "\n".join(lines)
+
+    if incident_count > 0:
+        lines += [
+            '### <a id="21-full-incident-ticket-list"></a>2.1. Full Incident Ticket List',
+            "",
+            f"This appendix contains the full list of {incident_count} "
+            f"incident ticket{'s' if incident_count != 1 else ''} raised during "
+            "the reporting period.",
+            "",
+            INCIDENT_DETAILS_TOKEN,
+            "",
+        ]
+
+    if pending_count > 0:
+        lines += [
+            '### <a id="22-full-pending-tickets-list"></a>2.2. Full Pending Tickets List',
+            "",
+            f"This appendix contains the full list of {pending_count} pending "
+            f"ticket{'s' if pending_count != 1 else ''} open at the close of "
+            "the reporting period.",
+            "",
+            PENDING_TICKETS_TOKEN,
+            "",
+        ]
+
+    return "\n".join(lines).rstrip() + "\n"
+
+
 async def _run_report_agent(data: dict, config: dict) -> str:
     ctx = _build_report_context(data, config)
     sections = ctx["sections"]
     section_meta = ctx["section_meta"]
 
-    jira_grp = [s for s in sections if section_meta.get(s, {}).get("source") == "jira"]
-    sentinel_grp = [s for s in sections if section_meta.get(s, {}).get("source") == "sentinel"]
-    splunk_grp = [s for s in sections if section_meta.get(s, {}).get("source") == "splunk"]
-    socradar_grp = [s for s in sections if section_meta.get(s, {}).get("source") == "socradar"]
-    industry_grp = [s for s in sections if section_meta.get(s, {}).get("source") == "general"]
+    # Appendix is built in Python after the LLM passes, then placed after
+    # _REPORT_TAIL. Filter it out of LLM groups so the prompt does not list
+    # it under "SECTIONS TO GENERATE".
+    appendix_selected = "appendix" in sections
+    llm_sections = [s for s in sections if s != "appendix"]
+
+    jira_grp = [s for s in llm_sections if section_meta.get(s, {}).get("source") == "jira"]
+    sentinel_grp = [s for s in llm_sections if section_meta.get(s, {}).get("source") == "sentinel"]
+    splunk_grp = [s for s in llm_sections if section_meta.get(s, {}).get("source") == "splunk"]
+    socradar_grp = [s for s in llm_sections if section_meta.get(s, {}).get("source") == "socradar"]
+    industry_grp = [s for s in llm_sections if section_meta.get(s, {}).get("source") == "general"]
 
     jira_payload = ctx["jira_data"]
     # Customer advisory feeds (§1.15 Threat Analytics, §1.17 IOC Update) ship
@@ -1633,14 +1600,34 @@ async def _run_report_agent(data: dict, config: dict) -> str:
     tasks = [_generate_group(secs, payload, ctx, config) for secs, payload in active_groups]
     parts = await asyncio.gather(*tasks)
 
-    assembled = "\n\n".join(p for p in parts if p.strip())
-    assembled = _build_unified_toc(assembled)
-    assembled += _REPORT_TAIL.format(report_year=ctx["report_year"])
+    # Build appendix markdown if selected. Trick: include it during ToC
+    # generation so its anchored headings (2., 2.1, 2.2) show up in the
+    # Contents block — then strip it off and re-append AFTER _REPORT_TAIL so
+    # the visual order matches client preference (References / Confidentiality
+    # before Appendix). The ToC links still resolve because the anchors are
+    # rendered as HTML <a id=...> tags, not derived from positional order.
+    body = "\n\n".join(p for p in parts if p.strip())
+    appendix_md = (
+        _build_appendix_markdown(ctx["jira_data"]) if appendix_selected else ""
+    )
+    body_for_toc = (body + "\n\n" + appendix_md) if appendix_md else body
+    assembled = _build_unified_toc(body_for_toc)
+
+    if appendix_md:
+        # _build_unified_toc returns "ToC\n\n" + body_for_toc. Strip the
+        # appendix back out so we can splice it in after _REPORT_TAIL.
+        if assembled.endswith(appendix_md):
+            assembled = assembled[: -len(appendix_md)].rstrip()
+        elif appendix_md.rstrip() in assembled:
+            assembled = assembled.replace(appendix_md.rstrip(), "").rstrip()
+
+    assembled += "\n\n" + _REPORT_TAIL.format(report_year=ctx["report_year"]).strip()
+    if appendix_md:
+        assembled += "\n\n" + appendix_md.strip()
 
     # Swap the LLM-emitted tokens for the pre-rendered HTML tables. Done after
     # assembly so a single replace covers the case where the token appears in
-    # any part of the markdown. If the LLM omitted the token (e.g. the section
-    # was deselected), nothing to do.
+    # any part of the markdown — body sections OR the Python-built appendix.
     incident_html = ctx.get("incident_details_html_table") or ""
     if INCIDENT_DETAILS_TOKEN in assembled:
         assembled = assembled.replace(INCIDENT_DETAILS_TOKEN, incident_html)
