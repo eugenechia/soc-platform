@@ -8,7 +8,7 @@ import asyncio
 import logging
 import threading
 import base64
-from datetime import datetime
+from datetime import datetime, timedelta
 from io import BytesIO
 import zipfile
 
@@ -375,6 +375,87 @@ def _render_pending_summary_html(derived: dict) -> str:
     )
 
 
+def _compute_mom_from_history(history: dict, end_date_str: str, value_key: str = "value") -> dict:
+    """Compute a MoM delta from a {YYYY-MM: number} dict, anchored to end_date.
+
+    Returns the canonical Jira-schema mom_delta when ``value_key="count"`` is
+    used by the caller (incident volumes), or the Sentinel-schema when
+    ``value_key="value"`` is used (GB ingested). Both schemas share the same
+    keys structurally — only `current_count` vs `current_value` differs, which
+    is selected by the caller.
+
+    "Current month" is forced to end_date's month so a partial spillover into
+    the next calendar month (a few resolutions after the period close) doesn't
+    silently become the comparison anchor.
+    """
+    if not history:
+        return {"insufficient_data": True}
+
+    try:
+        end_dt = datetime.strptime(end_date_str, "%Y-%m-%d")
+    except (ValueError, TypeError):
+        # Fall back to the last sorted key if end_date is unparseable.
+        end_dt = None
+
+    months_sorted = sorted(history.keys())
+    if end_dt:
+        cur_key = end_dt.strftime("%Y-%m")
+        # Previous calendar month relative to end_date.
+        prev_dt = end_dt.replace(day=1) - timedelta(days=1)
+        prev_key = prev_dt.strftime("%Y-%m")
+    else:
+        cur_key = months_sorted[-1] if months_sorted else None
+        prev_key = months_sorted[-2] if len(months_sorted) >= 2 else None
+
+    cur_val_raw = history.get(cur_key) if cur_key else None
+    prev_val_raw = history.get(prev_key) if prev_key else None
+
+    if cur_val_raw is None or prev_val_raw is None:
+        return {
+            f"current_{value_key}": cur_val_raw,
+            f"previous_{value_key}": prev_val_raw,
+            "current_month": cur_key,
+            "previous_month": prev_key,
+            "delta_abs": None,
+            "delta_pct": None,
+            "three_month_avg": None,
+            "vs_avg_pct": None,
+            "insufficient_data": True,
+        }
+
+    cur_val = float(cur_val_raw)
+    prev_val = float(prev_val_raw)
+    delta_abs = cur_val - prev_val
+    delta_pct = (delta_abs / prev_val * 100.0) if prev_val else None
+
+    # Three-month rolling average ending at end_date (inclusive).
+    recent_three_keys = []
+    if end_dt:
+        for offset in range(2, -1, -1):
+            # Walk back `offset` months from current.
+            target = end_dt
+            for _ in range(offset):
+                target = target.replace(day=1) - timedelta(days=1)
+            recent_three_keys.append(target.strftime("%Y-%m"))
+    else:
+        recent_three_keys = months_sorted[-3:]
+    three_month_vals = [float(history[k]) for k in recent_three_keys if k in history]
+    three_month_avg = sum(three_month_vals) / len(three_month_vals) if three_month_vals else None
+    vs_avg_pct = ((cur_val - three_month_avg) / three_month_avg * 100.0) if three_month_avg else None
+
+    return {
+        f"current_{value_key}": int(cur_val) if value_key == "count" else round(cur_val, 2),
+        f"previous_{value_key}": int(prev_val) if value_key == "count" else round(prev_val, 2),
+        "current_month": cur_key,
+        "previous_month": prev_key,
+        "delta_abs": int(delta_abs) if value_key == "count" else round(delta_abs, 2),
+        "delta_pct": round(delta_pct, 1) if delta_pct is not None else None,
+        "three_month_avg": round(three_month_avg, 1) if three_month_avg is not None else None,
+        "vs_avg_pct": round(vs_avg_pct, 1) if vs_avg_pct is not None else None,
+        "insufficient_data": False,
+    }
+
+
 def _compute_sentinel_mom(monthly_history: dict) -> dict:
     """Compute MoM and 3-month-average deltas from a `{YYYY-MM: gb}` dict.
 
@@ -495,7 +576,8 @@ CRITICAL RULES:
 - Use markdown formatting throughout
 - Include specific numbers, dates, and details from the provided data
 - Do NOT fabricate or hallucinate data - use only what is provided
-- **NUMBERS RULE**: When citing derived metrics (month-over-month deltas, percent change, three-month averages, mean time to resolution, ticket aging buckets), you MUST take the exact value from the pre-computed `derived` block in the data. Do NOT compute, estimate, or round these yourself. Field paths depend on which sections you are generating: for Jira-source sections (1.1–1.9), look at `derived.*` at the JSON root; for the meta-analysis sections (1.18 Trends & Insights, 1.19 Recommendations, 2. Appendix), look at `jira.derived.*` and `sentinel.utilization_mom_delta`. If a derived field has `insufficient_data: true` or is `null`, say so explicitly (e.g. "insufficient historical data for MoM comparison") rather than inventing a figure.
+- **NUMBERS RULE**: When citing derived metrics (month-over-month deltas, percent change, three-month averages, mean time to resolution, ticket aging buckets), you MUST take the exact value from the pre-computed `derived` block in the data. Do NOT compute, estimate, or round these yourself. Field paths depend on which sections you are generating: for Jira-source sections (1.1–1.9), look at `derived.*` at the JSON root; for the meta-analysis sections (1.18 Trends & Insights, 1.19 Recommendations, 2. Appendix), look at `jira.derived.*` and `sentinel.utilization_mom_delta`.
+- **CLIENT-FACING LANGUAGE RULE**: This is a customer-facing security report. NEVER expose internal JSON field names, code-style identifiers, or programmer terminology in your output. FORBIDDEN: writing things like `jira.derived.mom_delta.insufficient_data is true`, `(resolved_count: 0)`, `customer_advisories.threat_analytics`, or any backtick-wrapped field name. REQUIRED: rephrase in plain English. When a derived field signals insufficient data, write "Insufficient historical data is available to perform a month-over-month comparison this period" — NOT "jira.derived.mom_delta.insufficient_data is true". When `mttr.insufficient_data` is true, write "No resolved incidents were recorded in the dataset for this period" — NOT mentioning the field name. Treat field names as private implementation detail; the reader only sees prose.
 - For an assigned section whose data source is NOT connected (marked as UNAVAILABLE below), generate a placeholder block exactly like this:
   > **Data Source Pending Integration** — This section requires data from [source name] which is not yet connected. Data will be populated once the integration is configured.
 - If a data source IS connected but returned no data for the period (empty lists, zero counts), do NOT show the placeholder. Instead write a brief note such as: "No data was recorded for this section during the reporting period." Then continue with any context or analysis that can be drawn from zero activity.
@@ -539,11 +621,16 @@ Write 2-4 paragraphs covering:
 - Highlight which severity level was most common and what it means
 
 **### 1.4. Incident Status** (if "incident_status" is selected)
-- State total incidents categorized by status
-- List: Pending, True Positive, False Positive, Benign Positive with counts
+- State total incidents categorized by resolution status.
+- List exactly four rows with counts:
+  - **Pending**: take this value verbatim from `derived.pending_aging.total` (this is the authoritative pending count, computed as "incidents whose status is not in {Closed, Resolved, Done, Complete, Completed}"). Do NOT count "Pending" from `by_status` directly — Jira workflows use varied status names ("Pending with Customer", "Open", "In Progress") that all roll up to pending.
+  - **True Positive**: `by_close_justification["True Positive"]` (or 0 if missing).
+  - **False Positive**: `by_close_justification["False Positive"]` (or 0 if missing).
+  - **Benign Positive**: `by_close_justification["Benign Positive"]` (or 0 if missing).
+- The four counts above should sum to `total_incidents`. If they don't (because some closed incidents have no `close_justification`), state the unclassified remainder as a single line: "N closed incidents had no recorded close-justification."
 - Under "Key Insights:" provide analysis on:
-  - Incident resolution rate (percentage closed)
-  - True vs Benign Positive breakdown and implications
+  - Incident resolution rate (percentage closed = `(total - pending) / total * 100`).
+  - True vs Benign Positive breakdown and what it says about detection-rule fidelity.
 
 **### 1.5. Incident Ticket Summary** (if "incident_details" is selected)
 EXECUTIVE AT-A-GLANCE SECTION — no prose, no analysis, no narrative. Just the heading and the pre-rendered summary table, nothing else. The summary table is built in Python and substituted by the report assembly step; it shows Total Incidents and a per-severity count breakdown (Critical / High / Medium / Low / Informational / Lowest, only severities present in the data).
@@ -841,6 +928,7 @@ ABSOLUTE RULES:
 - No generic recommendations ("improve security", "enhance training") — every row must name a specific control, query, rule, policy, or patch.
 - Do NOT repeat recommendations already covered in §1.19 Recommendations. §1.19 is about responding to observed metrics; §1.20 is about preempting external threats.
 - Do NOT fabricate threat actors, CVEs, or TTPs not present in the data. If you don't have enough external intel to write 5 recommendations, fill the gap with internal-pattern-driven recommendations (e.g., from `jira.top_alerts` categories) and clearly note the section is operating with limited external intelligence.
+- **COUNT-CITATION RULE**: If you write a parenthetical count next to a threat name (e.g. "Repeated Failed Login Attempts (259 alerts detected)"), the number MUST come verbatim from `sentinel.top_alerts[].Count` for the matched AlertName, OR from `jira.by_severity` / `jira.by_close_justification`. Match the AlertName exactly — no rough aggregation, no summing across alerts, no estimates. If you cannot find an exact matching count for a threat category, OMIT the parenthetical count entirely rather than approximate it.
 
 IMPORTANT: Do NOT generate a table of contents. Do NOT generate a References section, Confidentiality Statement, or Appendix. Only generate the assigned sections listed above. ToC, References, Confidentiality, and Appendix are appended automatically after all sections are combined.
 
@@ -1290,6 +1378,20 @@ def _build_report_context(data: dict, config: dict) -> dict:
         for i in data.get("incidents", [])
     ]
     _stats = data.get("stats", {}) or {}
+
+    # Override the in-period MoM with one computed from the verified 12-month
+    # history. `_compute_incident_derived_stats` in jira_client.py only sees
+    # the report-period incidents, so for a one-month report its mom_delta is
+    # always insufficient_data. After `_collect_report_data` runs verification,
+    # `stats.monthly_trend` is replaced with the 12-month verified trend — we
+    # can now compute a proper MoM from it.
+    _derived = dict(_stats.get("derived", {}))
+    _monthly_trend = _stats.get("monthly_trend", {}) or {}
+    if _monthly_trend and len(_monthly_trend) >= 2:
+        _derived["mom_delta"] = _compute_mom_from_history(
+            _monthly_trend, config.get("end_date", ""), value_key="count"
+        )
+
     jira_data = {
         "total_incidents": _stats.get("total", 0),
         "by_severity": _stats.get("by_severity", {}),
@@ -1297,13 +1399,13 @@ def _build_report_context(data: dict, config: dict) -> dict:
         "by_priority": _stats.get("by_priority", {}),
         "by_close_justification": _stats.get("by_close_justification", {}),
         "top_alerts": _stats.get("top_alerts", {}),
-        "monthly_trend": _stats.get("monthly_trend", {}),
+        "monthly_trend": _monthly_trend,
         "assignee_distribution": _stats.get("assignee_distribution", {}),
         # Derived metrics computed in tools.jira_client._compute_incident_derived_stats:
         # mom_delta, mttr, pending_aging, top_critical_incidents, oldest_pending.
         # The system prompt instructs the LLM to source all trend/aging numbers
         # from here — never from inline computation.
-        "derived": _stats.get("derived", {}),
+        "derived": _derived,
         "incident_details": _incident_records,
         "pending_tickets": [
             {
@@ -1586,11 +1688,21 @@ async def _run_report_agent(data: dict, config: dict) -> str:
     appendix_selected = "appendix" in sections
     llm_sections = [s for s in sections if s != "appendix"]
 
-    jira_grp = [s for s in llm_sections if section_meta.get(s, {}).get("source") == "jira"]
-    sentinel_grp = [s for s in llm_sections if section_meta.get(s, {}).get("source") == "sentinel"]
-    splunk_grp = [s for s in llm_sections if section_meta.get(s, {}).get("source") == "splunk"]
-    socradar_grp = [s for s in llm_sections if section_meta.get(s, {}).get("source") == "socradar"]
-    industry_grp = [s for s in llm_sections if section_meta.get(s, {}).get("source") == "general"]
+    # Force LLM section emission into canonical REPORT_SECTIONS order. Without
+    # this, the customer's saved intra-group order leaks into the prompt and
+    # the LLM emits §1.19 before §1.18, "Industry Threat Landscape" between
+    # the meta-analysis sections, etc. The customer's intra-group ordering is
+    # honoured in the UI (which sections are ticked) but not in the report.
+    _canonical_idx = {s["id"]: idx for idx, s in enumerate(REPORT_SECTIONS)}
+
+    def _canonical_order(section_ids: list) -> list:
+        return sorted(section_ids, key=lambda sid: _canonical_idx.get(sid, 9999))
+
+    jira_grp = _canonical_order([s for s in llm_sections if section_meta.get(s, {}).get("source") == "jira"])
+    sentinel_grp = _canonical_order([s for s in llm_sections if section_meta.get(s, {}).get("source") == "sentinel"])
+    splunk_grp = _canonical_order([s for s in llm_sections if section_meta.get(s, {}).get("source") == "splunk"])
+    socradar_grp = _canonical_order([s for s in llm_sections if section_meta.get(s, {}).get("source") == "socradar"])
+    industry_grp = _canonical_order([s for s in llm_sections if section_meta.get(s, {}).get("source") == "general"])
 
     jira_payload = ctx["jira_data"]
     # Customer advisory feeds (§1.15 Threat Analytics, §1.17 IOC Update) ship

@@ -169,6 +169,22 @@ def _extract_adf_text(field_value) -> str:
     return " ".join(parts).strip()
 
 
+# Jira's default lowest priority is literally "Lowest", which surprises clients
+# reading the report — they expect SOC-standard severity tier names. Map
+# "Lowest" to "Informational" at the data layer so every downstream consumer
+# (chart, prompt, summary table, appendix) agrees on the label. Add more
+# remappings here if/when other non-standard tier names appear.
+_SEVERITY_NORMALIZATION = {
+    "lowest": "Informational",
+}
+
+
+def _normalize_severity(severity: str) -> str:
+    if not severity:
+        return ""
+    return _SEVERITY_NORMALIZATION.get(severity.strip().lower(), severity)
+
+
 def _normalize_issue(issue: dict) -> dict:
     fields = issue.get("fields", {})
     status = fields.get("status", {})
@@ -179,12 +195,14 @@ def _normalize_issue(issue: dict) -> dict:
     tactics_raw = _extract_adf_text(fields.get("customfield_10072"))
     category = tactics_raw.split()[0].strip() if tactics_raw else ""
 
+    raw_severity = (fields.get("customfield_10038") or {}).get("value", "") or (priority.get("name", "") if priority else "")
+
     return {
         "key": issue.get("key", ""),
         "summary": fields.get("summary", ""),
         "status": status.get("name", "") if status else "",
         "priority": priority.get("name", "") if priority else "",
-        "severity": (fields.get("customfield_10038") or {}).get("value", "") or (priority.get("name", "") if priority else ""),
+        "severity": _normalize_severity(raw_severity),
         "incident_type": category,
         "labels": fields.get("labels", []),
         "created": fields.get("created", ""),
@@ -386,12 +404,23 @@ def _compute_incident_derived_stats(incidents: list[dict], end_date: str) -> dic
         }
 
     # --- MTTR (Mean Time To Resolution) ---
+    # Some Jira workflows don't populate the system `resolved` field — they
+    # close incidents via status transition only. When `resolved` is empty
+    # but the status indicates the ticket is closed, fall back to the
+    # `updated` timestamp as a proxy for resolution time. This is imprecise
+    # (a late-updated comment will inflate MTTR) but is dramatically more
+    # accurate than reporting `resolved_count: 0` for a customer with 880+
+    # closed incidents.
     resolution_hours: list[float] = []
     resolution_hours_by_severity: dict[str, list[float]] = {}
     mttr_by_month: dict[str, list[float]] = {}
     for i in incidents:
         created_dt = _parse_any_date(i.get("created", ""))
         resolved_dt = _parse_any_date(i.get("resolved", ""))
+        if not resolved_dt:
+            status_lc = (i.get("status") or "").strip().lower()
+            if status_lc in _CLOSED_STATUSES:
+                resolved_dt = _parse_any_date(i.get("updated", ""))
         if not created_dt or not resolved_dt or resolved_dt < created_dt:
             continue
         hours = (resolved_dt - created_dt).total_seconds() / 3600.0
@@ -557,7 +586,9 @@ def fetch_incidents_from_csv(project_key: str, start_date: str, end_date: str,
                 "summary": row.get("Summary", ""),
                 "status": row.get("Status", ""),
                 "priority": row.get("Priority", ""),
-                "severity": row.get("Custom field (Severity)", "").strip() or row.get("Priority", "").strip(),
+                "severity": _normalize_severity(
+                    row.get("Custom field (Severity)", "").strip() or row.get("Priority", "").strip()
+                ),
                 "incident_type": category,
                 "labels": [l.strip() for l in row.get("Labels", "").split(",") if l.strip()],
                 "created": row.get("Created", ""),
