@@ -653,3 +653,178 @@ def api_migrate():
     except Exception as e:
         log.error(f"Migration failed: {e}")
         return jsonify({"error": str(e)}), 500
+
+
+# ── Advisory feeds (§1.15 Threat Analytics + §1.17 IOC Update + Critical CVEs) ──
+#
+# Per-customer advisory JSON files live in `data/{customer-slug}/`. Until this
+# admin UI existed, analysts had to edit those files directly on the Azure
+# Files share via Storage Explorer / portal. This blueprint gives them a
+# proper CRUD surface so the data-entry workflow doesn't depend on knowing
+# the filesystem layout. Both advisory types are managed in one place because
+# they typically get updated together at the end of each reporting period.
+
+from tools.customer_advisories import (
+    customer_slug as _customer_slug,
+    load_threat_analytics_advisories,
+    load_ioc_advisories,
+)
+
+
+def _advisory_dir(customer_name: str) -> str | None:
+    slug = _customer_slug(customer_name)
+    if not slug:
+        return None
+    return os.path.join(DATA_DIR, slug)
+
+
+def _read_advisory_file(path: str) -> list:
+    if not os.path.exists(path):
+        return []
+    try:
+        with open(path) as f:
+            data = json.load(f)
+        return data if isinstance(data, list) else []
+    except (OSError, json.JSONDecodeError) as exc:
+        log.warning("Failed to read advisory file %s: %s", path, exc)
+        return []
+
+
+def _write_advisory_file(path: str, rows: list) -> None:
+    """Atomically write rows to path as a pretty-printed JSON list.
+
+    Atomic = write to .tmp then rename. Prevents a half-written file if the
+    container is killed mid-write; Azure Files honours rename as a metadata
+    op so the swap is observed atomically by anything reading the canonical
+    path.
+    """
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    tmp = path + ".tmp"
+    with open(tmp, "w") as f:
+        json.dump(rows, f, indent=2, ensure_ascii=False)
+    os.replace(tmp, path)
+
+
+_THREAT_ANALYTICS_FIELDS = ("threat", "report_type", "published", "hunting_result")
+_IOC_FIELDS = ("advisory", "date", "hunt_outcome")
+
+
+def _coerce_threat_analytics_row(row: dict) -> dict | None:
+    if not isinstance(row, dict):
+        return None
+    threat = (row.get("threat") or "").strip()
+    if not threat:
+        return None  # threat name is the only required field
+    return {
+        "threat": threat,
+        "report_type": (row.get("report_type") or "").strip(),
+        "published": (row.get("published") or "").strip(),
+        "hunting_result": (row.get("hunting_result") or "").strip(),
+    }
+
+
+def _coerce_ioc_row(row: dict) -> dict | None:
+    if not isinstance(row, dict):
+        return None
+    advisory = (row.get("advisory") or "").strip()
+    if not advisory:
+        return None
+    return {
+        "advisory": advisory,
+        "date": (row.get("date") or "").strip(),
+        "hunt_outcome": (row.get("hunt_outcome") or "").strip(),
+    }
+
+
+@admin_bp.route("/advisories")
+@require_login
+def advisories_page():
+    return render_template("advisories.html", active_mode="advisories")
+
+
+@admin_bp.route("/api/advisories")
+@require_login
+def api_advisories_list():
+    """Return every customer plus row counts for both advisory types so the
+    admin landing page can show "5 threat analytics, 2 IOC" badges without
+    requiring N round-trips."""
+    customers = _load_customers()
+    out = []
+    for c in customers:
+        name = c.get("name", "")
+        d = _advisory_dir(name)
+        ta_count = ioc_count = 0
+        if d:
+            ta_count = len(_read_advisory_file(os.path.join(d, "threat_analytics_advisories.json")))
+            ioc_count = len(_read_advisory_file(os.path.join(d, "ioc_advisories.json")))
+        out.append({
+            "id": c.get("id", ""),
+            "name": name,
+            "short_name": c.get("short_name", ""),
+            "slug": _customer_slug(name),
+            "threat_analytics_count": ta_count,
+            "ioc_count": ioc_count,
+        })
+    return jsonify(out)
+
+
+@admin_bp.route("/api/advisories/<customer_id>")
+@require_login
+def api_advisories_get(customer_id):
+    """Return both advisory lists for a single customer. Empty lists when the
+    files don't exist yet (customer never had an advisory entered)."""
+    customer = next((c for c in _load_customers() if c.get("id") == customer_id), None)
+    if not customer:
+        return jsonify({"error": "Customer not found."}), 404
+    d = _advisory_dir(customer.get("name", ""))
+    if not d:
+        return jsonify({"error": "Customer has no resolvable slug."}), 400
+    return jsonify({
+        "customer_id": customer_id,
+        "customer_name": customer.get("name", ""),
+        "slug": _customer_slug(customer.get("name", "")),
+        "threat_analytics": _read_advisory_file(os.path.join(d, "threat_analytics_advisories.json")),
+        "ioc": _read_advisory_file(os.path.join(d, "ioc_advisories.json")),
+    })
+
+
+@admin_bp.route("/api/advisories/<customer_id>", methods=["PUT"])
+@require_login
+def api_advisories_save(customer_id):
+    """Replace both advisory lists for a customer.
+
+    The frontend always sends the full state of both tables. Server validates
+    + coerces (drops rows missing the required primary field) and writes
+    atomically. Returns the cleaned payload so the UI can reflect any rows
+    that were dropped server-side.
+    """
+    customer = next((c for c in _load_customers() if c.get("id") == customer_id), None)
+    if not customer:
+        return jsonify({"error": "Customer not found."}), 404
+    d = _advisory_dir(customer.get("name", ""))
+    if not d:
+        return jsonify({"error": "Customer has no resolvable slug."}), 400
+
+    body = request.get_json(silent=True) or {}
+    ta_raw = body.get("threat_analytics") or []
+    ioc_raw = body.get("ioc") or []
+    if not isinstance(ta_raw, list) or not isinstance(ioc_raw, list):
+        return jsonify({"error": "threat_analytics and ioc must be arrays."}), 400
+
+    ta_clean = [r for r in (_coerce_threat_analytics_row(r) for r in ta_raw) if r]
+    ioc_clean = [r for r in (_coerce_ioc_row(r) for r in ioc_raw) if r]
+
+    try:
+        _write_advisory_file(os.path.join(d, "threat_analytics_advisories.json"), ta_clean)
+        _write_advisory_file(os.path.join(d, "ioc_advisories.json"), ioc_clean)
+    except Exception as e:
+        log.error("Advisory save failed for customer %s: %s", customer_id, e)
+        return jsonify({"error": f"Save failed: {e}"}), 500
+
+    return jsonify({
+        "ok": True,
+        "threat_analytics": ta_clean,
+        "ioc": ioc_clean,
+        "dropped_threat_analytics": len(ta_raw) - len(ta_clean),
+        "dropped_ioc": len(ioc_raw) - len(ioc_clean),
+    })

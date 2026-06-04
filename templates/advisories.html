@@ -1,0 +1,482 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Logicalis - Advisory Feeds</title>
+  <link rel="icon" type="image/x-icon" href="/static/favicon.ico">
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+    :root {
+      --bg-base: #F8FAFC; --bg-surface: #FFFFFF; --bg-raised: #F1F5F9;
+      --border: #E2E8F0; --text-primary: #1E293B; --text-muted: #64748B;
+      --accent: #2563EB; --accent-hover: #1D4ED8; --accent-light: #DBEAFE;
+      --success: #16A34A; --success-light: #DCFCE7;
+      --danger: #DC2626; --danger-light: #FEE2E2;
+      --warning: #D97706; --warning-light: #FEF3C7;
+      --shadow: 0 1px 3px rgba(0,0,0,0.08), 0 1px 2px rgba(0,0,0,0.06);
+      --radius: 8px; --radius-sm: 6px;
+    }
+    [data-theme="dark"] {
+      --bg-base: #1A1A2E; --bg-surface: #25253E; --bg-raised: #32324E;
+      --border: #3A3A5C; --text-primary: #E8E8F0; --text-muted: #9CA3C2;
+      --accent: #7C3AED; --accent-hover: #6D28D9; --accent-light: #2D2050;
+      --success: #34D399; --success-light: #1A3A2A;
+      --danger: #F87171; --danger-light: #3A1A1A;
+      --warning: #FBBF24; --warning-light: #3A2A0A;
+      --shadow: 0 1px 3px rgba(0,0,0,0.3), 0 1px 2px rgba(0,0,0,0.2);
+    }
+
+    body {
+      min-height: 100vh; background: var(--bg-base);
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', system-ui, sans-serif;
+      font-size: 15px; color: var(--text-primary);
+      transition: background 0.2s ease, color 0.2s ease;
+    }
+
+    .header {
+      background: var(--bg-surface); border-bottom: 1px solid var(--border);
+      padding: 12px 24px; display: flex; align-items: center; justify-content: space-between;
+      box-shadow: var(--shadow); position: sticky; top: 0; z-index: 100;
+    }
+    .header-left { display: flex; align-items: center; gap: 12px; }
+    .header-left img { height: 32px; transition: filter 0.2s ease; }
+    [data-theme="dark"] .header-left img { filter: brightness(0) invert(1); }
+    .header-left h1 { font-size: 18px; font-weight: 700; }
+    .header-right { display: flex; align-items: center; gap: 16px; }
+    .header-nav a {
+      color: var(--text-muted); text-decoration: none; font-size: 14px; font-weight: 500;
+      padding: 6px 12px; border-radius: var(--radius-sm); transition: all 0.2s;
+    }
+    .header-nav a:hover { color: var(--accent); background: var(--accent-light); }
+    .header-nav a.active { color: var(--accent); background: var(--accent-light); }
+
+    .theme-toggle {
+      background: var(--bg-raised); border: 1px solid var(--border); border-radius: 20px;
+      padding: 4px; cursor: pointer; display: flex; align-items: center; gap: 4px;
+    }
+    .theme-toggle span {
+      display: flex; align-items: center; justify-content: center;
+      width: 28px; height: 28px; border-radius: 50%; font-size: 14px; transition: all 0.2s;
+    }
+    .theme-toggle span.active { background: var(--accent); color: #fff; }
+
+    .btn-logout {
+      background: var(--bg-raised); border: 1px solid var(--border); color: var(--text-primary);
+      padding: 6px 14px; border-radius: var(--radius-sm); font-size: 13px; font-weight: 500;
+      cursor: pointer; transition: all 0.2s;
+    }
+    .btn-logout:hover { background: var(--danger-light); color: var(--danger); border-color: var(--danger); }
+
+    .main {
+      max-width: min(1200px, 100%); margin: 24px auto; padding: 0 24px;
+    }
+    .page-title { margin-bottom: 4px; font-size: 22px; font-weight: 700; }
+    .page-subtitle { color: var(--text-muted); font-size: 14px; margin-bottom: 20px; }
+
+    .card {
+      background: var(--bg-surface); border: 1px solid var(--border); border-radius: var(--radius);
+      box-shadow: var(--shadow); padding: 20px; margin-bottom: 16px;
+    }
+    .card h2 { font-size: 17px; font-weight: 600; margin-bottom: 12px; }
+    .card-hint {
+      font-size: 13px; color: var(--text-muted); margin-bottom: 12px; line-height: 1.5;
+    }
+
+    /* Customer picker grid */
+    .customer-grid {
+      display: grid; grid-template-columns: repeat(auto-fill, minmax(280px, 1fr)); gap: 12px;
+    }
+    .customer-tile {
+      background: var(--bg-raised); border: 1px solid var(--border); border-radius: var(--radius-sm);
+      padding: 14px 16px; cursor: pointer; transition: all 0.15s;
+      display: flex; flex-direction: column; gap: 8px;
+    }
+    .customer-tile:hover { border-color: var(--accent); background: var(--accent-light); }
+    .customer-tile.active { border-color: var(--accent); background: var(--accent-light); }
+    .customer-tile .name { font-weight: 600; font-size: 15px; }
+    .customer-tile .slug { font-size: 12px; color: var(--text-muted); font-family: monospace; }
+    .customer-tile .counts { display: flex; gap: 8px; flex-wrap: wrap; }
+    .badge {
+      display: inline-flex; align-items: center; gap: 4px;
+      padding: 2px 8px; border-radius: 10px; font-size: 11px; font-weight: 600;
+      background: var(--bg-surface); border: 1px solid var(--border); color: var(--text-muted);
+    }
+    .badge.has-data { background: var(--success-light); color: var(--success); border-color: var(--success); }
+    .badge.empty { background: var(--warning-light); color: var(--warning); border-color: var(--warning); }
+
+    /* Editor */
+    .editor-header {
+      display: flex; justify-content: space-between; align-items: center;
+      margin-bottom: 16px; flex-wrap: wrap; gap: 12px;
+    }
+    .editor-title { font-size: 18px; font-weight: 700; }
+    .editor-actions { display: flex; gap: 8px; }
+
+    .btn {
+      padding: 8px 16px; border-radius: var(--radius-sm); font-size: 14px; font-weight: 500;
+      cursor: pointer; border: 1px solid transparent; transition: all 0.15s;
+      display: inline-flex; align-items: center; gap: 6px;
+    }
+    .btn-primary { background: var(--accent); color: white; border-color: var(--accent); }
+    .btn-primary:hover:not(:disabled) { background: var(--accent-hover); border-color: var(--accent-hover); }
+    .btn-primary:disabled { opacity: 0.5; cursor: not-allowed; }
+    .btn-secondary { background: var(--bg-raised); color: var(--text-primary); border-color: var(--border); }
+    .btn-secondary:hover { background: var(--accent-light); border-color: var(--accent); color: var(--accent); }
+    .btn-danger { background: var(--bg-raised); color: var(--danger); border-color: var(--border); }
+    .btn-danger:hover { background: var(--danger-light); border-color: var(--danger); }
+    .btn-sm { padding: 4px 10px; font-size: 12px; }
+
+    /* Advisory table */
+    .advisory-table {
+      width: 100%; border-collapse: separate; border-spacing: 0;
+      border: 1px solid var(--border); border-radius: var(--radius-sm); overflow: hidden;
+    }
+    .advisory-table thead { background: var(--bg-raised); }
+    .advisory-table th {
+      padding: 10px 12px; text-align: left; font-size: 12px; font-weight: 600;
+      text-transform: uppercase; letter-spacing: 0.04em; color: var(--text-muted);
+      border-bottom: 1px solid var(--border);
+    }
+    .advisory-table td {
+      padding: 6px 8px; border-bottom: 1px solid var(--border); vertical-align: top;
+    }
+    .advisory-table tr:last-child td { border-bottom: none; }
+    .advisory-table input, .advisory-table select {
+      width: 100%; padding: 6px 8px; border: 1px solid transparent;
+      background: transparent; color: var(--text-primary); border-radius: var(--radius-sm);
+      font-family: inherit; font-size: 14px;
+    }
+    .advisory-table input:focus, .advisory-table select:focus {
+      outline: none; border-color: var(--accent); background: var(--bg-surface);
+    }
+    .col-actions { width: 60px; text-align: center; }
+    .empty-row td {
+      text-align: center; color: var(--text-muted); padding: 20px; font-style: italic;
+    }
+
+    .toast {
+      position: fixed; bottom: 24px; right: 24px;
+      padding: 12px 18px; border-radius: var(--radius); box-shadow: var(--shadow);
+      font-size: 14px; font-weight: 500; z-index: 9999;
+      display: none;
+    }
+    .toast.success { background: var(--success-light); color: var(--success); border: 1px solid var(--success); }
+    .toast.error { background: var(--danger-light); color: var(--danger); border: 1px solid var(--danger); }
+    .toast.show { display: block; animation: slideUp 0.2s ease; }
+    @keyframes slideUp {
+      from { transform: translateY(10px); opacity: 0; }
+      to { transform: translateY(0); opacity: 1; }
+    }
+
+    .schema-hint {
+      background: var(--bg-raised); border-left: 3px solid var(--accent);
+      padding: 10px 14px; border-radius: var(--radius-sm); margin-bottom: 14px;
+      font-size: 13px; color: var(--text-muted); line-height: 1.6;
+    }
+    .schema-hint code {
+      background: var(--bg-surface); padding: 1px 6px; border-radius: 3px;
+      font-size: 12px; color: var(--text-primary);
+    }
+  </style>
+</head>
+<body>
+  <div class="header">
+    <div class="header-left">
+      <a href="/reports/" style="display:flex; align-items:center; gap:12px; text-decoration:none; color:var(--text-primary);">
+        <img src="/static/Logo.webp" alt="Logicalis">
+        <h1>Advisory Feeds</h1>
+      </a>
+    </div>
+    <div class="header-right">
+      <nav class="header-nav">
+        <a href="/" title="Switch mode (back to SOC Platform launcher)">← Main</a>
+        <a href="/reports/">Reports</a>
+        <a href="/admin/customers">Manage Customers</a>
+        <a href="/admin/advisories" class="active">Advisories</a>
+        <a href="/admin/history">Report History</a>
+        <a href="/admin/schedules">Schedules</a>
+      </nav>
+      <div class="theme-toggle" onclick="toggleTheme()">
+        <span id="lightIcon" class="active">&#9788;</span>
+        <span id="darkIcon">&#9790;</span>
+      </div>
+      <form action="/auth/logout" method="POST" style="margin:0;">
+        <button type="submit" class="btn-logout">Sign Out</button>
+      </form>
+    </div>
+  </div>
+
+  <div class="main">
+    <h1 class="page-title">Advisory Feeds</h1>
+    <p class="page-subtitle">Manage per-customer threat-analytics and IOC advisories for §1.15, §1.17, and the Critical CVEs sub-section.</p>
+
+    <!-- Step 1: Customer picker -->
+    <div class="card" id="pickerCard">
+      <h2>Select a Customer</h2>
+      <p class="card-hint">Counts indicate how many advisory rows are currently stored for each customer.</p>
+      <div class="customer-grid" id="customerGrid">
+        <p style="grid-column: 1/-1; color: var(--text-muted); padding: 20px; text-align: center;">Loading customers…</p>
+      </div>
+    </div>
+
+    <!-- Step 2: Editor (hidden until a customer is picked) -->
+    <div id="editorWrapper" style="display:none;">
+      <div class="editor-header">
+        <div>
+          <div class="editor-title" id="editorTitle">—</div>
+          <div class="page-subtitle" id="editorSubtitle">—</div>
+        </div>
+        <div class="editor-actions">
+          <button class="btn btn-secondary" onclick="closeEditor()">Cancel</button>
+          <button class="btn btn-primary" id="saveBtn" onclick="saveAdvisories()">Save Changes</button>
+        </div>
+      </div>
+
+      <!-- Threat Analytics card -->
+      <div class="card">
+        <h2>Threat Analytics Advisories <span style="font-weight:400; color:var(--text-muted); font-size:14px;">— feeds §1.15 + Critical CVEs (CVE-* rows)</span></h2>
+        <div class="schema-hint">
+          One row per Microsoft Defender XDR Threat Analytics advisory hunted for this customer. Rows whose <code>threat</code> starts with <code>CVE-</code> also populate the Critical CVEs section. Example: <code>CVE-2025-54948 - Trend Micro Apex One</code>, <code>Vulnerability</code>, <code>2026-05-10</code>, <code>Nothing Found</code>.
+        </div>
+        <table class="advisory-table" id="taTable">
+          <thead>
+            <tr>
+              <th>Threat</th>
+              <th style="width:160px;">Report Type</th>
+              <th style="width:130px;">Published (YYYY-MM-DD)</th>
+              <th>Hunting Result</th>
+              <th class="col-actions">Actions</th>
+            </tr>
+          </thead>
+          <tbody id="taBody"></tbody>
+        </table>
+        <div style="margin-top:12px;">
+          <button class="btn btn-secondary btn-sm" onclick="addTaRow()">+ Add row</button>
+        </div>
+      </div>
+
+      <!-- IOC card -->
+      <div class="card">
+        <h2>IOC Advisories <span style="font-weight:400; color:var(--text-muted); font-size:14px;">— feeds §1.17 Part A</span></h2>
+        <div class="schema-hint">
+          One row per external advisory forwarded for hunting (e.g. MASNET MAS-Tx circulars, ISAC bulletins). Example: <code>[MAS-Tx] FINTEL-2026-0227-01 ...</code>, <code>2026-02-02</code>, <code>No Hits for the IOCs in Customer Environment</code>.
+        </div>
+        <table class="advisory-table" id="iocTable">
+          <thead>
+            <tr>
+              <th>Advisory</th>
+              <th style="width:130px;">Date (YYYY-MM-DD)</th>
+              <th>Hunt Outcome</th>
+              <th class="col-actions">Actions</th>
+            </tr>
+          </thead>
+          <tbody id="iocBody"></tbody>
+        </table>
+        <div style="margin-top:12px;">
+          <button class="btn btn-secondary btn-sm" onclick="addIocRow()">+ Add row</button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div id="toast" class="toast"></div>
+
+  <script>
+    // ── Theme toggle (mirrors customers.html) ────────────────────────────────
+    function applyTheme(theme) {
+      document.documentElement.setAttribute('data-theme', theme);
+      localStorage.setItem('theme', theme);
+      document.getElementById('lightIcon').classList.toggle('active', theme === 'light');
+      document.getElementById('darkIcon').classList.toggle('active', theme === 'dark');
+    }
+    function toggleTheme() {
+      const current = document.documentElement.getAttribute('data-theme') || 'light';
+      applyTheme(current === 'light' ? 'dark' : 'light');
+    }
+    applyTheme(localStorage.getItem('theme') || 'light');
+
+    // ── State ────────────────────────────────────────────────────────────────
+    let selectedCustomerId = null;
+    let taRows = []; // current threat_analytics state
+    let iocRows = []; // current ioc state
+
+    // ── HTML helpers ─────────────────────────────────────────────────────────
+    function escapeAttr(s) {
+      return String(s || '').replace(/&/g, '&amp;').replace(/"/g, '&quot;').replace(/'/g, '&#39;');
+    }
+
+    function toast(msg, kind = 'success') {
+      const t = document.getElementById('toast');
+      t.textContent = msg;
+      t.className = 'toast show ' + kind;
+      setTimeout(() => { t.className = 'toast'; }, 3500);
+    }
+
+    // ── Customer picker ──────────────────────────────────────────────────────
+    async function loadCustomers() {
+      try {
+        const r = await fetch('/admin/api/advisories');
+        const customers = await r.json();
+        const grid = document.getElementById('customerGrid');
+        if (!customers.length) {
+          grid.innerHTML = '<p style="grid-column:1/-1; color:var(--text-muted); padding:20px; text-align:center;">No customers configured yet. Add one under Manage Customers first.</p>';
+          return;
+        }
+        grid.innerHTML = customers.map(c => {
+          const taBadge = c.threat_analytics_count > 0
+            ? `<span class="badge has-data">${c.threat_analytics_count} TA</span>`
+            : `<span class="badge empty">0 TA</span>`;
+          const iocBadge = c.ioc_count > 0
+            ? `<span class="badge has-data">${c.ioc_count} IOC</span>`
+            : `<span class="badge empty">0 IOC</span>`;
+          return `
+            <div class="customer-tile" data-id="${escapeAttr(c.id)}" onclick="openEditor('${escapeAttr(c.id)}')">
+              <div>
+                <div class="name">${escapeAttr(c.name)} ${c.short_name ? `<span style="color:var(--text-muted); font-weight:400;">(${escapeAttr(c.short_name)})</span>` : ''}</div>
+                <div class="slug">data/${escapeAttr(c.slug)}/</div>
+              </div>
+              <div class="counts">${taBadge} ${iocBadge}</div>
+            </div>
+          `;
+        }).join('');
+      } catch (e) {
+        toast('Failed to load customers: ' + e, 'error');
+      }
+    }
+
+    // ── Editor ───────────────────────────────────────────────────────────────
+    async function openEditor(customerId) {
+      selectedCustomerId = customerId;
+      document.querySelectorAll('.customer-tile').forEach(el => el.classList.toggle('active', el.dataset.id === customerId));
+      try {
+        const r = await fetch(`/admin/api/advisories/${customerId}`);
+        if (!r.ok) {
+          const err = await r.json();
+          toast('Failed to load: ' + (err.error || r.statusText), 'error');
+          return;
+        }
+        const data = await r.json();
+        taRows = Array.isArray(data.threat_analytics) ? data.threat_analytics.slice() : [];
+        iocRows = Array.isArray(data.ioc) ? data.ioc.slice() : [];
+        document.getElementById('editorTitle').textContent = data.customer_name;
+        document.getElementById('editorSubtitle').textContent = `Slug: ${data.slug} — ${taRows.length} threat analytics, ${iocRows.length} IOC rows`;
+        renderTaTable();
+        renderIocTable();
+        document.getElementById('editorWrapper').style.display = '';
+        document.getElementById('editorWrapper').scrollIntoView({ behavior: 'smooth', block: 'start' });
+      } catch (e) {
+        toast('Failed to load advisories: ' + e, 'error');
+      }
+    }
+
+    function closeEditor() {
+      selectedCustomerId = null;
+      taRows = [];
+      iocRows = [];
+      document.getElementById('editorWrapper').style.display = 'none';
+      document.querySelectorAll('.customer-tile').forEach(el => el.classList.remove('active'));
+      loadCustomers(); // refresh counts
+    }
+
+    function renderTaTable() {
+      const body = document.getElementById('taBody');
+      if (!taRows.length) {
+        body.innerHTML = `<tr class="empty-row"><td colspan="5">No threat analytics advisories yet. Click "+ Add row" to enter one.</td></tr>`;
+        return;
+      }
+      body.innerHTML = taRows.map((r, i) => `
+        <tr>
+          <td><input type="text" value="${escapeAttr(r.threat)}" placeholder="CVE-2026-XXXXX - Product Name" oninput="taRows[${i}].threat = this.value"></td>
+          <td>
+            <select onchange="taRows[${i}].report_type = this.value">
+              <option value="" ${!r.report_type ? 'selected' : ''}>—</option>
+              <option value="Vulnerability" ${r.report_type === 'Vulnerability' ? 'selected' : ''}>Vulnerability</option>
+              <option value="Threat Actor" ${r.report_type === 'Threat Actor' ? 'selected' : ''}>Threat Actor</option>
+              <option value="Activity Group" ${r.report_type === 'Activity Group' ? 'selected' : ''}>Activity Group</option>
+              <option value="Tool" ${r.report_type === 'Tool' ? 'selected' : ''}>Tool</option>
+              <option value="Tactic" ${r.report_type === 'Tactic' ? 'selected' : ''}>Tactic</option>
+              <option value="Other" ${r.report_type === 'Other' ? 'selected' : ''}>Other</option>
+            </select>
+          </td>
+          <td><input type="date" value="${escapeAttr(r.published)}" oninput="taRows[${i}].published = this.value"></td>
+          <td><input type="text" value="${escapeAttr(r.hunting_result)}" placeholder="Nothing Found / Patched / Detection in place" oninput="taRows[${i}].hunting_result = this.value"></td>
+          <td class="col-actions"><button class="btn btn-danger btn-sm" onclick="deleteTaRow(${i})">Delete</button></td>
+        </tr>
+      `).join('');
+    }
+
+    function renderIocTable() {
+      const body = document.getElementById('iocBody');
+      if (!iocRows.length) {
+        body.innerHTML = `<tr class="empty-row"><td colspan="4">No IOC advisories yet. Click "+ Add row" to enter one.</td></tr>`;
+        return;
+      }
+      body.innerHTML = iocRows.map((r, i) => `
+        <tr>
+          <td><input type="text" value="${escapeAttr(r.advisory)}" placeholder="[MAS-Tx] Circular title or advisory identifier" oninput="iocRows[${i}].advisory = this.value"></td>
+          <td><input type="date" value="${escapeAttr(r.date)}" oninput="iocRows[${i}].date = this.value"></td>
+          <td><input type="text" value="${escapeAttr(r.hunt_outcome)}" placeholder="No Hits / N IOCs detected / etc." oninput="iocRows[${i}].hunt_outcome = this.value"></td>
+          <td class="col-actions"><button class="btn btn-danger btn-sm" onclick="deleteIocRow(${i})">Delete</button></td>
+        </tr>
+      `).join('');
+    }
+
+    function addTaRow() {
+      taRows.push({ threat: '', report_type: '', published: '', hunting_result: '' });
+      renderTaTable();
+    }
+    function deleteTaRow(i) {
+      taRows.splice(i, 1);
+      renderTaTable();
+    }
+    function addIocRow() {
+      iocRows.push({ advisory: '', date: '', hunt_outcome: '' });
+      renderIocTable();
+    }
+    function deleteIocRow(i) {
+      iocRows.splice(i, 1);
+      renderIocTable();
+    }
+
+    async function saveAdvisories() {
+      if (!selectedCustomerId) return;
+      const btn = document.getElementById('saveBtn');
+      btn.disabled = true;
+      const original = btn.textContent;
+      btn.textContent = 'Saving…';
+      try {
+        const r = await fetch(`/admin/api/advisories/${selectedCustomerId}`, {
+          method: 'PUT',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ threat_analytics: taRows, ioc: iocRows }),
+        });
+        const result = await r.json();
+        if (!r.ok) {
+          toast('Save failed: ' + (result.error || r.statusText), 'error');
+          return;
+        }
+        // Update local state with server-cleaned rows.
+        taRows = result.threat_analytics || [];
+        iocRows = result.ioc || [];
+        renderTaTable();
+        renderIocTable();
+        const drops = (result.dropped_threat_analytics || 0) + (result.dropped_ioc || 0);
+        const msg = drops > 0
+          ? `Saved. ${drops} row${drops === 1 ? '' : 's'} dropped (missing required field).`
+          : `Saved ${taRows.length + iocRows.length} advisory row${(taRows.length + iocRows.length) === 1 ? '' : 's'}.`;
+        toast(msg);
+      } catch (e) {
+        toast('Save failed: ' + e, 'error');
+      } finally {
+        btn.disabled = false;
+        btn.textContent = original;
+      }
+    }
+
+    // ── Boot ─────────────────────────────────────────────────────────────────
+    loadCustomers();
+  </script>
+</body>
+</html>
