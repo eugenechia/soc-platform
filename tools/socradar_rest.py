@@ -108,6 +108,17 @@ def _api_key_company() -> str:
             or os.environ.get("SOCRADAR_IOC_ENRICHMENT_KEY", ""))
 
 
+def _api_key_cve_intel() -> str:
+    """Key for /vulnerability/search_vulnerabilities/v2 — the CTI Vulnerability
+    Intelligence endpoint. Path confirmed 2026-06-04 via SOCRadar dashboard
+    network inspection.
+
+    SOCRadar product: 'CTI Vulnerability Intelligence'."""
+    from tools.secrets import get_secret
+    return (get_secret("SOCRADAR_CTI_VULNERABILITY_KEY")
+            or os.environ.get("SOCRADAR_CTI_VULNERABILITY_KEY", ""))
+
+
 def _api_key_dark_web() -> str:
     """Key for /company/{id}/dark-web-monitoring/* — labelled `Identity Intelligence API`."""
     from tools.secrets import get_secret
@@ -193,10 +204,53 @@ def _fetch_threat_actors(company_id: str) -> list[dict]:
 
 
 def _fetch_cve_intel(start_date: str, end_date: str) -> list[dict]:
-    """CVE / vulnerability intel. NOT YET WIRED — same gap as
-    `_fetch_threat_actors`. Key staged as SOCRADAR_CTI_VULNERABILITY_KEY."""
-    logger.info("SOCRadar cve_intel: endpoint not yet confirmed — returning []")
-    return []
+    """CTI Vulnerability Intelligence — critical CVEs scoped to the customer's
+    tenant. Endpoint path confirmed 2026-06-04 via SOCRadar dashboard network
+    inspection: GET /api/vulnerability/search_vulnerabilities/v2.
+
+    Query parameters are NOT YET CONFIRMED — best-guess based on SOCRadar's
+    consistent pattern across other v2/v4 endpoints (start_date / end_date /
+    limit, all standard YYYY-MM-DD strings). The first call after deploy
+    logs the raw response envelope keys + the first row's keys at INFO so
+    we can refine the field mapping without another network-inspector trip.
+
+    Returns up to 50 raw rows. Field normalisation into the report's advisory
+    shape happens downstream in routes/reports.py `_build_report_context` —
+    see `_socradar_cve_to_advisory_row` — so we don't lock the shape here
+    while we're still discovering it."""
+    api_key = _api_key_cve_intel()
+    if not api_key:
+        logger.info(
+            "SOCRadar cve_intel: no SOCRADAR_CTI_VULNERABILITY_KEY configured — "
+            "skipping (Critical CVEs will fall back to customer_advisories)"
+        )
+        return []
+    raw = _get(
+        "vulnerability/search_vulnerabilities/v2",
+        api_key=api_key,
+        params={"start_date": start_date, "end_date": end_date, "limit": 50},
+    )
+    if raw is None:
+        # _get already logged HTTP status / exception detail; nothing more
+        # for us to add here. The 404 path will surface if our params guess
+        # is wrong — switch to no-params or POST-body once logs confirm.
+        return []
+    logger.info(
+        "SOCRadar cve_intel raw envelope: top-level keys=%s",
+        list(raw.keys()) if isinstance(raw, dict) else type(raw).__name__,
+    )
+    rows = _extract_data_list(raw)
+    if rows and isinstance(rows[0], dict):
+        logger.info(
+            "SOCRadar cve_intel first row keys: %s (returned %d rows)",
+            list(rows[0].keys()), len(rows),
+        )
+    else:
+        logger.info("SOCRadar cve_intel returned %d rows", len(rows))
+    # Cap at 50 to keep the LLM-fed payload small. SOCRadar's CTI vuln feed
+    # can return hundreds for a busy month — the report's Critical CVEs
+    # table is an executive view, not a complete dump.
+    return rows[:50]
 
 
 def _fetch_dark_web_alarms(company_id: str, start_date: str, end_date: str) -> list[dict]:

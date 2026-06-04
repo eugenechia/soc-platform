@@ -375,6 +375,75 @@ def _render_pending_summary_html(derived: dict) -> str:
     )
 
 
+def _extract_cve_id(text: str) -> str:
+    """Pull a CVE-YYYY-NNNN identifier out of an arbitrary string. Returns
+    the upper-cased ID or empty string. Used for deduping rows sourced
+    from SOCRadar's API against customer-entered advisories."""
+    import re as _re
+    m = _re.search(r"CVE-\d{4}-\d{4,7}", (text or ""), _re.IGNORECASE)
+    return m.group(0).upper() if m else ""
+
+
+def _socradar_cve_to_advisory_row(row: dict) -> dict | None:
+    """Translate one SOCRadar CTI Vulnerability row into our advisory schema.
+
+    SOCRadar's response field names are NOT YET confirmed — the discovery
+    log in `tools.socradar_rest._fetch_cve_intel` dumps the first row's keys
+    on every call so we can iterate. This helper is defensive: it tries
+    several plausible field names for each output field and skips the row
+    if no recognisable CVE identifier can be extracted.
+
+    Output schema matches threat_analytics_advisories.json rows so the
+    Critical CVEs section can render uniformly regardless of source.
+    """
+    if not isinstance(row, dict):
+        return None
+
+    # CVE ID — try common SOCRadar field names plus a regex fallback.
+    cve_id = ""
+    for field in ("cve_id", "cve", "id", "name", "vulnerability_id"):
+        candidate = (row.get(field) or "")
+        if isinstance(candidate, str) and candidate.upper().startswith("CVE-"):
+            cve_id = candidate.strip()
+            break
+    if not cve_id:
+        # Last-ditch: regex-extract from any string field.
+        for value in row.values():
+            if isinstance(value, str):
+                m = _extract_cve_id(value)
+                if m:
+                    cve_id = m
+                    break
+    if not cve_id:
+        return None  # not a CVE row — skip
+
+    # Affected product / vendor — for the "threat" title.
+    products = (
+        row.get("affected_products") or row.get("products")
+        or row.get("vendor") or row.get("product") or row.get("title") or ""
+    )
+    if isinstance(products, list):
+        products = ", ".join(str(p) for p in products[:3])
+    products = str(products).strip()
+
+    threat = f"{cve_id} - {products}" if products else cve_id
+
+    # Published date — multiple plausible field names.
+    published = ""
+    for field in ("published_date", "published", "publish_date", "date", "created_at", "first_seen"):
+        candidate = row.get(field)
+        if candidate:
+            published = str(candidate)[:10]
+            break
+
+    return {
+        "threat": threat,
+        "report_type": "Vulnerability",
+        "published": published,
+        "hunting_result": "Sourced from SOCRadar CTI Vulnerability Intelligence — analyst to update after hunting",
+    }
+
+
 def _compute_mom_from_history(history: dict, end_date_str: str, value_key: str = "value") -> dict:
     """Compute a MoM delta from a {YYYY-MM: number} dict, anchored to end_date.
 
@@ -602,7 +671,7 @@ Start with a top-level heading "## Section 1. Executive Summary"
 
 **### 1.1. Introduction** (if "introduction" is selected)
 Write 2-3 paragraphs:
-- First paragraph: "Logicalis is excited & honoured to share monthly report for {customer_name}, prepared by GSOC – our cybersecurity expert team. It provides data and information on activity observed during [month year]."
+- First paragraph: "Logicalis is pleased to share this monthly service report for {customer_name}, prepared by GSOC – our cybersecurity expert team. It provides data and information on activity observed during [month year]."
 - Briefly describe what the report covers: incident triage, threat intelligence, monitoring status
 - Mention the reporting period
 
@@ -1534,19 +1603,47 @@ def _build_report_context(data: dict, config: dict) -> dict:
 
     advisories_raw = data.get("customer_advisories", {}) or {}
     _ta_rows = advisories_raw.get("threat_analytics", []) or []
-    # Pre-filter the threat_analytics list for CVE-prefixed rows so the
-    # "Critical CVEs" sub-section of the SOCRadar Threat Intelligence block
-    # (and §1.20) have a clean source. Historically Critical CVEs was sourced
-    # from `socradar.cve_intel`, but that endpoint is stubbed in
-    # tools/socradar_rest.py (SOCRadar API path not publicly documented).
-    # Customer/GSOC-supplied CVE advisories live in
-    # data/{customer-slug}/threat_analytics_advisories.json and are the actual
-    # canonical source of vulnerability hunting data for the report.
+    # Build the canonical Critical CVEs list as the UNION of two sources:
+    #
+    #   1. Manually-entered customer advisories — rows in
+    #      data/{customer-slug}/threat_analytics_advisories.json whose
+    #      `threat` field starts with "CVE-". These are richer because
+    #      analysts add hunting_result context after running the hunt.
+    #
+    #   2. SOCRadar CTI Vulnerability Intelligence API — auto-pulled live
+    #      via /api/vulnerability/search_vulnerabilities/v2 (endpoint
+    #      confirmed 2026-06-04 via dashboard network inspection). Field
+    #      names in the response are still being discovered; the translation
+    #      helper below tries several common SOCRadar conventions and falls
+    #      back gracefully when fields are missing.
+    #
+    # Dedup is by CVE ID — if the same CVE appears in both, the manually
+    # entered row wins (it has hunting_result). The API rows fill in CVEs
+    # the team has surfaced from SOCRadar but not yet entered into the
+    # advisory file.
     _cve_rows = [
         r for r in _ta_rows
         if isinstance(r, dict)
         and (r.get("threat") or "").strip().upper().startswith("CVE-")
     ]
+    _socradar_cves_raw = (data.get("socradar") or {}).get("cve_intel", []) or []
+    _socradar_advisory_rows = [
+        translated for translated in (
+            _socradar_cve_to_advisory_row(r) for r in _socradar_cves_raw
+        )
+        if translated is not None
+    ]
+    # Dedup: keep customer-entered rows for any CVE ID that appears in both.
+    _seen_cve_ids = set()
+    for r in _cve_rows:
+        cve_id = _extract_cve_id(r.get("threat", ""))
+        if cve_id:
+            _seen_cve_ids.add(cve_id)
+    for r in _socradar_advisory_rows:
+        cve_id = _extract_cve_id(r.get("threat", ""))
+        if cve_id and cve_id not in _seen_cve_ids:
+            _cve_rows.append(r)
+            _seen_cve_ids.add(cve_id)
     customer_advisories_data = {
         "threat_analytics": _ta_rows,
         "ioc": advisories_raw.get("ioc", []) or [],
