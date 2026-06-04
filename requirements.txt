@@ -16,6 +16,11 @@ Markdown>=3.5
 beautifulsoup4>=4.12.0
 Pillow>=10.0.0
 
+# Advisory upload — extract text from .msg / .eml / .pdf / .docx attachments
+# for AI-assisted advisory entry on /admin/advisories.
+extract-msg>=0.48.0
+pypdf>=4.0.0
+
 # Charts
 matplotlib>=3.8.0
 python-dateutil>=2.8.0

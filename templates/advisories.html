@@ -179,6 +179,62 @@
       background: var(--bg-surface); padding: 1px 6px; border-radius: 3px;
       font-size: 12px; color: var(--text-primary);
     }
+
+    /* Modal */
+    .modal-overlay {
+      position: fixed; inset: 0; background: rgba(0, 0, 0, 0.5);
+      display: none; align-items: center; justify-content: center; z-index: 200;
+      padding: 24px;
+    }
+    .modal-overlay.show { display: flex; }
+    .modal {
+      background: var(--bg-surface); border-radius: var(--radius); box-shadow: 0 10px 30px rgba(0,0,0,0.2);
+      width: 100%; max-width: 900px; max-height: 90vh; display: flex; flex-direction: column;
+    }
+    .modal-header {
+      padding: 16px 20px; border-bottom: 1px solid var(--border);
+      display: flex; justify-content: space-between; align-items: center;
+    }
+    .modal-header h3 { font-size: 17px; font-weight: 700; }
+    .modal-header .close {
+      background: none; border: none; cursor: pointer; font-size: 22px;
+      color: var(--text-muted); padding: 0; width: 28px; height: 28px;
+    }
+    .modal-body { padding: 16px 20px; overflow-y: auto; flex: 1; }
+    .modal-footer {
+      padding: 14px 20px; border-top: 1px solid var(--border);
+      display: flex; justify-content: space-between; align-items: center; gap: 12px;
+    }
+    .modal-footer .summary { color: var(--text-muted); font-size: 13px; }
+
+    .candidate-row {
+      background: var(--bg-raised); border: 1px solid var(--border); border-radius: var(--radius-sm);
+      padding: 12px 14px; margin-bottom: 10px;
+      display: grid; grid-template-columns: auto 1fr auto; gap: 12px; align-items: start;
+    }
+    .candidate-row.dropped { opacity: 0.4; }
+    .candidate-row .check { padding-top: 4px; }
+    .candidate-row .fields { display: grid; gap: 8px; }
+    .candidate-row .fields .row { display: grid; grid-template-columns: 120px 1fr; gap: 8px; align-items: center; }
+    .candidate-row .fields label { font-size: 12px; color: var(--text-muted); font-weight: 600; text-transform: uppercase; letter-spacing: 0.04em; }
+    .candidate-row .fields input, .candidate-row .fields select {
+      padding: 6px 8px; border: 1px solid var(--border); background: var(--bg-surface);
+      color: var(--text-primary); border-radius: var(--radius-sm); font-family: inherit; font-size: 14px;
+    }
+    .candidate-row .fields input:focus, .candidate-row .fields select:focus {
+      outline: none; border-color: var(--accent);
+    }
+
+    .uploading-overlay {
+      display: none; align-items: center; gap: 10px;
+      color: var(--text-muted); font-size: 14px; margin-left: 12px;
+    }
+    .uploading-overlay.show { display: inline-flex; }
+    .spinner {
+      width: 16px; height: 16px; border: 2px solid var(--border); border-top-color: var(--accent);
+      border-radius: 50%; animation: spin 0.8s linear infinite;
+    }
+    @keyframes spin { to { transform: rotate(360deg); } }
   </style>
 </head>
 <body>
@@ -252,8 +308,21 @@
           </thead>
           <tbody id="taBody"></tbody>
         </table>
-        <div style="margin-top:12px;">
+        <div style="margin-top:12px; display:flex; align-items:center; flex-wrap:wrap; gap:8px;">
           <button class="btn btn-secondary btn-sm" onclick="addTaRow()">+ Add row</button>
+          <button class="btn btn-secondary btn-sm" onclick="document.getElementById('uploadInput').click()">
+            ⬆ Upload advisory file (.msg, .eml, .pdf, .docx, .txt, .html)
+          </button>
+          <input type="file" id="uploadInput" style="display:none;"
+                 accept=".msg,.eml,.pdf,.docx,.txt,.html,.htm,.md"
+                 onchange="handleUpload(event)">
+          <span id="uploadStatus" class="uploading-overlay">
+            <span class="spinner"></span>
+            <span id="uploadStatusText">Extracting…</span>
+          </span>
+        </div>
+        <div style="margin-top:6px; font-size:12px; color:var(--text-muted);">
+          AI extracts candidate advisories from the file; you review and select which to add before saving.
         </div>
       </div>
 
@@ -276,6 +345,26 @@
         </table>
         <div style="margin-top:12px;">
           <button class="btn btn-secondary btn-sm" onclick="addIocRow()">+ Add row</button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Upload-preview modal -->
+  <div id="uploadModal" class="modal-overlay" onclick="if(event.target===this) closeUploadModal()">
+    <div class="modal">
+      <div class="modal-header">
+        <h3 id="modalTitle">Review extracted advisories</h3>
+        <button class="close" onclick="closeUploadModal()">&times;</button>
+      </div>
+      <div class="modal-body" id="modalBody">
+        <!-- candidate rows injected here -->
+      </div>
+      <div class="modal-footer">
+        <div class="summary" id="modalSummary">—</div>
+        <div style="display:flex; gap:8px;">
+          <button class="btn btn-secondary" onclick="closeUploadModal()">Cancel</button>
+          <button class="btn btn-primary" id="addSelectedBtn" onclick="addSelectedCandidates()">Add to advisories</button>
         </div>
       </div>
     </div>
@@ -473,6 +562,133 @@
         btn.disabled = false;
         btn.textContent = original;
       }
+    }
+
+    // ── File upload + AI extraction ──────────────────────────────────────────
+    let candidates = [];           // current extracted candidates
+    let candidateChecked = [];     // parallel array of booleans (true = will add)
+
+    async function handleUpload(event) {
+      const file = event.target.files[0];
+      if (!file) return;
+      if (!selectedCustomerId) {
+        toast('Pick a customer first.', 'error');
+        event.target.value = '';
+        return;
+      }
+      const status = document.getElementById('uploadStatus');
+      const statusText = document.getElementById('uploadStatusText');
+      status.classList.add('show');
+      statusText.textContent = `Extracting from ${file.name}…`;
+
+      const formData = new FormData();
+      formData.append('file', file);
+
+      try {
+        const r = await fetch(`/admin/api/advisories/${selectedCustomerId}/upload`, {
+          method: 'POST',
+          body: formData,
+        });
+        const result = await r.json();
+        if (!r.ok) {
+          toast('Upload failed: ' + (result.error || r.statusText), 'error');
+          return;
+        }
+        candidates = result.candidates || [];
+        candidateChecked = candidates.map(() => true);  // default all selected
+        if (!candidates.length) {
+          const msg = result.warning
+            ? result.warning
+            : 'AI found no advisories in this file. You can still add rows manually.';
+          toast(msg, 'error');
+          return;
+        }
+        document.getElementById('modalTitle').textContent =
+          `${candidates.length} advisor${candidates.length === 1 ? 'y' : 'ies'} extracted from ${result.filename}`;
+        renderCandidates();
+        document.getElementById('uploadModal').classList.add('show');
+      } catch (e) {
+        toast('Upload failed: ' + e, 'error');
+      } finally {
+        status.classList.remove('show');
+        // Reset the input so the same file can be re-uploaded if needed.
+        event.target.value = '';
+      }
+    }
+
+    function renderCandidates() {
+      const body = document.getElementById('modalBody');
+      body.innerHTML = candidates.map((c, i) => `
+        <div class="candidate-row ${candidateChecked[i] ? '' : 'dropped'}" id="candidate-${i}">
+          <div class="check">
+            <input type="checkbox" ${candidateChecked[i] ? 'checked' : ''}
+                   onchange="toggleCandidate(${i}, this.checked)">
+          </div>
+          <div class="fields">
+            <div class="row">
+              <label>Threat</label>
+              <input type="text" value="${escapeAttr(c.threat)}"
+                     oninput="candidates[${i}].threat = this.value">
+            </div>
+            <div class="row">
+              <label>Report Type</label>
+              <select onchange="candidates[${i}].report_type = this.value">
+                <option value="Vulnerability" ${c.report_type === 'Vulnerability' ? 'selected' : ''}>Vulnerability</option>
+                <option value="Threat Actor" ${c.report_type === 'Threat Actor' ? 'selected' : ''}>Threat Actor</option>
+                <option value="Activity Group" ${c.report_type === 'Activity Group' ? 'selected' : ''}>Activity Group</option>
+                <option value="Tool" ${c.report_type === 'Tool' ? 'selected' : ''}>Tool</option>
+                <option value="Tactic" ${c.report_type === 'Tactic' ? 'selected' : ''}>Tactic</option>
+                <option value="Other" ${c.report_type === 'Other' ? 'selected' : ''}>Other</option>
+              </select>
+            </div>
+            <div class="row">
+              <label>Published</label>
+              <input type="date" value="${escapeAttr(c.published)}"
+                     oninput="candidates[${i}].published = this.value">
+            </div>
+            <div class="row">
+              <label>Hunting Result</label>
+              <input type="text" value="${escapeAttr(c.hunting_result)}"
+                     placeholder="Fill in after running the hunt"
+                     oninput="candidates[${i}].hunting_result = this.value">
+            </div>
+          </div>
+          <div></div>
+        </div>
+      `).join('');
+      updateSummary();
+    }
+
+    function toggleCandidate(i, checked) {
+      candidateChecked[i] = checked;
+      document.getElementById(`candidate-${i}`).classList.toggle('dropped', !checked);
+      updateSummary();
+    }
+
+    function updateSummary() {
+      const total = candidates.length;
+      const selected = candidateChecked.filter(Boolean).length;
+      document.getElementById('modalSummary').textContent =
+        `${selected} of ${total} selected to add. They merge into the Threat Analytics table; you still click Save Changes to persist.`;
+      document.getElementById('addSelectedBtn').disabled = selected === 0;
+    }
+
+    function closeUploadModal() {
+      document.getElementById('uploadModal').classList.remove('show');
+      candidates = [];
+      candidateChecked = [];
+    }
+
+    function addSelectedCandidates() {
+      const toAdd = candidates.filter((_, i) => candidateChecked[i]);
+      if (!toAdd.length) {
+        toast('Nothing selected.', 'error');
+        return;
+      }
+      taRows = taRows.concat(toAdd);
+      renderTaTable();
+      closeUploadModal();
+      toast(`Added ${toAdd.length} candidate${toAdd.length === 1 ? '' : 's'}. Click Save Changes to persist.`);
     }
 
     // ── Boot ─────────────────────────────────────────────────────────────────

@@ -2,6 +2,7 @@
 Admin blueprint — customers, schedules, report history.
 """
 import os
+import re
 import json
 import uuid
 import zipfile
@@ -785,6 +786,94 @@ def api_advisories_get(customer_id):
         "slug": _customer_slug(customer.get("name", "")),
         "threat_analytics": _read_advisory_file(os.path.join(d, "threat_analytics_advisories.json")),
         "ioc": _read_advisory_file(os.path.join(d, "ioc_advisories.json")),
+    })
+
+
+@admin_bp.route("/api/advisories/<customer_id>/upload", methods=["POST"])
+@require_login
+def api_advisories_upload(customer_id):
+    """Accept a single uploaded file (.msg / .eml / .pdf / .docx / .txt /
+    .html / .md), persist it under data/{slug}/uploads/, extract text, run
+    the LLM extractor, and return the candidate advisory rows for the
+    analyst to review in the modal.
+
+    The persisted file gives an audit trail — if the AI misses something the
+    analyst can re-open the source. The rows are NOT added to the advisory
+    file here; the frontend gets the candidates, the analyst confirms what
+    to keep, then triggers the existing PUT /api/advisories/<id> to save.
+    """
+    from tools.advisory_extractor import (
+        SUPPORTED_EXTENSIONS, is_supported, extract_text,
+        extract_advisories_with_ai,
+    )
+
+    customer = next((c for c in _load_customers() if c.get("id") == customer_id), None)
+    if not customer:
+        return jsonify({"error": "Customer not found."}), 404
+    d = _advisory_dir(customer.get("name", ""))
+    if not d:
+        return jsonify({"error": "Customer has no resolvable slug."}), 400
+
+    upload = request.files.get("file")
+    if not upload or not upload.filename:
+        return jsonify({"error": "No file uploaded."}), 400
+    filename = upload.filename
+    if not is_supported(filename):
+        return jsonify({
+            "error": (
+                f"Unsupported file type. Allowed: "
+                f"{', '.join(sorted('.' + ext for ext in SUPPORTED_EXTENSIONS))}"
+            ),
+        }), 400
+
+    data = upload.read()
+    if not data:
+        return jsonify({"error": "Uploaded file is empty."}), 400
+    # 25 MB hard cap. A typical advisory PDF is ~500 KB; .msg with embedded
+    # images can be a few MB. 25 MB catches the absurd-mistake bucket
+    # (someone uploaded a backup zip) without hurting legitimate use.
+    if len(data) > 25 * 1024 * 1024:
+        return jsonify({"error": "File exceeds 25 MB limit."}), 400
+
+    # Persist the original under data/{slug}/uploads/{timestamp}-{safename}
+    safe_name = re.sub(r"[^A-Za-z0-9._-]+", "_", filename)
+    timestamp = datetime.now().strftime("%Y%m%d-%H%M%S")
+    uploads_dir = os.path.join(d, "uploads")
+    os.makedirs(uploads_dir, exist_ok=True)
+    saved_path = os.path.join(uploads_dir, f"{timestamp}-{safe_name}")
+    try:
+        with open(saved_path, "wb") as f:
+            f.write(data)
+    except OSError as exc:
+        log.error("Failed to persist uploaded file %s: %s", saved_path, exc)
+        # Non-fatal — keep going so the user at least gets extraction
+        # results even if the audit-trail copy didn't save.
+        saved_path = None
+
+    # Extract text + run AI extractor.
+    try:
+        text = extract_text(data, filename)
+    except Exception as exc:
+        log.error("Text extraction failed for %s: %s", filename, exc, exc_info=True)
+        return jsonify({"error": f"Could not extract text from file: {exc}"}), 422
+
+    if not text.strip():
+        return jsonify({
+            "ok": True,
+            "filename": filename,
+            "stored_at": os.path.basename(saved_path) if saved_path else None,
+            "extracted_text_length": 0,
+            "candidates": [],
+            "warning": "No text was extracted from the file.",
+        })
+
+    candidates = extract_advisories_with_ai(text)
+    return jsonify({
+        "ok": True,
+        "filename": filename,
+        "stored_at": os.path.basename(saved_path) if saved_path else None,
+        "extracted_text_length": len(text),
+        "candidates": candidates,
     })
 
 
