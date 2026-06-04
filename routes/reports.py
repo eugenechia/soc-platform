@@ -384,30 +384,50 @@ def _extract_cve_id(text: str) -> str:
     return m.group(0).upper() if m else ""
 
 
+def _parse_cpe_vendor_product(cpe: str) -> str:
+    """Extract "Vendor Product" from a CPE 2.3 string. SOCRadar returns CPEs
+    like `cpe:2.3:a:apache:log4j:2.0:*:*:*:*:*:*:*` — segments are
+    colon-separated, parts [3] and [4] are vendor and product. Returns
+    empty string on any malformed input."""
+    if not isinstance(cpe, str) or not cpe.startswith("cpe:"):
+        return ""
+    parts = cpe.split(":")
+    if len(parts) < 5:
+        return ""
+    vendor = parts[3].replace("_", " ").strip()
+    product = parts[4].replace("_", " ").strip()
+    if not vendor and not product:
+        return ""
+    # `.title()` handles digit-containing names like "log4j" → "Log4J"
+    # reasonably — close enough for an executive Critical CVEs table.
+    return f"{vendor.title()} {product.title()}".strip()
+
+
 def _socradar_cve_to_advisory_row(row: dict) -> dict | None:
     """Translate one SOCRadar CTI Vulnerability row into our advisory schema.
 
-    SOCRadar's response field names are NOT YET confirmed — the discovery
-    log in `tools.socradar_rest._fetch_cve_intel` dumps the first row's keys
-    on every call so we can iterate. This helper is defensive: it tries
-    several plausible field names for each output field and skips the row
-    if no recognisable CVE identifier can be extracted.
+    Response field names confirmed 2026-06-04 by sampling a live response
+    (logged from `tools.socradar_rest._fetch_cve_intel`):
 
+        cve | published | modified | description | cvss | sample_cpe |
+        unique_cpe_list | cpe_count | exploit_list | epss | link | tag | ...
+
+    The defensive multi-name lookups (`cve_id`, `cve`, etc.) stay so this
+    helper still works if SOCRadar adds aliases in a future API version.
     Output schema matches threat_analytics_advisories.json rows so the
-    Critical CVEs section can render uniformly regardless of source.
+    Critical CVEs section renders uniformly regardless of source.
     """
     if not isinstance(row, dict):
         return None
 
-    # CVE ID — try common SOCRadar field names plus a regex fallback.
+    # CVE ID — `cve` is the confirmed field; aliases kept as fallback.
     cve_id = ""
-    for field in ("cve_id", "cve", "id", "name", "vulnerability_id"):
+    for field in ("cve", "cve_id", "id", "name", "vulnerability_id"):
         candidate = (row.get(field) or "")
         if isinstance(candidate, str) and candidate.upper().startswith("CVE-"):
-            cve_id = candidate.strip()
+            cve_id = candidate.strip().upper()
             break
     if not cve_id:
-        # Last-ditch: regex-extract from any string field.
         for value in row.values():
             if isinstance(value, str):
                 m = _extract_cve_id(value)
@@ -415,22 +435,32 @@ def _socradar_cve_to_advisory_row(row: dict) -> dict | None:
                     cve_id = m
                     break
     if not cve_id:
-        return None  # not a CVE row — skip
+        return None
 
-    # Affected product / vendor — for the "threat" title.
-    products = (
-        row.get("affected_products") or row.get("products")
-        or row.get("vendor") or row.get("product") or row.get("title") or ""
-    )
-    if isinstance(products, list):
-        products = ", ".join(str(p) for p in products[:3])
-    products = str(products).strip()
+    # Affected vendor/product — prefer sample_cpe (clean structured form),
+    # fall back to first item in unique_cpe_list, then to description.
+    product_label = _parse_cpe_vendor_product(row.get("sample_cpe", ""))
+    if not product_label:
+        cpe_list = row.get("unique_cpe_list") or []
+        if isinstance(cpe_list, list) and cpe_list:
+            product_label = _parse_cpe_vendor_product(str(cpe_list[0]))
+    if not product_label:
+        # Description fallback — first ~80 chars, single-line. CVE
+        # descriptions are usually one paragraph naming the affected
+        # product + the impact.
+        desc = (row.get("description") or "").strip()
+        if desc:
+            single_line = " ".join(desc.split())[:80]
+            # Trim a trailing partial word if we cut mid-sentence.
+            if len(single_line) == 80 and " " in single_line:
+                single_line = single_line.rsplit(" ", 1)[0] + "…"
+            product_label = single_line
 
-    threat = f"{cve_id} - {products}" if products else cve_id
+    threat = f"{cve_id} - {product_label}" if product_label else cve_id
 
-    # Published date — multiple plausible field names.
+    # Published date — `published` confirmed; aliases kept.
     published = ""
-    for field in ("published_date", "published", "publish_date", "date", "created_at", "first_seen"):
+    for field in ("published", "published_date", "publish_date", "date", "created_at", "first_seen"):
         candidate = row.get(field)
         if candidate:
             published = str(candidate)[:10]
