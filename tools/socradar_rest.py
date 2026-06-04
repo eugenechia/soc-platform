@@ -155,6 +155,40 @@ def _get(path: str, api_key: str, params: dict | None = None) -> dict | list | N
         return None
 
 
+def _post(path: str, api_key: str, json_body: dict | None = None,
+          params: dict | None = None) -> dict | list | None:
+    """POST with the SOCRadar Api-Key header. Used for search-style endpoints
+    that take filter criteria in a JSON body (e.g. CTI Vulnerability search).
+
+    On non-2xx, logs the status + first chunk of the response body so we can
+    see whether the server is complaining about the body shape, the path,
+    or the auth scope."""
+    if not api_key:
+        return None
+    url = f"{_BASE}/{path.lstrip('/')}"
+    headers = {"Api-Key": api_key, "Accept": "application/json",
+               "Content-Type": "application/json"}
+    try:
+        r = httpx.post(url, headers=headers, json=json_body or {},
+                       params=params or {}, timeout=30)
+        if r.status_code == 401:
+            logger.error("SOCRadar API: Unauthorized for POST %s — wrong key?", path)
+            return None
+        if r.status_code == 404:
+            logger.warning("SOCRadar API POST 404: %s (body=%s)", url, (r.text or "")[:200])
+            return None
+        if r.status_code >= 400:
+            logger.warning(
+                "SOCRadar API POST %s returned %d: %s",
+                path, r.status_code, (r.text or "")[:300],
+            )
+            return None
+        return r.json()
+    except Exception as e:
+        logger.warning("SOCRadar API POST %s failed (%s): %s", path, type(e).__name__, e)
+        return None
+
+
 def _extract_data_list(envelope) -> list:
     """SOCRadar v4-style envelope:
         {"data": {"data": [...], "total_data_count": N},
@@ -225,15 +259,25 @@ def _fetch_cve_intel(start_date: str, end_date: str) -> list[dict]:
             "skipping (Critical CVEs will fall back to customer_advisories)"
         )
         return []
-    raw = _get(
+    # First attempt 2026-06-04 09:07: GET with query params → 404. The
+    # "search" verb strongly suggests POST with body — most search APIs work
+    # that way. Try POST with the same filter values shaped as JSON body.
+    # If this still 404s, the path itself is likely off (could be
+    # `/api/v2/vulnerability/search_vulnerabilities` with v2 as prefix) —
+    # the _post helper logs body text on non-2xx so we can see what server
+    # is saying.
+    raw = _post(
         "vulnerability/search_vulnerabilities/v2",
         api_key=api_key,
-        params={"start_date": start_date, "end_date": end_date, "limit": 50},
+        json_body={
+            "start_date": start_date,
+            "end_date": end_date,
+            "limit": 50,
+        },
     )
     if raw is None:
-        # _get already logged HTTP status / exception detail; nothing more
-        # for us to add here. The 404 path will surface if our params guess
-        # is wrong — switch to no-params or POST-body once logs confirm.
+        # _post already logged the failure mode. Critical CVEs will fall
+        # back to customer_advisories (which is the safe default).
         return []
     logger.info(
         "SOCRadar cve_intel raw envelope: top-level keys=%s",
