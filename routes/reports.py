@@ -470,7 +470,13 @@ def _socradar_cve_to_advisory_row(row: dict) -> dict | None:
         "threat": threat,
         "report_type": "Vulnerability",
         "published": published,
-        "hunting_result": "Sourced from SOCRadar CTI Vulnerability Intelligence — analyst to update after hunting",
+        # Left empty by design — this row was auto-pulled from SOCRadar, so
+        # GSOC hasn't yet hunted it in the customer's environment. An empty
+        # cell signals "not yet recorded" cleanly in the client-facing report;
+        # analysts fill it in via /admin/advisories before shipping the
+        # report. The dedup step in _build_report_context still keeps any
+        # manually-entered hunting_result for the same CVE ID.
+        "hunting_result": "",
     }
 
 
