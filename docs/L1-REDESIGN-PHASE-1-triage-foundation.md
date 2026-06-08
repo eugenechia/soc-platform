@@ -1,6 +1,8 @@
 # L1 Triage AI Redesign — Phase 1: Triage Foundation & Housekeeping
 
-**Status:** Implementation in progress (2026-06-08)
+**Status:** Implementation deployed (2026-06-08); awaiting SOC team test sign-off
+
+**GSOC service account (live config):** `soc@ap.logicalis.com` → Jira accountId `611ca5f3aee32f006f99cf9d` ("Logicalis GSOC"). Set on the Container App as `JIRA_GSOC_ACCOUNT_ID`. Test plan scenario 3 is the active path; scenario 4 (env-empty case) was validated during deploy and can be skipped unless you specifically want to re-verify the skip behaviour.
 **Roadmap:** [L1-TRIAGE-REDESIGN-ROADMAP.md](L1-TRIAGE-REDESIGN-ROADMAP.md)
 **Current implementation:** [L1-TRIAGE.md](L1-TRIAGE.md)
 **Rollback checkpoint:** `pre-phase-1-2026-06-08` (git tag + ACR image tag + Azure Files snapshot `2026-06-08T11:58:45.0000000Z`)
