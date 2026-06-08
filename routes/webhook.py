@@ -42,9 +42,11 @@ from tools.dedup_jira import (
     mark_as_duplicate,
     write_dedup_key,
 )
-from tools.enrichment import enrich_ticket, has_entity_data
+from tools.enrichment import enrich_ticket, has_entity_data, set_priority, assign_jira_ticket
 from tools.gateway.dedup import derive_key_from_ticket
-from tools.jira_client import fetch_issue_by_key
+from tools.jira_client import fetch_issue_by_key, severity_to_priority
+from tools.secrets import get_secret
+from tools.triage import TRIAGE_CONFIDENCE_THRESHOLD, triage_priority
 
 webhook_bp = Blueprint("webhook", __name__)
 logger = logging.getLogger(__name__)
@@ -133,6 +135,12 @@ def _run_enrichment(job_id: str, ticket_key: str) -> None:
             _jobs[job_id].update({"status": "done", "result": dedup_result})
             return
 
+        # ── Phase 1: Triage Foundation ───────────────────────────────────────
+        # Runs before enrichment so the priority/assignee are correct by the
+        # time the IOC pipeline kicks in. Each step is independently failure-
+        # tolerant — a hiccup here must not block enrichment.
+        _run_triage_foundation(job_id, ticket_key, last_issue["fields"])
+
         result = enrich_ticket(ticket_key, last_issue["fields"])
         _jobs[job_id].update({"status": "done", "result": result})
         logger.info("Enrichment %s complete: ticket=%s verdict=%s",
@@ -140,6 +148,63 @@ def _run_enrichment(job_id: str, ticket_key: str) -> None:
     except Exception as e:
         logger.exception("Enrichment %s failed for %s: %s", job_id, ticket_key, e)
         _jobs[job_id].update({"status": "error", "error": str(e)})
+
+
+def _run_triage_foundation(job_id: str, ticket_key: str, fields: dict) -> None:
+    """Phase 1 pre-enrichment steps. Each step logs and continues on failure
+    so the downstream enrichment pipeline always runs.
+
+      1. Severity sync — read the SIEM severity custom field (default
+         customfield_10038) and set the Jira priority to match.
+      2. GSOC auto-assign — assign the ticket to JIRA_GSOC_ACCOUNT_ID if set.
+      3. LLM Triage — ask the model whether the actual impact warrants a
+         different priority than the severity-mapped baseline; override only
+         if confidence ≥ TRIAGE_CONFIDENCE_THRESHOLD AND recommendation
+         differs from baseline.
+    """
+    # ── 1. Severity sync ────────────────────────────────────────────────
+    severity_field_id = os.environ.get("JIRA_FIELD_SEVERITY", "customfield_10038")
+    raw = fields.get(severity_field_id) or {}
+    severity = (raw.get("value", "") if isinstance(raw, dict) else str(raw or "")).strip()
+    baseline_priority = severity_to_priority(severity)
+    if baseline_priority:
+        set_priority(ticket_key, baseline_priority)
+        logger.info("Triage %s: severity sync — '%s' → priority '%s' for %s",
+                    job_id, severity, baseline_priority, ticket_key)
+    else:
+        logger.info("Triage %s: priority sync skipped for %s — unknown severity %r",
+                    job_id, ticket_key, severity)
+
+    # ── 2. GSOC auto-assign ─────────────────────────────────────────────
+    gsoc_id = get_secret("JIRA_GSOC_ACCOUNT_ID")
+    if gsoc_id:
+        assign_jira_ticket(ticket_key, gsoc_id)
+        logger.info("Triage %s: assigned %s to GSOC (%s)", job_id, ticket_key, gsoc_id)
+    else:
+        logger.info("Triage %s: GSOC assign skipped for %s — JIRA_GSOC_ACCOUNT_ID not set",
+                    job_id, ticket_key)
+
+    # ── 3. LLM Triage priority override ─────────────────────────────────
+    rec = triage_priority(ticket_key, fields, severity, baseline_priority)
+    if not rec:
+        logger.info("Triage %s: LLM rec unavailable for %s — keeping baseline",
+                    job_id, ticket_key)
+        return
+
+    if rec["confidence"] < TRIAGE_CONFIDENCE_THRESHOLD:
+        logger.info("Triage %s: override rejected for %s — confidence %.2f < %.2f",
+                    job_id, ticket_key, rec["confidence"], TRIAGE_CONFIDENCE_THRESHOLD)
+        return
+
+    if rec["recommended_priority"] == baseline_priority:
+        logger.info("Triage %s: LLM agrees with baseline (%s) for %s",
+                    job_id, baseline_priority, ticket_key)
+        return
+
+    if set_priority(ticket_key, rec["recommended_priority"]):
+        logger.info("Triage %s: override accepted for %s — %s → %s (confidence %.2f). Rationale: %s",
+                    job_id, ticket_key, baseline_priority or "(none)",
+                    rec["recommended_priority"], rec["confidence"], rec["rationale"][:200])
 
 
 def _apply_dedup_if_strict_match(ticket_key: str, fields: dict) -> dict | None:

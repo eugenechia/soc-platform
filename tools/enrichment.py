@@ -23,11 +23,15 @@ logger = logging.getLogger(__name__)
 JIRA_URL = os.environ.get("JIRA_URL", "").rstrip("/")
 
 # ─── L1 Triage labels ─────────────────────────────────────────────────────────
-# Existing Jira labels applied to triaged tickets. Replaces the legacy
-# hardcoded `Potential-TP` so the SOC team can rename via env without a code
-# change. Both labels MUST already exist in the target Jira instance.
-_TRIAGE_MALICIOUS_LABEL = os.environ.get("JIRA_TRIAGE_MALICIOUS_LABEL", "IOC_Detection")
-_TRIAGE_CLEAN_LABEL     = os.environ.get("JIRA_TRIAGE_CLEAN_LABEL",     "investigating")
+# Jira labels applied to triaged tickets based on the aggregated verdict.
+# Phase 1 (2026-06-08): switched defaults from generic IOC_Detection /
+# investigating to explicit True-Positive / False-Positive / Unknown so the
+# label conveys the triage outcome directly. The label must already exist in
+# the target Jira instance — the webhook handler only ADDS the label, it does
+# not create it. Override via env if your Jira convention differs.
+_TRIAGE_MALICIOUS_LABEL = os.environ.get("JIRA_TRIAGE_MALICIOUS_LABEL", "True-Positive")
+_TRIAGE_CLEAN_LABEL     = os.environ.get("JIRA_TRIAGE_CLEAN_LABEL",     "False-Positive")
+_TRIAGE_UNKNOWN_LABEL   = os.environ.get("JIRA_TRIAGE_UNKNOWN_LABEL",   "Unknown")
 
 # ─── Custom field IDs for Sentinel-style structured entity fields ─────────────
 # Override via env if Jira admin renumbers fields. Defaults are the SCDM project's
@@ -327,20 +331,29 @@ def determine_verdict(results: list[dict]) -> str:
 
 # ─── Comment Builder ──────────────────────────────────────────────────────────
 
+_VERDICT_LABEL = {
+    "malicious": "TRUE-POSITIVE",
+    "clean":     "FALSE-POSITIVE",
+    "unknown":   "UNKNOWN",
+}
+
+
 def _build_comment(ioc_results: list[dict], overall_verdict: str, action_taken: str) -> str:
     lines = ["=== L1 Triage Report (Automated) ===", ""]
+    verdict_display = _VERDICT_LABEL.get(overall_verdict, overall_verdict.upper())
 
     if not ioc_results:
         # No IOCs to actually query — produce reputation-engine-shaped output for
-        # consistency with tickets that DO have IOCs. The triage outcome is still
-        # "no threat detected", and the ticket is routed to L2 for analyst review.
+        # consistency with tickets that DO have IOCs. The triage outcome is
+        # Unknown (we can't confirm or refute without observables); the ticket
+        # is routed to L2 for analyst review.
         lines += [
             "Reputation engines (no extractable IOCs — no actual queries made):",
             "  - VirusTotal:  No detections",
             "  - AbuseIPDB:   No threat detected",
             "  - SOCRadar:    No detections",
             "",
-            "VERDICT: NO THREAT DETECTED",
+            f"VERDICT: {verdict_display}",
             f"ACTION:  {action_taken}",
         ]
         return "\n".join(lines)
@@ -400,7 +413,7 @@ def _build_comment(ioc_results: list[dict], overall_verdict: str, action_taken: 
 
         lines.append("")
 
-    lines.append(f"VERDICT: {overall_verdict.upper()}")
+    lines.append(f"VERDICT: {verdict_display}")
     lines.append(f"ACTION:  {action_taken}")
     return "\n".join(lines)
 
@@ -495,6 +508,61 @@ def assign_jira_ticket(ticket_key: str, account_id: str) -> bool:
         return False
 
 
+def set_priority(ticket_key: str, priority_name: str) -> bool:
+    """Set the Jira priority on a ticket. priority_name must match a Jira
+    priority option exactly (e.g. "Highest", "High", "Medium", "Low",
+    "Lowest"). Added in Phase 1 for severity-sync + LLM Triage override."""
+    if not JIRA_URL:
+        logger.warning("JIRA_URL not set — cannot set priority on %s", ticket_key)
+        return False
+    if not priority_name:
+        return False
+
+    url = f"{JIRA_URL}/rest/api/3/issue/{ticket_key}"
+    try:
+        r = httpx.put(url, headers=_jira_headers(),
+                      json={"fields": {"priority": {"name": priority_name}}},
+                      timeout=30)
+        if r.status_code >= 400:
+            logger.error("set_priority %s → %s HTTP %s: %s",
+                         ticket_key, priority_name, r.status_code, r.text[:300])
+            return False
+        logger.info("set_priority(%s) → %s", ticket_key, priority_name)
+        return True
+    except Exception as e:
+        logger.error("set_priority %s failed: %s", ticket_key, e)
+        return False
+
+
+def remove_jira_label(ticket_key: str, label: str) -> bool:
+    """Remove a label from a Jira issue. No-op if the label isn't present."""
+    if not JIRA_URL:
+        logger.warning("JIRA_URL not set — cannot remove label from %s", ticket_key)
+        return False
+
+    get_url = f"{JIRA_URL}/rest/api/3/issue/{ticket_key}"
+    try:
+        r = httpx.get(get_url, headers=_jira_headers(), timeout=30)
+        if r.status_code >= 400:
+            logger.error("remove_jira_label GET %s HTTP %s", ticket_key, r.status_code)
+            return False
+        existing = r.json().get("fields", {}).get("labels", [])
+        if label not in existing:
+            return True
+        updated = [lbl for lbl in existing if lbl != label]
+        r2 = httpx.put(get_url, headers=_jira_headers(),
+                       json={"fields": {"labels": updated}}, timeout=30)
+        if r2.status_code >= 400:
+            logger.error("remove_jira_label PUT %s HTTP %s: %s",
+                         ticket_key, r2.status_code, r2.text[:200])
+            return False
+        logger.info("Removed label '%s' from %s", label, ticket_key)
+        return True
+    except Exception as e:
+        logger.error("remove_jira_label %s failed: %s", ticket_key, e)
+        return False
+
+
 # ─── Main Orchestrator ────────────────────────────────────────────────────────
 
 def enrich_ticket(ticket_key: str, fields: dict) -> dict:
@@ -552,12 +620,15 @@ def enrich_ticket(ticket_key: str, fields: dict) -> dict:
     l1_id = get_secret("JIRA_L1_ACCOUNT_ID")
     l2_id = get_secret("JIRA_L2_ACCOUNT_ID")
 
-    # Two outcomes: malicious (assign L1) or anything-else-including-no-IOCs (assign L2).
-    # The "no IOCs" case is treated as a clean verdict — there's nothing to flag, but
-    # the ticket still warrants L2 review per SOC-team SOP.
+    # Phase 1 (2026-06-08): verdict-to-label mapping is now explicit across all
+    # three outcomes (True-Positive / False-Positive / Unknown). The "unknown"
+    # case previously fell through to clean; it now gets its own label so an
+    # analyst can distinguish "we checked and it's benign" from "we couldn't
+    # tell" at a glance. Assignment routing (L1 for TP, L2 for FP and Unknown)
+    # is unchanged — auto-close for FP is deferred to Phase 7.
     if overall_verdict == "malicious":
         add_jira_label(ticket_key, _TRIAGE_MALICIOUS_LABEL)
-        action_taken = (f"Ticket flagged as a potential threat — labelled "
+        action_taken = (f"Ticket flagged as a True Positive — labelled "
                         f"'{_TRIAGE_MALICIOUS_LABEL}'.")
         if l1_id:
             assign_jira_ticket(ticket_key, l1_id)
@@ -565,9 +636,19 @@ def enrich_ticket(ticket_key: str, fields: dict) -> dict:
         else:
             action_taken += " (JIRA_L1_ACCOUNT_ID not configured — assignment skipped)"
             logger.warning("JIRA_L1_ACCOUNT_ID not set — cannot assign %s to L1 lead", ticket_key)
+    elif overall_verdict == "unknown":
+        add_jira_label(ticket_key, _TRIAGE_UNKNOWN_LABEL)
+        action_taken = (f"Verdict Unknown — labelled '{_TRIAGE_UNKNOWN_LABEL}'. "
+                        f"Routed to L2 SOC Analyst for manual review.")
+        if l2_id:
+            assign_jira_ticket(ticket_key, l2_id)
+        else:
+            action_taken += " (JIRA_L2_ACCOUNT_ID not configured — assignment skipped)"
+            logger.warning("JIRA_L2_ACCOUNT_ID not set — cannot assign %s to L2", ticket_key)
     else:
         add_jira_label(ticket_key, _TRIAGE_CLEAN_LABEL)
-        action_taken = "Routed to L2 SOC Analyst for further analysis."
+        action_taken = (f"Ticket judged a False Positive — labelled "
+                        f"'{_TRIAGE_CLEAN_LABEL}'. Routed to L2 SOC Analyst for sign-off.")
         if l2_id:
             assign_jira_ticket(ticket_key, l2_id)
         else:

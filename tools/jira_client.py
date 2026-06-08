@@ -185,6 +185,33 @@ def _normalize_severity(severity: str) -> str:
     return _SEVERITY_NORMALIZATION.get(severity.strip().lower(), severity)
 
 
+# Phase 1 (L1 Triage redesign): map SIEM severity (customfield_10038) to Jira
+# priority so newly-created tickets get a priority that matches their severity
+# instead of inheriting the project default (typically "Medium"). Handles both
+# standard tier names AND the SCDM "Sev-X" convention seen in production. The
+# LLM Triage call in routes/webhook.py may override this baseline if its
+# confidence threshold is met. Returns None for unknown inputs so the caller
+# can skip the priority update rather than guess.
+_SEVERITY_TO_PRIORITY = {
+    "critical":      "Highest",
+    "high":          "High",
+    "medium":        "Medium",
+    "low":           "Low",
+    "informational": "Lowest",
+    "lowest":        "Lowest",
+    "sev-0":         "Highest",
+    "sev-1":         "High",
+    "sev-2":         "Medium",
+    "sev-3":         "Low",
+}
+
+
+def severity_to_priority(severity: str) -> str | None:
+    if not severity:
+        return None
+    return _SEVERITY_TO_PRIORITY.get(severity.strip().lower())
+
+
 def _normalize_issue(issue: dict) -> dict:
     fields = issue.get("fields", {})
     status = fields.get("status", {})
