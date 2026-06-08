@@ -1,5 +1,7 @@
 # L1 Triage — IOC Enrichment Pipeline
 
+> **See also:** [L1-TRIAGE-REDESIGN-ROADMAP.md](L1-TRIAGE-REDESIGN-ROADMAP.md) — phased plan for evolving this pipeline into a full AI Agent for L1 (MITRE mapping, RAG over Confluence, AI-driven KQL, recommendation synthesis, finetuning loop). This doc describes the **current** implementation; the roadmap describes where it's going.
+
 Backend documentation for the automated Jira ticket enrichment flow ("L1 Triage").
 
 ## Purpose
@@ -38,6 +40,14 @@ Background thread:
   ├─ stabilization sleep WEBHOOK_FETCH_STABILIZATION_SECONDS (default 30s)
   │    after first entity detected — lets later waves of fields land
   ├─ final fetch (post-stabilization snapshot)
+  ├─ dedup check (catches Sentinel Logic App duplicates)
+  │
+  ├─ [Phase 1] _run_triage_foundation():
+  │    ├─ severity sync: read customfield_10038 → set Jira priority
+  │    ├─ GSOC auto-assign: if JIRA_GSOC_ACCOUNT_ID set
+  │    └─ LLM Triage priority override (tools/triage.py):
+  │         confidence ≥ 0.7 AND recommendation ≠ baseline → set new priority
+  │
   └─ enrichment.enrich_ticket(ticket_key, fields)
         │
         ▼
@@ -55,20 +65,23 @@ For each IOC:
 determine_verdict(): malicious | clean | unknown
         │
         ▼
-post_jira_comment(ticket_key, summary)           # always runs
-add_jira_label(ticket_key, "Potential-TP")       # if malicious
-assign_jira_ticket(ticket_key, JIRA_L1_ACCOUNT_ID)  # if malicious AND L1 set
-assign_jira_ticket(ticket_key, JIRA_L2_ACCOUNT_ID)  # if clean    AND L2 set
+post_jira_comment(ticket_key, summary)                # always runs
+add_jira_label(ticket_key, "True-Positive")           # if malicious
+add_jira_label(ticket_key, "False-Positive")          # if clean
+add_jira_label(ticket_key, "Unknown")                 # if unknown
+assign_jira_ticket(ticket_key, JIRA_L1_ACCOUNT_ID)    # if malicious AND L1 set
+assign_jira_ticket(ticket_key, JIRA_L2_ACCOUNT_ID)    # if clean/unknown AND L2 set
 ```
 
 ## File Map
 
 | File | Purpose |
 |---|---|
-| [routes/webhook.py](../routes/webhook.py) | HTTP entry point. Validates secret, queues background job. |
-| [tools/enrichment.py](../tools/enrichment.py) | IOC extraction + reputation + comment/label/assign logic. |
-| [tools/jira_client.py](../tools/jira_client.py) | `fetch_issue_by_key()`, `_extract_adf_text()`, Basic Auth headers. |
-| [tools/socradar_rest.py](../tools/socradar_rest.py) | SOCRadar REST API client. **Note:** uses `os.environ.get` directly, bypasses `tools/secrets.py`. |
+| [routes/webhook.py](../routes/webhook.py) | HTTP entry point. Validates secret, queues background job. Hosts `_run_triage_foundation()` (Phase 1: severity sync, GSOC assign, LLM Triage). |
+| [tools/enrichment.py](../tools/enrichment.py) | IOC extraction + reputation + comment/label/assign logic. `set_priority()` and `remove_jira_label()` helpers live here too. |
+| [tools/triage.py](../tools/triage.py) | LLM Triage call (Phase 1). Returns `{recommended_priority, rationale, confidence}` for the webhook to act on. |
+| [tools/jira_client.py](../tools/jira_client.py) | `fetch_issue_by_key()`, `_extract_adf_text()`, `severity_to_priority()` (Phase 1 mapping), Basic Auth headers. |
+| [tools/socradar_rest.py](../tools/socradar_rest.py) | SOCRadar REST API client. Reads `SOCRADAR_THREAT_ANALYSIS_KEY` via `tools/secrets.get_secret()`. |
 | [tools/virustotal_client.py](../tools/virustotal_client.py) | VirusTotal v3 client. Reads `VT_API_KEY` via `get_secret()`. |
 | [tools/abuseipdb_client.py](../tools/abuseipdb_client.py) | AbuseIPDB client (IPs only). Reads `ABUSEIPDB_API_KEY` via `get_secret()`. |
 
@@ -190,15 +203,13 @@ Expect `comment.comments[]` to contain at least one comment from the service acc
 
 ## Known Issues / Tech Debt
 
-1. **`socradar_rest.py` bypasses KV abstraction.** Uses `os.environ.get("SOCRADAR_API_KEY")` directly instead of `tools.secrets.get_secret()`. Effect: SOCRadar reputation always returns None until the key is added as a plain env var on the Container App. Cleaner long-term fix: switch to `get_secret()` and add a `socradar-api-key` KV secret matching the `vt-api-key` / `abuseipdb-api-key` pattern.
+1. **VT secret name is `VT_API_KEY` not `VIRUSTOTAL_API_KEY`.** Maps to KV secret `vt-api-key` via kebab-case translation in `tools/secrets.py`. Works fine, just inconsistent with vendor naming. Not worth changing.
 
-2. **VT secret name is `VT_API_KEY` not `VIRUSTOTAL_API_KEY`.** Maps to KV secret `vt-api-key` via kebab-case translation in `tools/secrets.py`. Works fine, just inconsistent with vendor naming. Not worth changing.
+2. **No retry on Jira API failures.** If `post_jira_comment()` or `assign_jira_ticket()` fails (transient 5xx, rate limit), the job is marked error and there is no automatic retry. Manual intervention required.
 
-3. **No retry on Jira API failures.** If `post_jira_comment()` or `assign_jira_ticket()` fails (transient 5xx, rate limit), the job is marked error and there is no automatic retry. Manual intervention required.
+3. **In-memory job store.** `_jobs` dict in `routes/webhook.py` is process-local. Surviving across deploys requires durable storage (out of scope today since `min_replicas = max_replicas = 1`).
 
-4. **In-memory job store.** `_jobs` dict in `routes/webhook.py` is process-local. Surviving across deploys requires durable storage (out of scope today since `min_replicas = max_replicas = 1`).
-
-5. **L1/L2 routing intentionally disabled.** `JIRA_L1_ACCOUNT_ID` and `JIRA_L2_ACCOUNT_ID` are deliberately empty during rollout — every analyst sees every ticket. Set these once routing is finalised.
+4. **L1/L2 routing intentionally disabled.** `JIRA_L1_ACCOUNT_ID` and `JIRA_L2_ACCOUNT_ID` are deliberately empty during rollout — every analyst sees every ticket. Set these once routing is finalised.
 
 ## Local Development
 
