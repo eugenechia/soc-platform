@@ -338,7 +338,22 @@ _VERDICT_LABEL = {
 }
 
 
-def _build_comment(ioc_results: list[dict], overall_verdict: str, action_taken: str) -> str:
+def _append_mitre_section(lines: list[str], mitre_result: dict | None) -> None:
+    """Inject MITRE ATT&CK section into lines in-place. No-op if result is absent."""
+    if not mitre_result:
+        return
+    techniques = mitre_result.get("techniques") or []
+    if not techniques:
+        return
+    lines.append("MITRE ATT&CK Mapping:")
+    for t in techniques:
+        pct = int(round(t.get("confidence", 0) * 100))
+        lines.append(f"  [{t['id']}] {t['tactic']} — {t['name']} ({pct}% confidence)")
+    lines.append("")
+
+
+def _build_comment(ioc_results: list[dict], overall_verdict: str, action_taken: str,
+                   mitre_result: dict | None = None) -> str:
     lines = ["=== L1 Triage Report (Automated) ===", ""]
     verdict_display = _VERDICT_LABEL.get(overall_verdict, overall_verdict.upper())
 
@@ -353,6 +368,9 @@ def _build_comment(ioc_results: list[dict], overall_verdict: str, action_taken: 
             "  - AbuseIPDB:   No threat detected",
             "  - SOCRadar:    No detections",
             "",
+        ]
+        _append_mitre_section(lines, mitre_result)
+        lines += [
             f"VERDICT: {verdict_display}",
             f"ACTION:  {action_taken}",
         ]
@@ -413,6 +431,7 @@ def _build_comment(ioc_results: list[dict], overall_verdict: str, action_taken: 
 
         lines.append("")
 
+    _append_mitre_section(lines, mitre_result)
     lines.append(f"VERDICT: {verdict_display}")
     lines.append(f"ACTION:  {action_taken}")
     return "\n".join(lines)
@@ -617,6 +636,18 @@ def enrich_ticket(ticket_key: str, fields: dict) -> dict:
                     ticket_key, socradar_used, len(iocs))
     overall_verdict = determine_verdict(ioc_results)
 
+    # Phase 2 (2026-06-10): MITRE ATT&CK mapping — runs after full reputation
+    # picture is available so SOCRadar categories can seed the LLM prompt.
+    # Wrapped in try/except: any failure is logged and silently skipped.
+    mitre_result = None
+    if os.environ.get("MITRE_MAPPING_ENABLED", "true").lower() != "false":
+        try:
+            from tools import mitre_mapper
+            mitre_result = mitre_mapper.map_mitre(ticket_key, fields, ioc_results)
+        except Exception as _e:
+            logger.warning("enrich_ticket(%s): MITRE mapping failed (%s) — skipping",
+                           ticket_key, _e)
+
     l1_id = get_secret("JIRA_L1_ACCOUNT_ID")
     l2_id = get_secret("JIRA_L2_ACCOUNT_ID")
 
@@ -655,7 +686,7 @@ def enrich_ticket(ticket_key: str, fields: dict) -> dict:
             action_taken += " (JIRA_L2_ACCOUNT_ID not configured — assignment skipped)"
             logger.warning("JIRA_L2_ACCOUNT_ID not set — cannot assign %s to L2", ticket_key)
 
-    comment_text = _build_comment(ioc_results, overall_verdict, action_taken)
+    comment_text = _build_comment(ioc_results, overall_verdict, action_taken, mitre_result)
     post_jira_comment(ticket_key, comment_text)
 
     return {

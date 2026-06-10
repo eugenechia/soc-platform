@@ -2,6 +2,7 @@
 *.pyc
 __pycache__/
 data/
+!data/mitre_attack_index.json
 .tmp/
 *.db
 token.json

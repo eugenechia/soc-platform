@@ -259,7 +259,7 @@ Strictly sequential. No phase starts until the previous one has team sign-off.
 Update this section as each phase progresses. `[ ]` not started → `[~]` in progress → `[x]` complete (with date).
 
 - [~] **Phase 1** — Triage Foundation & Housekeeping (implementation complete 2026-06-08; awaiting team test sign-off — see [L1-REDESIGN-PHASE-1-triage-foundation.md](L1-REDESIGN-PHASE-1-triage-foundation.md))
-- [ ] **Phase 2** — MITRE ATT&CK Mapping
+- [~] **Phase 2** — MITRE ATT&CK Mapping (implementation complete 2026-06-10; awaiting team test sign-off — see [L1-REDESIGN-PHASE-2-mitre-mapping.md](L1-REDESIGN-PHASE-2-mitre-mapping.md))
 - [ ] **Phase 3** — Historical Alert Correlation
 - [ ] **Phase 4** — RAG over Confluence
 - [ ] **Phase 5** — AI-driven KQL Expansion
