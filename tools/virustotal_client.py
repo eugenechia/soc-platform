@@ -58,12 +58,21 @@ def check_ioc(value: str, ioc_type: str) -> dict | None:
         malicious = int(stats.get("malicious", 0))
         total = sum(stats.values()) if stats else 0
         reputation = int(attrs.get("reputation", 0) or 0)
-        return {
+        result = {
             "malicious_count": malicious,
             "total_engines": total,
             "reputation": reputation,
             "raw": data,
         }
+        # Origin metadata, only meaningful for IPs. Surfaced for the L1 Triage
+        # comment so the analyst sees the autonomous system owner (a strong
+        # signal for "is this a known cloud provider / VPN exit / residential
+        # ISP") without expanding the raw payload.
+        if ioc_type == "ip":
+            result["country"]  = (attrs.get("country") or "").strip()
+            result["as_owner"] = (attrs.get("as_owner") or "").strip()
+            result["network"]  = (attrs.get("network") or "").strip()
+        return result
     except Exception as e:
         logger.warning("VirusTotal check failed (%s): %s", type(e).__name__, e)
         return None

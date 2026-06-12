@@ -338,6 +338,80 @@ _VERDICT_LABEL = {
 }
 
 
+def _format_sgt(raw: str) -> str:
+    """Render an ISO 8601 timestamp in Asia/Singapore (UTC+8). Returns the raw
+    string unchanged if parsing fails — analysts still see *some* time rather
+    than nothing if a source emits an unusual format."""
+    if not raw:
+        return ""
+    try:
+        from datetime import datetime, timezone
+        from zoneinfo import ZoneInfo
+        s = str(raw).strip()
+        if s.endswith("Z"):  # python<3.11 fromisoformat can't parse trailing Z
+            s = s[:-1] + "+00:00"
+        dt = datetime.fromisoformat(s)
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=timezone.utc)
+        return dt.astimezone(ZoneInfo("Asia/Singapore")).strftime("%Y-%m-%d %H:%M:%S SGT")
+    except Exception:
+        return str(raw)
+
+
+def _ip_origin_lines(vt: dict | None, ab: dict | None) -> list[str]:
+    """Build the per-IP Origin block for the L1 Triage comment. Combines
+    AbuseIPDB and VirusTotal metadata so the analyst sees who owns the IP
+    and where it sits without expanding raw payloads. Returns 0 lines if no
+    origin data is available from either source."""
+    ab = ab or {}
+    vt = vt or {}
+
+    country_name = ab.get("country_name") or ""
+    country_code = ab.get("country_code") or vt.get("country") or ""
+    # AbuseIPDB's ISP is more human-readable ("Microsoft Corporation");
+    # VT's as_owner is more technical ("MICROSOFT-CORP-MSN-AS-BLOCK").
+    # Prefer ISP, fall back to as_owner. Show both only when they say
+    # genuinely different things.
+    isp        = ab.get("isp") or ""
+    as_owner   = vt.get("as_owner") or ""
+    network    = vt.get("network") or ""
+    usage_type = ab.get("usage_type") or ""
+    domain     = ab.get("domain") or ""
+    hostnames  = ab.get("hostnames") or []
+
+    origin_parts: list[str] = []
+    if country_name and country_code:
+        origin_parts.append(f"{country_name} ({country_code})")
+    elif country_name or country_code:
+        origin_parts.append(country_name or country_code)
+    if isp:
+        origin_parts.append(f"ISP: {isp}")
+    elif as_owner:
+        origin_parts.append(f"AS: {as_owner}")
+    if network:
+        origin_parts.append(f"Network: {network}")
+    if usage_type:
+        origin_parts.append(f"Usage: {usage_type}")
+
+    out: list[str] = []
+    if origin_parts:
+        out.append("  Origin: " + " • ".join(origin_parts))
+
+    dns_parts: list[str] = []
+    if domain:
+        dns_parts.append(f"Domain: {domain}")
+    if hostnames:
+        # Show the first hostname; truncate the rest to a count to avoid a
+        # noisy comment when an IP resolves to dozens of PTRs.
+        first = hostnames[0]
+        extra = f" (+{len(hostnames) - 1} more)" if len(hostnames) > 1 else ""
+        dns_parts.append(f"Reverse: {first}{extra}")
+    if dns_parts:
+        out.append("  " + " • ".join(dns_parts))
+
+    return out
+
+
 def _append_mitre_section(lines: list[str], mitre_result: dict | None) -> None:
     """Inject MITRE ATT&CK section into lines in-place. No-op if result is absent."""
     if not mitre_result:
@@ -389,6 +463,15 @@ def _build_comment(ioc_results: list[dict], overall_verdict: str, action_taken: 
         lines.append(f"[{i}] {ioc['value']} ({ioc['type'].upper()})")
 
         vt = result.get("virustotal")
+        ab = result.get("abuseipdb")
+
+        # Origin block (IPs only) — country + ISP/AS owner + reverse DNS.
+        # Surfaces metadata both reputation engines already fetch but don't
+        # historically display, so analysts see "Microsoft Azure IP from US"
+        # at a glance instead of digging through raw payloads.
+        if ioc["type"] == "ip":
+            lines.extend(_ip_origin_lines(vt, ab))
+
         if vt:
             mal = vt.get("malicious_count", 0)
             tot = vt.get("total_engines", 0)
@@ -405,7 +488,6 @@ def _build_comment(ioc_results: list[dict], overall_verdict: str, action_taken: 
             lines.append("  VirusTotal: Not configured")
 
         if ioc["type"] == "ip":
-            ab = result.get("abuseipdb")
             if ab:
                 lines.append(f"  AbuseIPDB: Confidence {ab.get('confidence_score', 0)}%")
             else:
@@ -424,7 +506,7 @@ def _build_comment(ioc_results: list[dict], overall_verdict: str, action_taken: 
                 src = f.get("source") or "?"
                 cat = f.get("category") or "?"
                 rel = f.get("reliability") or 0
-                last = f.get("last_seen") or ""
+                last = _format_sgt(f.get("last_seen") or "")
                 lines.append(f"    · {src} — {cat} (reliability {rel}, last seen {last})")
         else:
             lines.append("  SOCRadar:  Not configured")

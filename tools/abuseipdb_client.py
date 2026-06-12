@@ -48,6 +48,16 @@ def check_ip(ip: str) -> dict | None:
         return {
             "confidence_score": int(data.get("abuseConfidenceScore", 0)),
             "total_reports": int(data.get("totalReports", 0)),
+            # Origin metadata for the L1 Triage comment — surfaced so the
+            # analyst sees who owns the IP and where it's from without having
+            # to expand the raw payload. AbuseIPDB returns empty strings when
+            # the data is unknown; we pass that through unchanged.
+            "country_code": (data.get("countryCode") or "").strip(),
+            "country_name": (data.get("countryName") or "").strip(),
+            "isp":          (data.get("isp") or "").strip(),
+            "domain":       (data.get("domain") or "").strip(),
+            "hostnames":    [h for h in (data.get("hostnames") or []) if h],
+            "usage_type":   (data.get("usageType") or "").strip(),
             "raw": data,
         }
     except Exception as e:

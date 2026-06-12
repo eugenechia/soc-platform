@@ -160,6 +160,29 @@ Per ticket (aggregated across all IOCs):
 - **unknown** if all IOCs unknown
 - **clean** otherwise
 
+## Enrichment Comment — IP Origin Block
+
+Every IP IOC in the comment is preceded by an **Origin block** that surfaces metadata both AbuseIPDB and VirusTotal already fetch. Lets the analyst spot "this is a Microsoft Azure IP from the US" without expanding the raw payload. Format:
+
+```
+[1] 13.107.6.152 (IP)
+  Origin: United States (US) • ISP: Microsoft Corporation • Network: 13.104.0.0/13 • Usage: Data Center/Web Hosting/Transit
+  Domain: msftusercontent.com • Reverse: outlook-namprd07.prod.outlook.com (+1 more)
+  VirusTotal: 0/93 detections (Reputation 0)
+  ...
+```
+
+Field sources:
+- **Country** — AbuseIPDB `countryName` + `countryCode` (falls back to VirusTotal `country`)
+- **ISP** — AbuseIPDB `isp` (falls back to VirusTotal `as_owner` if AbuseIPDB unavailable)
+- **Network** (CIDR) — VirusTotal `network`
+- **Usage** — AbuseIPDB `usageType` ("Data Center", "Residential ISP", "VPN", etc.)
+- **Domain** + **Reverse DNS** — AbuseIPDB `domain` + `hostnames[0]`
+
+Fields are skipped silently when the underlying source returns empty values. No new API calls — everything comes from existing reputation queries.
+
+**Timestamps** in the comment (currently just SOCRadar's `last seen`) render in Asia/Singapore time, e.g. `2026-06-08 19:58:45 SGT`. Source values that fail to parse are left raw rather than dropped.
+
 ## Verifying the Pipeline Works
 
 ### From a new test ticket
