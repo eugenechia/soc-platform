@@ -48,6 +48,12 @@ Background thread:
   │    Phase 1 verdict label (TP/FP/Unknown/Untriaged). Result threaded
   │    into both _run_triage_foundation() and enrich_ticket() below.
   │
+  ├─ [Phase 4] rag_retrieval.retrieve_customer_context():
+  │    Vector search over indexed knowledge documents (HRT/HVT, Escalation
+  │    Matrix, Whitelists, Asset Inventory, IOC list). Killswitch OFF by
+  │    default. 5s hard timeout. Returns None on any failure mode.
+  │    NOT passed to LLM Triage — comment-only injection (Phase 4 MVP).
+  │
   ├─ [Phase 1] _run_triage_foundation(historical=...):
   │    ├─ severity sync: read customfield_10038 → set Jira priority
   │    ├─ GSOC auto-assign: if JIRA_GSOC_ACCOUNT_ID set
@@ -55,7 +61,7 @@ Background thread:
   │         historical FP rate is a strong de-escalation signal in the prompt;
   │         confidence ≥ 0.7 AND recommendation ≠ baseline → set new priority
   │
-  └─ enrichment.enrich_ticket(ticket_key, fields, historical=...)
+  └─ enrichment.enrich_ticket(ticket_key, fields, historical, rag_chunks)
         │
         ▼
 1. extract_iocs_from_entity_fields(fields)       # primary: typed entity fields
@@ -88,6 +94,10 @@ assign_jira_ticket(ticket_key, JIRA_L2_ACCOUNT_ID)    # if clean/unknown AND L2 
 | [tools/enrichment.py](../tools/enrichment.py) | IOC extraction + reputation + comment/label/assign logic. Hosts `_append_historical_section()` (Phase 3) and `_append_mitre_section()` (Phase 2). `set_priority()` and `remove_jira_label()` helpers live here too. |
 | [tools/triage.py](../tools/triage.py) | LLM Triage call (Phase 1). Returns `{recommended_priority, rationale, confidence}` for the webhook to act on. Phase 3: accepts `historical` arg so the LLM sees same-rule FP/TP distribution. |
 | [tools/historical_alerts.py](../tools/historical_alerts.py) | Phase 3 historical lookup. `query_similar_alerts()` runs a single JQL search for same-project / past-24h / same-summary-prefix tickets and groups by verdict label. |
+| [tools/rag_retrieval.py](../tools/rag_retrieval.py) | Phase 4 RAG hot path. `retrieve_customer_context(query)` — single failure-isolated entry point with 5s hard timeout. Returns None on any error. |
+| [tools/rag_store.py](../tools/rag_store.py) | Phase 4 Chroma wrapper (persistent collection, upsert/search/delete helpers). Persists to `RAG_CHROMA_DIR` (default `/app/data/rag`). |
+| [tools/rag_embed.py](../tools/rag_embed.py) | Phase 4 Azure OpenAI embedding helper. Cached client. `embed_text()` / `embed_texts()`. |
+| [tools/rag_ingest.py](../tools/rag_ingest.py) | Phase 4 CLI ingest. `python -m tools.rag_ingest [--dry-run] [--source <bucket>]`. Walks `RAG_DOCS_DIR`, chunks markdown, embeds, upserts. Idempotent. |
 | [tools/jira_client.py](../tools/jira_client.py) | `fetch_issue_by_key()`, `_extract_adf_text()`, `severity_to_priority()` (Phase 1 mapping), Basic Auth headers. |
 | [tools/socradar_rest.py](../tools/socradar_rest.py) | SOCRadar REST API client. Reads `SOCRADAR_THREAT_ANALYSIS_KEY` via `tools/secrets.get_secret()`. |
 | [tools/virustotal_client.py](../tools/virustotal_client.py) | VirusTotal v3 client. Reads `VT_API_KEY` via `get_secret()`. |
