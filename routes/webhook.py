@@ -44,6 +44,7 @@ from tools.dedup_jira import (
 )
 from tools.enrichment import enrich_ticket, has_entity_data, set_priority, assign_jira_ticket
 from tools.gateway.dedup import derive_key_from_ticket
+from tools.historical_alerts import query_similar_alerts
 from tools.jira_client import fetch_issue_by_key, severity_to_priority
 from tools.secrets import get_secret
 from tools.triage import TRIAGE_CONFIDENCE_THRESHOLD, triage_priority
@@ -135,13 +136,27 @@ def _run_enrichment(job_id: str, ticket_key: str) -> None:
             _jobs[job_id].update({"status": "done", "result": dedup_result})
             return
 
+        # ── Phase 3: Historical Alert Correlation ───────────────────────────
+        # Looks up similar alerts in the past 24h (same Jira project + matching
+        # summary prefix). Failure-safe — returns None on any error. The result
+        # feeds both the Phase 1 LLM Triage call (de-escalation evidence) and
+        # the enrichment comment (Similar Alerts section).
+        historical = None
+        try:
+            project_key = ticket_key.split("-")[0]
+            summary = (last_issue["fields"].get("summary") or "")
+            historical = query_similar_alerts(ticket_key, summary, project_key)
+        except Exception as e:
+            logger.warning("Enrichment %s: historical lookup raised (%s); continuing without it: %s",
+                           job_id, type(e).__name__, e)
+
         # ── Phase 1: Triage Foundation ───────────────────────────────────────
         # Runs before enrichment so the priority/assignee are correct by the
         # time the IOC pipeline kicks in. Each step is independently failure-
         # tolerant — a hiccup here must not block enrichment.
-        _run_triage_foundation(job_id, ticket_key, last_issue["fields"])
+        _run_triage_foundation(job_id, ticket_key, last_issue["fields"], historical)
 
-        result = enrich_ticket(ticket_key, last_issue["fields"])
+        result = enrich_ticket(ticket_key, last_issue["fields"], historical)
         _jobs[job_id].update({"status": "done", "result": result})
         logger.info("Enrichment %s complete: ticket=%s verdict=%s",
                     job_id, ticket_key, result.get("verdict"))
@@ -150,7 +165,8 @@ def _run_enrichment(job_id: str, ticket_key: str) -> None:
         _jobs[job_id].update({"status": "error", "error": str(e)})
 
 
-def _run_triage_foundation(job_id: str, ticket_key: str, fields: dict) -> None:
+def _run_triage_foundation(job_id: str, ticket_key: str, fields: dict,
+                           historical: dict | None = None) -> None:
     """Phase 1 pre-enrichment steps. Each step logs and continues on failure
     so the downstream enrichment pipeline always runs.
 
@@ -161,6 +177,10 @@ def _run_triage_foundation(job_id: str, ticket_key: str, fields: dict) -> None:
          different priority than the severity-mapped baseline; override only
          if confidence ≥ TRIAGE_CONFIDENCE_THRESHOLD AND recommendation
          differs from baseline.
+
+    Phase 3 (2026-06-13): optional `historical` arg (precomputed by the
+    caller) is passed through to triage_priority() so the LLM sees the
+    same-rule FP/TP distribution as de-escalation evidence.
     """
     # ── 1. Severity sync ────────────────────────────────────────────────
     severity_field_id = os.environ.get("JIRA_FIELD_SEVERITY", "customfield_10038")
@@ -185,7 +205,7 @@ def _run_triage_foundation(job_id: str, ticket_key: str, fields: dict) -> None:
                     job_id, ticket_key)
 
     # ── 3. LLM Triage priority override ─────────────────────────────────
-    rec = triage_priority(ticket_key, fields, severity, baseline_priority)
+    rec = triage_priority(ticket_key, fields, severity, baseline_priority, historical)
     if not rec:
         logger.info("Triage %s: LLM rec unavailable for %s — keeping baseline",
                     job_id, ticket_key)

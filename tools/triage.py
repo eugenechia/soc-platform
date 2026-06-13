@@ -51,7 +51,9 @@ Examples that warrant override:
 - Baseline Low but description mentions "domain controller", "admin account dumped", "ransomware", or "data exfiltration" → escalate
 - Baseline High but description clearly says "test alert", "scheduled scan from internal vuln scanner", or known whitelisted automation → de-escalate
 
-If the description is empty or unhelpful, return the baseline priority with confidence ~0.5 so the override is rejected."""
+If the description is empty or unhelpful, return the baseline priority with confidence ~0.5 so the override is rejected.
+
+Historical context (when present) is a strong signal. A rule firing many times in the past 24h with mostly False-Positive outcomes is statistically likely to be FP again — be willing to de-escalate confidently. A rule with mixed outcomes deserves the baseline. A rule firing rarely or for the first time should rely on the ticket text itself."""
 
 
 async def _call_llm(prompt: str) -> str:
@@ -106,7 +108,8 @@ def _extract_text(adf_or_str) -> str:
 
 
 def _build_user_prompt(fields: dict, severity: str, baseline_priority: str,
-                       entity_iocs: list[dict] | None) -> str:
+                       entity_iocs: list[dict] | None,
+                       historical: dict | None = None) -> str:
     summary = fields.get("summary") or "(none)"
     desc = _extract_text(fields.get("description")) or "(none)"
     # Cap description so we stay within token budget regardless of upstream size.
@@ -118,17 +121,38 @@ def _build_user_prompt(fields: dict, severity: str, baseline_priority: str,
             f"- {i.get('type', '?').upper()}: {i.get('value', '')}"
             for i in entity_iocs[:30]
         )
+
+    # Phase 3 (2026-06-13): if a historical lookup was performed, include the
+    # counts in the prompt so the LLM can weigh "rule firing constantly with
+    # mostly FP outcomes" as a de-escalation signal. Format-suppressed when
+    # the lookup returned nothing.
+    historical_block = ""
+    if historical and historical.get("total", 0) > 0:
+        prefix = historical.get("rule_prefix", "(unknown)")
+        window = historical.get("window_hours", 24)
+        historical_block = (
+            f"\nHistorical context for this rule (past {window}h):\n"
+            f"- {historical['total']} similar alerts matched by summary prefix "
+            f"\"{prefix}\"\n"
+            f"- {historical['true_positive']} confirmed True-Positive · "
+            f"{historical['false_positive']} confirmed False-Positive · "
+            f"{historical['unknown']} Unknown · "
+            f"{historical['untriaged']} still untriaged\n"
+        )
+
     return (
         f"SIEM severity: {severity or '(unknown)'}\n"
         f"Severity-mapped baseline priority: {baseline_priority or '(none — severity not recognised)'}\n\n"
         f"Ticket summary:\n{summary}\n\n"
         f"Ticket description:\n{desc}\n\n"
         f"Extracted IOCs:\n{iocs_str}"
+        f"{historical_block}"
     )
 
 
 def triage_priority(ticket_key: str, fields: dict, severity: str,
-                    baseline_priority: str | None) -> dict | None:
+                    baseline_priority: str | None,
+                    historical: dict | None = None) -> dict | None:
     """Synchronous wrapper around the async LLM call.
 
     Returns a dict like:
@@ -136,6 +160,11 @@ def triage_priority(ticket_key: str, fields: dict, severity: str,
     or None if the LLM call fails / returns malformed output. The caller
     (routes/webhook.py) decides whether to accept the override based on
     TRIAGE_CONFIDENCE_THRESHOLD and whether recommended differs from baseline.
+
+    Phase 3 (2026-06-13): optional `historical` arg from
+    tools.historical_alerts.query_similar_alerts(). When present and total>0,
+    the LLM prompt includes the rule's recent FP/TP distribution as
+    de-escalation evidence.
     """
     try:
         from tools.enrichment import extract_iocs_from_entity_fields
@@ -145,7 +174,11 @@ def triage_priority(ticket_key: str, fields: dict, severity: str,
                        ticket_key, e)
         entity_iocs = []
 
-    user_prompt = _build_user_prompt(fields, severity, baseline_priority or "", entity_iocs)
+    if historical and historical.get("total", 0) > 0:
+        logger.info("triage_priority(%s): historical context included (%d siblings)",
+                    ticket_key, historical["total"])
+    user_prompt = _build_user_prompt(fields, severity, baseline_priority or "",
+                                     entity_iocs, historical)
 
     try:
         # asyncio.run is safe here because the webhook background thread has no

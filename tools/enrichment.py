@@ -426,8 +426,38 @@ def _append_mitre_section(lines: list[str], mitre_result: dict | None) -> None:
     lines.append("")
 
 
+def _append_historical_section(lines: list[str], historical: dict | None) -> None:
+    """Phase 3 (2026-06-13): inject the 'Similar Alerts (past 24h)' block
+    into the enrichment comment. No-op when historical is None or total=0
+    (first-time occurrence — adding a "Similar Alerts: 0" line would be
+    noise, not signal)."""
+    if not historical or historical.get("total", 0) <= 0:
+        return
+    window = historical.get("window_hours", 24)
+    total = historical["total"]
+    tp = historical.get("true_positive", 0)
+    fp = historical.get("false_positive", 0)
+    unk = historical.get("unknown", 0)
+    unt = historical.get("untriaged", 0)
+    prefix = historical.get("rule_prefix") or ""
+    first_seen = _format_sgt(historical.get("first_seen_at") or "")
+
+    lines.append(f"Similar Alerts (past {window}h): {total}")
+    lines.append(f"  ├─ True-Positive:  {tp}")
+    lines.append(f"  ├─ False-Positive: {fp}")
+    lines.append(f"  ├─ Unknown:        {unk}")
+    suffix = " (still in flight)" if unt else ""
+    lines.append(f"  └─ Untriaged:      {unt}{suffix}")
+    if prefix:
+        lines.append(f"  Matched on: \"{prefix}\"")
+    if first_seen:
+        lines.append(f"  Earliest sibling: {first_seen}")
+    lines.append("")
+
+
 def _build_comment(ioc_results: list[dict], overall_verdict: str, action_taken: str,
-                   mitre_result: dict | None = None) -> str:
+                   mitre_result: dict | None = None,
+                   historical: dict | None = None) -> str:
     lines = ["=== L1 Triage Report (Automated) ===", ""]
     verdict_display = _VERDICT_LABEL.get(overall_verdict, overall_verdict.upper())
 
@@ -443,6 +473,7 @@ def _build_comment(ioc_results: list[dict], overall_verdict: str, action_taken: 
             "  - SOCRadar:    No detections",
             "",
         ]
+        _append_historical_section(lines, historical)
         _append_mitre_section(lines, mitre_result)
         lines += [
             f"VERDICT: {verdict_display}",
@@ -513,6 +544,7 @@ def _build_comment(ioc_results: list[dict], overall_verdict: str, action_taken: 
 
         lines.append("")
 
+    _append_historical_section(lines, historical)
     _append_mitre_section(lines, mitre_result)
     lines.append(f"VERDICT: {verdict_display}")
     lines.append(f"ACTION:  {action_taken}")
@@ -666,7 +698,8 @@ def remove_jira_label(ticket_key: str, label: str) -> bool:
 
 # ─── Main Orchestrator ────────────────────────────────────────────────────────
 
-def enrich_ticket(ticket_key: str, fields: dict) -> dict:
+def enrich_ticket(ticket_key: str, fields: dict,
+                  historical: dict | None = None) -> dict:
     """Full enrichment pipeline for one Jira ticket.
 
     Reads typed Sentinel-style entity fields first (the canonical IOC source),
@@ -674,6 +707,11 @@ def enrich_ticket(ticket_key: str, fields: dict) -> dict:
     free-text mentions. Dedupes by value. Checks reputation across all
     configured sources, posts a comment with the findings, and reassigns the
     ticket based on verdict. Returns a summary dict for job status tracking.
+
+    Phase 3 (2026-06-13): optional `historical` arg from
+    tools.historical_alerts.query_similar_alerts(). When present and total>0,
+    the comment renders a 'Similar Alerts (past 24h)' block between IOC
+    reputations and the MITRE section.
     """
     from tools.secrets import get_secret
 
@@ -768,7 +806,8 @@ def enrich_ticket(ticket_key: str, fields: dict) -> dict:
             action_taken += " (JIRA_L2_ACCOUNT_ID not configured — assignment skipped)"
             logger.warning("JIRA_L2_ACCOUNT_ID not set — cannot assign %s to L2", ticket_key)
 
-    comment_text = _build_comment(ioc_results, overall_verdict, action_taken, mitre_result)
+    comment_text = _build_comment(ioc_results, overall_verdict, action_taken,
+                                   mitre_result, historical)
     post_jira_comment(ticket_key, comment_text)
 
     return {
