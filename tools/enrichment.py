@@ -426,6 +426,35 @@ def _append_mitre_section(lines: list[str], mitre_result: dict | None) -> None:
     lines.append("")
 
 
+def _append_customer_context_section(lines: list[str], rag_chunks: list[dict] | None) -> None:
+    """Phase 4 (2026-06-13): inject the 'Customer Context' RAG block into
+    the enrichment comment. No-op when rag_chunks is None or empty (RAG
+    disabled, retrieval failed, or no chunks above threshold).
+
+    The block is intentionally simple — one line per chunk, with source
+    tag in [brackets] and similarity score appended so analysts can
+    sanity-check relevance. RAG content is rendered for the analyst only;
+    it is NOT fed into the LLM Triage prompt (deliberate isolation against
+    the prior failure mode where bad retrievals confused the LLM)."""
+    if not rag_chunks:
+        return
+    lines.append("Customer Context:")
+    for c in rag_chunks:
+        text = (c.get("text") or "").strip()
+        if not text:
+            continue
+        source = c.get("source") or "doc"
+        score = float(c.get("score") or 0.0)
+        # Single-line render: collapse internal whitespace + trim aggressively
+        # so the comment stays scannable. Full chunk is in the vector store
+        # if an analyst needs the full context.
+        oneline = " ".join(text.split())
+        if len(oneline) > 240:
+            oneline = oneline[:237] + "..."
+        lines.append(f"  ► [{source}] {oneline} — {score:.2f}")
+    lines.append("")
+
+
 def _append_historical_section(lines: list[str], historical: dict | None) -> None:
     """Phase 3 (2026-06-13): inject the 'Similar Alerts (past 24h)' block
     into the enrichment comment. No-op when historical is None or total=0
@@ -457,7 +486,8 @@ def _append_historical_section(lines: list[str], historical: dict | None) -> Non
 
 def _build_comment(ioc_results: list[dict], overall_verdict: str, action_taken: str,
                    mitre_result: dict | None = None,
-                   historical: dict | None = None) -> str:
+                   historical: dict | None = None,
+                   rag_chunks: list[dict] | None = None) -> str:
     lines = ["=== L1 Triage Report (Automated) ===", ""]
     verdict_display = _VERDICT_LABEL.get(overall_verdict, overall_verdict.upper())
 
@@ -473,6 +503,7 @@ def _build_comment(ioc_results: list[dict], overall_verdict: str, action_taken: 
             "  - SOCRadar:    No detections",
             "",
         ]
+        _append_customer_context_section(lines, rag_chunks)
         _append_historical_section(lines, historical)
         _append_mitre_section(lines, mitre_result)
         lines += [
@@ -544,6 +575,7 @@ def _build_comment(ioc_results: list[dict], overall_verdict: str, action_taken: 
 
         lines.append("")
 
+    _append_customer_context_section(lines, rag_chunks)
     _append_historical_section(lines, historical)
     _append_mitre_section(lines, mitre_result)
     lines.append(f"VERDICT: {verdict_display}")
@@ -699,7 +731,8 @@ def remove_jira_label(ticket_key: str, label: str) -> bool:
 # ─── Main Orchestrator ────────────────────────────────────────────────────────
 
 def enrich_ticket(ticket_key: str, fields: dict,
-                  historical: dict | None = None) -> dict:
+                  historical: dict | None = None,
+                  rag_chunks: list[dict] | None = None) -> dict:
     """Full enrichment pipeline for one Jira ticket.
 
     Reads typed Sentinel-style entity fields first (the canonical IOC source),
@@ -712,6 +745,12 @@ def enrich_ticket(ticket_key: str, fields: dict,
     tools.historical_alerts.query_similar_alerts(). When present and total>0,
     the comment renders a 'Similar Alerts (past 24h)' block between IOC
     reputations and the MITRE section.
+
+    Phase 4 (2026-06-13): optional `rag_chunks` arg from
+    tools.rag_retrieval.retrieve_customer_context(). When non-empty, renders
+    a 'Customer Context' block. Phase 4 deliberately does NOT pass rag_chunks
+    into the LLM Triage call (mitigation against prior failure where bad
+    retrievals confused the model).
     """
     from tools.secrets import get_secret
 
@@ -807,7 +846,7 @@ def enrich_ticket(ticket_key: str, fields: dict,
             logger.warning("JIRA_L2_ACCOUNT_ID not set — cannot assign %s to L2", ticket_key)
 
     comment_text = _build_comment(ioc_results, overall_verdict, action_taken,
-                                   mitre_result, historical)
+                                   mitre_result, historical, rag_chunks)
     post_jira_comment(ticket_key, comment_text)
 
     return {

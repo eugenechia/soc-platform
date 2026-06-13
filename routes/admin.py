@@ -191,6 +191,55 @@ def schedules():
     return render_template("schedules.html", user=session.get("user", {}), active_mode="schedules")
 
 
+# ── Phase 4: RAG knowledge store admin ───────────────────────────────────────
+
+@admin_bp.route("/rag")
+@require_login
+def rag_page():
+    """Lightweight admin page for the Phase 4 RAG store. Shows chunk count
+    + persist dir + a re-ingest button. JSON API below does the actual work
+    so this page is a thin HTML wrapper."""
+    from tools.rag_store import collection_stats
+    stats = collection_stats()
+    docs_dir = os.environ.get("RAG_DOCS_DIR", "/app/data/rag_docs")
+    enabled = os.environ.get("RAG_LOOKUP_ENABLED", "false").strip().lower() == "true"
+    return render_template(
+        "rag.html",
+        user=session.get("user", {}),
+        active_mode="admin",
+        stats=stats,
+        docs_dir=docs_dir,
+        enabled=enabled,
+    )
+
+
+@admin_bp.route("/api/rag/stats", methods=["GET"])
+@require_login
+def api_rag_stats():
+    from tools.rag_store import collection_stats
+    return jsonify(collection_stats())
+
+
+@admin_bp.route("/api/rag/reingest", methods=["POST"])
+@require_login
+def api_rag_reingest():
+    """Trigger a synchronous re-ingest of RAG_DOCS_DIR. Returns the summary
+    dict. Body may include {"source": "<bucket>", "dry_run": false}.
+    Synchronous because the dataset is small (analyst-authored markdown);
+    if it ever becomes too slow we can move to a background thread the same
+    way enrichment is queued."""
+    from tools.rag_ingest import ingest
+    payload = request.get_json(silent=True) or {}
+    source = (payload.get("source") or "").strip() or None
+    dry_run = bool(payload.get("dry_run", False))
+    try:
+        summary = ingest(source_filter=source, dry_run=dry_run)
+        return jsonify({"status": "ok", "summary": summary})
+    except Exception as e:
+        log.exception("RAG re-ingest failed: %s", e)
+        return jsonify({"status": "error", "error": f"{type(e).__name__}: {e}"}), 500
+
+
 # ── Logo serving ───────────────────────────────────────────────────────────────
 
 @admin_bp.route("/data/logos/<filename>")

@@ -37,3 +37,6 @@ tavily-python>=0.5.0
 # Azure — Managed Identity + Key Vault (prod only; harmless in dev)
 azure-identity>=1.15.0
 azure-keyvault-secrets>=4.8.0
+
+# Phase 4 — RAG over Confluence (embedded persistent vector store; runs in-process)
+chromadb>=0.5.0

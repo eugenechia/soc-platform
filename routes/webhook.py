@@ -46,6 +46,7 @@ from tools.enrichment import enrich_ticket, has_entity_data, set_priority, assig
 from tools.gateway.dedup import derive_key_from_ticket
 from tools.historical_alerts import query_similar_alerts
 from tools.jira_client import fetch_issue_by_key, severity_to_priority
+from tools.rag_retrieval import retrieve_customer_context
 from tools.secrets import get_secret
 from tools.triage import TRIAGE_CONFIDENCE_THRESHOLD, triage_priority
 
@@ -150,13 +151,36 @@ def _run_enrichment(job_id: str, ticket_key: str) -> None:
             logger.warning("Enrichment %s: historical lookup raised (%s); continuing without it: %s",
                            job_id, type(e).__name__, e)
 
+        # ── Phase 4: RAG Customer Context retrieval ─────────────────────────
+        # Vector search over indexed knowledge documents (HRT/HVT lists,
+        # Escalation Matrix, Whitelists, Asset Inventory, etc.) for snippets
+        # relevant to this ticket's summary + IOCs. Killswitch defaults OFF
+        # (RAG_LOOKUP_ENABLED=false). Hard 5s timeout. Returns None on ANY
+        # failure mode (disabled, timeout, embed error, store error, no
+        # chunks above threshold) — pipeline always continues.
+        #
+        # Phase 4 MVP: RAG context is surfaced to the analyst in the
+        # enrichment comment only, NOT fed into the LLM Triage prompt.
+        # Mitigates the prior failure mode where bad retrievals confused
+        # the LLM and degraded priority decisions. LLM integration is a
+        # future opt-in (Phase 4b) contingent on retrieval quality.
+        rag_chunks = None
+        try:
+            summary_text = (last_issue["fields"].get("summary") or "")
+            query = summary_text[:500]
+            rag_chunks = retrieve_customer_context(query)
+        except Exception as e:
+            logger.warning("Enrichment %s: RAG retrieval orchestrator raised (%s); continuing without it: %s",
+                           job_id, type(e).__name__, e)
+
         # ── Phase 1: Triage Foundation ───────────────────────────────────────
         # Runs before enrichment so the priority/assignee are correct by the
         # time the IOC pipeline kicks in. Each step is independently failure-
         # tolerant — a hiccup here must not block enrichment.
+        # NOTE: rag_chunks is deliberately NOT passed here. See Phase 4 design.
         _run_triage_foundation(job_id, ticket_key, last_issue["fields"], historical)
 
-        result = enrich_ticket(ticket_key, last_issue["fields"], historical)
+        result = enrich_ticket(ticket_key, last_issue["fields"], historical, rag_chunks)
         _jobs[job_id].update({"status": "done", "result": result})
         logger.info("Enrichment %s complete: ticket=%s verdict=%s",
                     job_id, ticket_key, result.get("verdict"))

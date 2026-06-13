@@ -1,0 +1,187 @@
+{% extends "base.html" %}
+{% block title %}Logicalis SOC Platform — RAG Knowledge Store{% endblock %}
+
+{% block head_extra %}
+<style>
+  .rag-page {
+    max-width: 900px;
+    margin: 32px auto;
+    padding: 0 24px;
+  }
+  .rag-page h2 { font-size: 22px; margin-bottom: 8px; }
+  .rag-page .muted { color: var(--text-muted); font-size: 14px; margin-bottom: 24px; }
+
+  .stat-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+    gap: 16px;
+    margin-bottom: 24px;
+  }
+  .stat-card {
+    background: var(--bg-surface);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    padding: 16px;
+    box-shadow: var(--shadow);
+  }
+  .stat-card .label {
+    font-size: 12px;
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+    color: var(--text-muted);
+    margin-bottom: 6px;
+  }
+  .stat-card .value {
+    font-size: 22px;
+    font-weight: 600;
+    color: var(--text-primary);
+    font-variant-numeric: tabular-nums;
+  }
+  .stat-card .value.small { font-size: 14px; word-break: break-all; }
+
+  .actions {
+    background: var(--bg-surface);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    padding: 20px;
+    box-shadow: var(--shadow);
+    margin-bottom: 24px;
+  }
+  .actions h3 { font-size: 16px; margin-bottom: 8px; }
+  .actions p { color: var(--text-muted); font-size: 14px; margin-bottom: 16px; }
+
+  .btn {
+    background: var(--accent);
+    color: white;
+    border: none;
+    padding: 10px 18px;
+    border-radius: var(--radius);
+    font-size: 14px;
+    font-weight: 500;
+    cursor: pointer;
+    transition: background 0.2s;
+  }
+  .btn:hover:not(:disabled) { background: var(--accent-hover); }
+  .btn:disabled { opacity: 0.6; cursor: not-allowed; }
+  .btn.btn-ghost {
+    background: transparent;
+    color: var(--accent);
+    border: 1px solid var(--border);
+    margin-left: 8px;
+  }
+
+  .badge {
+    display: inline-block;
+    padding: 4px 10px;
+    border-radius: 999px;
+    font-size: 12px;
+    font-weight: 600;
+  }
+  .badge.on  { background: #DCFCE7; color: #166534; }
+  .badge.off { background: #FEE2E2; color: #991B1B; }
+  [data-theme="dark"] .badge.on  { background: #14532D; color: #BBF7D0; }
+  [data-theme="dark"] .badge.off { background: #4C0519; color: #FECACA; }
+
+  .result {
+    margin-top: 16px;
+    padding: 12px 14px;
+    background: var(--bg-raised);
+    border-radius: var(--radius);
+    font-size: 13px;
+    font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+    white-space: pre-wrap;
+    word-break: break-word;
+  }
+  .result.error {
+    background: var(--danger-light, #FEE2E2);
+    color: var(--danger);
+  }
+</style>
+{% endblock %}
+
+{% block content %}
+<div class="rag-page">
+  <h2>RAG Knowledge Store</h2>
+  <p class="muted">
+    Phase 4 — Customer Context retrieval for L1 Triage.
+    Status:
+    {% if enabled %}
+      <span class="badge on">RAG_LOOKUP_ENABLED = true (live)</span>
+    {% else %}
+      <span class="badge off">RAG_LOOKUP_ENABLED = false (shadow / off)</span>
+    {% endif %}
+  </p>
+
+  <div class="stat-grid">
+    <div class="stat-card">
+      <div class="label">Indexed chunks</div>
+      <div class="value">{{ stats.chunk_count }}</div>
+    </div>
+    <div class="stat-card">
+      <div class="label">Store ready</div>
+      <div class="value">{{ "Yes" if stats.ready else "No" }}</div>
+    </div>
+    <div class="stat-card">
+      <div class="label">Docs directory</div>
+      <div class="value small">{{ docs_dir }}</div>
+    </div>
+    <div class="stat-card">
+      <div class="label">Chroma persist dir</div>
+      <div class="value small">{{ stats.persist_dir }}</div>
+    </div>
+  </div>
+
+  <div class="actions">
+    <h3>Re-ingest knowledge documents</h3>
+    <p>
+      Walks every <code>.md</code> / <code>.txt</code> file under the docs directory above,
+      chunks each by paragraph (max 500 chars), embeds via Azure OpenAI, and upserts to the
+      Chroma store. Idempotent — running again on the same file replaces its chunks.
+    </p>
+    <button class="btn" id="btn-reingest">Run ingest</button>
+    <button class="btn btn-ghost" id="btn-dryrun">Dry run (no API calls)</button>
+    <div class="result" id="result" style="display:none;"></div>
+  </div>
+</div>
+
+<script>
+  function runIngest(dryRun) {
+    const btn1 = document.getElementById('btn-reingest');
+    const btn2 = document.getElementById('btn-dryrun');
+    const resultEl = document.getElementById('result');
+    btn1.disabled = true; btn2.disabled = true;
+    resultEl.classList.remove('error');
+    resultEl.style.display = 'block';
+    resultEl.textContent = dryRun ? 'Running dry run...' : 'Ingesting (this can take 30-60s for a typical set)...';
+    fetch('/admin/api/rag/reingest', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ dry_run: dryRun }),
+    })
+      .then(r => r.json().then(j => ({ ok: r.ok, body: j })))
+      .then(({ ok, body }) => {
+        if (!ok || body.status !== 'ok') {
+          resultEl.classList.add('error');
+          resultEl.textContent = 'Error: ' + (body.error || JSON.stringify(body));
+          return;
+        }
+        resultEl.textContent = JSON.stringify(body.summary, null, 2);
+        // Refresh the stats card
+        return fetch('/admin/api/rag/stats')
+          .then(r => r.json())
+          .then(s => {
+            document.querySelector('.stat-card .value').textContent = s.chunk_count;
+          });
+      })
+      .catch(err => {
+        resultEl.classList.add('error');
+        resultEl.textContent = 'Request failed: ' + err.message;
+      })
+      .finally(() => {
+        btn1.disabled = false; btn2.disabled = false;
+      });
+  }
+  document.getElementById('btn-reingest').addEventListener('click', () => runIngest(false));
+  document.getElementById('btn-dryrun').addEventListener('click', () => runIngest(true));
+</script>
+{% endblock %}
