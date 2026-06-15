@@ -82,8 +82,12 @@ def _get_collection() -> Any | None:
 def upsert_chunks(items: list[dict]) -> int:
     """Upsert a batch of chunks. Each item must have keys:
         id, text, embedding, source, file, position
+    Optional keys:
+        customer_id   — Phase 4b-rev (2026-06-15): when present, enables
+                        customer-scoped retrieval via where filter.
     Returns the count of items actually written (0 on failure). Used by
-    tools.rag_ingest; the hot retrieval path never writes.
+    tools.rag_ingest and tools.rag_confluence_ingest; the hot retrieval
+    path never writes.
     """
     if not items:
         return 0
@@ -96,7 +100,12 @@ def upsert_chunks(items: list[dict]) -> int:
             embeddings=[i["embedding"] for i in items],
             documents=[i["text"] for i in items],
             metadatas=[
-                {"source": i.get("source", ""), "file": i.get("file", ""), "position": i.get("position", 0)}
+                {
+                    "source": i.get("source", ""),
+                    "file": i.get("file", ""),
+                    "position": i.get("position", 0),
+                    "customer_id": i.get("customer_id", "") or "",
+                }
                 for i in items
             ],
         )
@@ -127,22 +136,32 @@ def delete_by_file(file_path: str) -> int:
         return 0
 
 
-def search(query_embedding: list[float], top_k: int = 3) -> list[dict]:
+def search(query_embedding: list[float], top_k: int = 3,
+           where: dict | None = None) -> list[dict]:
     """Vector search. Returns a list of dicts shaped:
-        {"text": str, "source": str, "file": str, "position": int, "score": float}
+        {"text": str, "source": str, "file": str, "position": int,
+         "customer_id": str, "score": float}
     where `score` is 1 - distance (Chroma returns cosine distance, we
     convert to similarity for analyst-friendly display). Returns [] on any
-    failure — the hot path must stay graceful."""
+    failure — the hot path must stay graceful.
+
+    Phase 4b-rev: optional `where` is passed straight to Chroma's
+    metadata filter (e.g. ``where={"customer_id": "logicalis-asia"}``).
+    Customer-scoped retrieval relies on this so chunks from other
+    customers don't surface in a customer's triage comment."""
     if not query_embedding:
         return []
     collection = _get_collection()
     if collection is None:
         return []
     try:
-        res = collection.query(
-            query_embeddings=[query_embedding],
-            n_results=max(1, int(top_k)),
-        )
+        query_kwargs: dict = {
+            "query_embeddings": [query_embedding],
+            "n_results": max(1, int(top_k)),
+        }
+        if where:
+            query_kwargs["where"] = where
+        res = collection.query(**query_kwargs)
         # Chroma returns lists-of-lists keyed by query index; we only sent 1 query.
         docs = (res.get("documents") or [[]])[0]
         metas = (res.get("metadatas") or [[]])[0]
@@ -156,6 +175,7 @@ def search(query_embedding: list[float], top_k: int = 3) -> list[dict]:
                 "source": meta.get("source", "") or "",
                 "file": meta.get("file", "") or "",
                 "position": int(meta.get("position", 0) or 0),
+                "customer_id": meta.get("customer_id", "") or "",
                 "score": score,
             })
         return out

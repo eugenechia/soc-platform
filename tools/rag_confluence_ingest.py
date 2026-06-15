@@ -1,30 +1,32 @@
 """
-Phase 4b — Confluence source ingest for the L1 Triage RAG store.
+Phase 4b-rev (2026-06-15) — per-customer Confluence ingest.
 
-Maintains a small JSON file (``data/rag_confluence_pages.json``) listing the
-Confluence pages the team has chosen to index. Provides three operations
-backed by the existing Phase 4 RAG plumbing (Chroma + Azure OpenAI embed):
+Each customer record in ``data/customers.json`` carries its own list of
+Confluence pages under ``confluence_pages``. The L1 Triage webhook resolves
+a ticket to a customer (via Jira project key, see
+``tools.customers.find_customer_by_jira_project``) and asks Chroma only for
+chunks tagged with that ``customer_id``.
 
-  * ``add_page(url)``    — register a page, fetch its metadata.
-  * ``remove_page(id)``  — drop from list + delete its chunks from Chroma.
-  * ``sync_all()``       — refresh every registered page (fetch + chunk +
-                           embed + upsert). Per-page errors are isolated.
+Why per-customer:
+  * Single source of truth lives on the customer record alongside the
+    customer's other configuration (Sentinel SP creds, Jira projects, etc.).
+  * Retrieval can be strictly scoped so customer A's tickets never surface
+    customer B's HRT/HVT list or escalation matrix.
+  * UI lives on the customer onboarding/edit page — admins manage what their
+    customer's L1 Triage sees from the same screen they edit credentials.
 
-Hot retrieval path (tools/rag_retrieval.py) is NOT touched — Confluence
-chunks land in the same Chroma collection as local-folder chunks, just
-with a different ``source`` metadata tag. The killswitch and timeout still
-apply unchanged.
+What was here before (Phase 4b global flat-file model) is gone. If anyone
+re-runs an old client against the deprecated ``data/rag_confluence_pages.json``
+file, they get a clear warning at startup and the file is otherwise ignored.
 
-Persisted state lives on the Azure Files share alongside data/customers.json
-etc., written atomically via tempfile + rename so a crash mid-write can't
-corrupt the list.
+Hot retrieval path (``tools/rag_retrieval.py``) is unchanged in shape —
+``customer_id`` is just one more parameter. The killswitch, the 5-second
+timeout, and the "comment-only, never LLM Triage prompt" rule from Phase 4
+still apply.
 """
 from __future__ import annotations
 
-import json
 import logging
-import os
-import tempfile
 import threading
 from datetime import datetime, timezone
 from typing import Optional
@@ -32,83 +34,81 @@ from typing import Optional
 from bs4 import BeautifulSoup
 
 from tools.confluence_client import extract_page_id, fetch_page
+from tools.customers import get_customer, load_customers, save_customers
 from tools.rag_chunking import chunk_text
 from tools.rag_embed import embed_texts
 from tools.rag_store import delete_by_file, upsert_chunks
 
 logger = logging.getLogger(__name__)
 
-_DEFAULT_DATA_DIR = "/app/data"
-_PAGES_FILENAME = "rag_confluence_pages.json"
-
-_io_lock = threading.Lock()  # serialises list reads/writes within a process
+_io_lock = threading.Lock()  # serialises customer-record reads/writes
 
 
-# ─── Persisted page list ──────────────────────────────────────────────────────
+# ─── Per-customer page-list accessors ────────────────────────────────────────
 
-def _pages_file() -> str:
-    base = os.environ.get("DATA_DIR", "").strip() or _DEFAULT_DATA_DIR
-    return os.path.join(base, _PAGES_FILENAME)
-
-
-def load_pages() -> list[dict]:
-    """Load the persisted list. Returns []  if the file doesn't exist (first
-    use) or can't be parsed."""
-    path = _pages_file()
-    if not os.path.exists(path):
+def load_pages_for_customer(cid: str) -> list[dict]:
+    """Return the configured Confluence pages for a customer (empty list if
+    the customer doesn't exist or has none)."""
+    if not cid:
         return []
-    try:
-        with open(path, "r", encoding="utf-8") as f:
-            data = json.load(f)
-        if isinstance(data, list):
-            return data
-        logger.warning("Confluence pages file at %s is not a list — treating as empty", path)
+    c = get_customer(cid)
+    if not c:
         return []
-    except Exception as e:
-        logger.warning("Confluence pages load failed (%s): %s", type(e).__name__, e)
-        return []
+    return list(c.get("confluence_pages") or [])
 
 
-def save_pages(pages: list[dict]) -> bool:
-    """Atomic write: tmpfile in the same dir, then rename. Returns True on
-    success."""
-    path = _pages_file()
-    os.makedirs(os.path.dirname(path), exist_ok=True)
-    try:
-        tmp_dir = os.path.dirname(path)
-        with tempfile.NamedTemporaryFile("w", encoding="utf-8", dir=tmp_dir,
-                                          delete=False, suffix=".tmp") as tmp:
-            json.dump(pages, tmp, indent=2, ensure_ascii=False)
-            tmp_path = tmp.name
-        os.replace(tmp_path, path)
-        return True
-    except Exception as e:
-        logger.warning("Confluence pages save failed (%s): %s", type(e).__name__, e)
+def save_pages_for_customer(cid: str, pages: list[dict]) -> bool:
+    """Replace the ``confluence_pages`` array on the given customer. Returns
+    True on success."""
+    if not cid:
         return False
+    with _io_lock:
+        customers = load_customers()
+        idx = None
+        for i, c in enumerate(customers):
+            if c.get("id") == cid:
+                idx = i
+                break
+        if idx is None:
+            logger.warning("save_pages_for_customer: no customer %s", cid)
+            return False
+        customers[idx]["confluence_pages"] = list(pages or [])
+        try:
+            save_customers(customers)
+            return True
+        except Exception as e:
+            logger.warning("save_pages_for_customer(%s) write failed (%s): %s",
+                           cid, type(e).__name__, e)
+            return False
 
 
-# ─── Page operations ──────────────────────────────────────────────────────────
+# ─── Helpers ──────────────────────────────────────────────────────────────────
 
 def _now_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
 def _file_key(page_id: str) -> str:
-    """Chroma metadata.file value. Stable for the lifetime of the page; used
-    by delete_by_file() to clean prior chunks before re-upsert."""
+    """Chroma metadata.file value. Stable for the lifetime of the page so
+    delete_by_file() cleanly purges the prior chunks before re-upsert."""
     return f"confluence:{page_id}"
 
 
 def _source_tag(space_key: str) -> str:
-    """Rendered as `[bracketed tag]` in the Jira comment."""
     return f"Confluence:{space_key}" if space_key else "Confluence"
 
 
-def add_page(url: str) -> dict:
-    """Validate the URL, fetch the page metadata from Confluence, persist a
-    new entry. Returns either the new entry or a dict with an ``error``
-    key (so the HTTP route can map to the right status code).
-    """
+# ─── Page operations ──────────────────────────────────────────────────────────
+
+def add_page(customer_id: str, url: str) -> dict:
+    """Validate the URL, fetch page metadata from Confluence, persist a new
+    entry on the customer record. Returns either the new entry or a dict
+    with an ``error`` key for the HTTP route to map to a status code."""
+    if not customer_id:
+        return {"error": "customer_id is required"}
+    if not get_customer(customer_id):
+        return {"error": f"customer {customer_id} not found"}
+
     page_id = extract_page_id(url or "")
     if not page_id:
         return {"error": "Could not extract a Confluence page id from that URL. "
@@ -120,9 +120,7 @@ def add_page(url: str) -> dict:
                           f"check the page exists and your credentials can read it."}
 
     with _io_lock:
-        pages = load_pages()
-        # Replace existing entry if the same id is already in the list (user
-        # re-pasted to update the URL field, say).
+        pages = load_pages_for_customer(customer_id)
         pages = [p for p in pages if str(p.get("page_id")) != page_id]
         entry = {
             "url": url.strip(),
@@ -134,29 +132,28 @@ def add_page(url: str) -> dict:
             "last_error": None,
         }
         pages.append(entry)
-        save_pages(pages)
+        save_pages_for_customer(customer_id, pages)
     return entry
 
 
-def remove_page(page_id: str) -> bool:
-    """Drop the entry + purge its chunks from Chroma. Best-effort on both
-    halves — the entry is removed even if the Chroma delete fails (the
-    user can re-trigger by removing again)."""
-    if not page_id:
+def remove_page(customer_id: str, page_id: str) -> bool:
+    """Drop the entry from the customer record + purge its chunks from
+    Chroma. Best-effort on both halves."""
+    if not customer_id or not page_id:
         return False
     with _io_lock:
-        pages = load_pages()
+        pages = load_pages_for_customer(customer_id)
         before = len(pages)
         pages = [p for p in pages if str(p.get("page_id")) != str(page_id)]
         removed = len(pages) != before
         if removed:
-            save_pages(pages)
+            save_pages_for_customer(customer_id, pages)
     if removed:
         try:
             delete_by_file(_file_key(str(page_id)))
         except Exception as e:
-            logger.warning("Confluence remove_page(%s): Chroma delete failed: %s",
-                           page_id, e)
+            logger.warning("remove_page(%s, %s): Chroma delete failed: %s",
+                           customer_id, page_id, e)
     return removed
 
 
@@ -170,13 +167,9 @@ def _strip_xhtml(body_html: str) -> str:
         return ""
     try:
         soup = BeautifulSoup(body_html, "html.parser")
-        # Confluence-specific noise: structured-macro params often produce
-        # `ac:parameter` etc; remove script/style entirely.
         for tag in soup(["script", "style"]):
             tag.decompose()
         text = soup.get_text(separator="\n")
-        # Collapse runs of blank lines so chunk_text's paragraph splitter
-        # behaves naturally.
         lines = [ln.strip() for ln in text.splitlines()]
         cleaned: list[str] = []
         blank = False
@@ -194,16 +187,17 @@ def _strip_xhtml(body_html: str) -> str:
         return body_html
 
 
-def _chunk_id(page_id: str, position: int) -> str:
-    return f"confluence-{page_id}-{position}"
+def _chunk_id(customer_id: str, page_id: str, position: int) -> str:
+    """Including the customer id in the chunk id keeps two customers from
+    accidentally colliding if (improbably) they ever indexed the same
+    public Confluence page."""
+    return f"confluence-{customer_id}-{page_id}-{position}"
 
 
-def _sync_one(entry: dict) -> dict:
-    """Refresh chunks for a single page entry. Mutates `entry` in place
-    with last_synced_at / chunk_count / last_error and returns it.
-    Never raises — per-page failures are recorded into last_error and the
-    outer sync_all moves on to the next page.
-    """
+def _sync_one(customer_id: str, entry: dict) -> dict:
+    """Refresh chunks for a single page entry on the given customer. Mutates
+    `entry` in place with last_synced_at / chunk_count / last_error and
+    returns it. Never raises."""
     page_id = str(entry.get("page_id") or "").strip()
     if not page_id:
         entry["last_error"] = "missing page_id"
@@ -214,7 +208,6 @@ def _sync_one(entry: dict) -> dict:
         entry["last_error"] = "Confluence fetch failed (see logs)"
         return entry
 
-    # Refresh display-y fields from the live page in case it was renamed.
     if fetched.get("title"):
         entry["title"] = fetched["title"]
     if fetched.get("space_key") and not entry.get("space_key"):
@@ -222,9 +215,10 @@ def _sync_one(entry: dict) -> dict:
 
     text = _strip_xhtml(fetched.get("body_html") or "")
     chunks = chunk_text(text)
+    file_key = _file_key(page_id)
+
     if not chunks:
-        # Empty page — wipe any old chunks and record state.
-        delete_by_file(_file_key(page_id))
+        delete_by_file(file_key)
         entry["last_synced_at"] = _now_iso()
         entry["chunk_count"] = 0
         entry["last_error"] = None
@@ -232,60 +226,59 @@ def _sync_one(entry: dict) -> dict:
 
     vectors = embed_texts(chunks)
     items: list[dict] = []
-    file_key = _file_key(page_id)
     source = _source_tag(entry.get("space_key") or fetched.get("space_key") or "")
     for pos, (chunk, vec) in enumerate(zip(chunks, vectors)):
         if vec is None:
             continue
         items.append({
-            "id": _chunk_id(page_id, pos),
+            "id": _chunk_id(customer_id, page_id, pos),
             "text": chunk,
             "embedding": vec,
             "source": source,
             "file": file_key,
             "position": pos,
+            "customer_id": customer_id,
         })
 
     if not items:
         entry["last_error"] = "every chunk failed to embed"
         return entry
 
-    # Idempotent replace: drop prior chunks first.
     delete_by_file(file_key)
     written = upsert_chunks(items)
 
     entry["last_synced_at"] = _now_iso()
     entry["chunk_count"] = int(written)
     entry["last_error"] = None
-    logger.info("Confluence sync: page %s (%s) — %d chunks written",
-                page_id, entry.get("title", ""), written)
+    logger.info("Confluence sync: customer=%s page=%s (%s) — %d chunks",
+                customer_id, page_id, entry.get("title", ""), written)
     return entry
 
 
-def sync_all() -> dict:
-    """Refresh every registered Confluence page. Per-page failures are
-    isolated. Returns:
-        {pages: int, chunks_total: int, succeeded: int, failed: int,
-         pages_state: <updated entries>}
-    """
+def sync_for_customer(customer_id: str) -> dict:
+    """Refresh every page registered against this customer. Returns:
+        {customer_id, pages, chunks_total, succeeded, failed, pages_state}
+    Per-page failures isolated. The whole function never raises."""
+    if not customer_id:
+        return {"error": "customer_id is required"}
+    if not get_customer(customer_id):
+        return {"error": f"customer {customer_id} not found"}
+
     with _io_lock:
-        pages = load_pages()
+        pages = load_pages_for_customer(customer_id)
     if not pages:
-        return {"pages": 0, "chunks_total": 0, "succeeded": 0, "failed": 0,
-                "pages_state": []}
+        return {"customer_id": customer_id, "pages": 0, "chunks_total": 0,
+                "succeeded": 0, "failed": 0, "pages_state": []}
 
     succeeded = 0
     failed = 0
     chunks_total = 0
     for entry in pages:
         try:
-            updated = _sync_one(entry)
+            updated = _sync_one(customer_id, entry)
         except Exception as e:
-            # Defence in depth — _sync_one is meant not to raise, but this
-            # is the failure-isolation boundary the user explicitly asked
-            # for. Log + record + carry on.
-            logger.exception("Confluence sync_one for %s raised: %s",
-                             entry.get("page_id"), e)
+            logger.exception("Confluence sync_one for customer=%s page=%s raised: %s",
+                             customer_id, entry.get("page_id"), e)
             entry["last_error"] = f"{type(e).__name__}: {e}"
             updated = entry
         if updated.get("last_error"):
@@ -295,29 +288,63 @@ def sync_all() -> dict:
             chunks_total += int(updated.get("chunk_count") or 0)
 
     with _io_lock:
-        save_pages(pages)
+        save_pages_for_customer(customer_id, pages)
 
     summary = {
+        "customer_id": customer_id,
         "pages": len(pages),
         "chunks_total": chunks_total,
         "succeeded": succeeded,
         "failed": failed,
         "pages_state": pages,
     }
-    logger.info("Confluence sync summary: %d pages, %d chunks, %d failed",
-                summary["pages"], summary["chunks_total"], summary["failed"])
+    logger.info("Confluence sync summary for customer=%s: %d pages, %d chunks, %d failed",
+                customer_id, summary["pages"], summary["chunks_total"], summary["failed"])
     return summary
 
 
-# ─── CLI passthrough (handy from `python -m`) ────────────────────────────────
+# ─── Deprecated global flat-file warning (one-shot at first import) ───────────
+
+def _warn_deprecated_global_file() -> None:
+    """Phase 4b shipped on 2026-06-15 used data/rag_confluence_pages.json as a
+    global flat list. Phase 4b-rev (same day, later) moved everything to
+    per-customer storage. If the old file still exists with content, log a
+    single WARNING listing the entries so the operator can manually re-add
+    them on the appropriate customer record."""
+    import os, json
+    from tools.customers import BASE_DIR
+    legacy = os.path.join(BASE_DIR, "data", "rag_confluence_pages.json")
+    if not os.path.exists(legacy):
+        return
+    try:
+        with open(legacy) as f:
+            data = json.load(f)
+        if not data:
+            return
+        logger.warning(
+            "DEPRECATED: %s contains %d entries from the old global Confluence model. "
+            "Per Phase 4b-rev, manage Confluence pages on each customer record at "
+            "/admin/customers. These entries are NOT used: %s",
+            legacy, len(data), [d.get("url") for d in data],
+        )
+    except Exception:
+        # Don't crash at import; this warning is best-effort.
+        pass
+
+
+_warn_deprecated_global_file()
+
+
+# ─── CLI passthrough ──────────────────────────────────────────────────────────
 
 def main(argv: Optional[list[str]] = None) -> int:
     import argparse
-    parser = argparse.ArgumentParser(description="Sync Confluence RAG pages.")
+    parser = argparse.ArgumentParser(description="Sync Confluence RAG pages for a customer.")
+    parser.add_argument("--customer", required=True, help="Customer id.")
     parser.add_argument("--add", help="Register a Confluence page URL.")
     parser.add_argument("--remove", help="Remove a registered page id.")
-    parser.add_argument("--sync", action="store_true", help="Sync all registered pages.")
-    parser.add_argument("--list", action="store_true", help="Dump the registered pages.")
+    parser.add_argument("--sync", action="store_true", help="Sync the customer's pages.")
+    parser.add_argument("--list", action="store_true", help="Dump the customer's registered pages.")
     parser.add_argument("--verbose", "-v", action="store_true")
     args = parser.parse_args(argv)
 
@@ -326,14 +353,14 @@ def main(argv: Optional[list[str]] = None) -> int:
                             format="%(asctime)s %(levelname)s %(name)s: %(message)s")
 
     if args.add:
-        print(add_page(args.add))
+        print(add_page(args.customer, args.add))
     if args.remove:
-        print({"removed": remove_page(args.remove)})
+        print({"removed": remove_page(args.customer, args.remove)})
     if args.list:
-        for p in load_pages():
+        for p in load_pages_for_customer(args.customer):
             print(p)
     if args.sync:
-        s = sync_all()
+        s = sync_for_customer(args.customer)
         s.pop("pages_state", None)
         print(s)
     return 0

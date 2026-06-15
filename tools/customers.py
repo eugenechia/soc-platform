@@ -59,8 +59,11 @@ type fields (``jira_incident_issuetype`` etc.) apply to ALL projects on the
 record; per-project issue type overrides are intentionally NOT supported.
 """
 import json
+import logging
 import os
 from typing import Optional
+
+logger = logging.getLogger(__name__)
 
 BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 CUSTOMERS_FILE = os.path.join(BASE_DIR, "data", "customers.json")
@@ -133,7 +136,47 @@ def _normalize_customer(record: dict) -> dict:
         else:
             out["jira_projects"] = []
 
+    # Phase 4b-rev (2026-06-15): per-customer Confluence pages. Each entry has
+    # {url, page_id, title, space_key, last_synced_at, chunk_count, last_error}.
+    # Empty list when the customer hasn't been configured for RAG yet.
+    if not isinstance(out.get("confluence_pages"), list):
+        out["confluence_pages"] = []
+
     return out
+
+
+def find_customer_by_jira_project(project_key: str) -> Optional[dict]:
+    """Reverse-lookup a customer by Jira project key.
+
+    Scans every customer's ``jira_projects[].project_key`` (and the legacy flat
+    ``jira_project_key`` field). Returns the FIRST customer whose record claims
+    the given project key, or None if no customer matches.
+
+    Used by the L1 Triage webhook (Phase 4b-rev) to derive which customer a
+    ticket belongs to so RAG retrieval can be scoped. Logs a WARNING when
+    multiple customers claim the same project key — that's a config bug the
+    operator should fix (a long-term solution is a customer-slug custom field
+    on Jira tickets; see Phase 4c roadmap).
+    """
+    if not project_key:
+        return None
+    key = project_key.strip().upper()
+    matches = []
+    for c in load_customers():
+        # Normalised customer always carries jira_projects as a list.
+        for jp in (c.get("jira_projects") or []):
+            if (jp.get("project_key") or "").strip().upper() == key:
+                matches.append(c)
+                break
+    if not matches:
+        return None
+    if len(matches) > 1:
+        logger.warning(
+            "Multiple customers (%s) claim Jira project key %s — using the first match (%s). "
+            "This is a config bug; each project should map to a single customer.",
+            [m.get("id") for m in matches], key, matches[0].get("id"),
+        )
+    return matches[0]
 
 
 def load_customers() -> list:

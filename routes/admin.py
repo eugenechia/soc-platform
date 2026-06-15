@@ -240,53 +240,61 @@ def api_rag_reingest():
         return jsonify({"status": "error", "error": f"{type(e).__name__}: {e}"}), 500
 
 
-# ── Phase 4b: Confluence source admin ────────────────────────────────────────
+# ── Phase 4b-rev: per-customer Confluence sources ────────────────────────────
+# Confluence pages now live on the customer record (under `confluence_pages`).
+# The /admin/rag page no longer has a global Confluence card — manage pages
+# from the customer Edit modal at /admin/customers.
 
-@admin_bp.route("/api/rag/confluence/pages", methods=["GET"])
+@admin_bp.route("/api/customers/<cid>/confluence/pages", methods=["GET"])
 @require_login
-def api_rag_confluence_pages_list():
-    from tools.rag_confluence_ingest import load_pages
-    return jsonify({"pages": load_pages()})
+def api_customer_confluence_pages_list(cid: str):
+    from tools.rag_confluence_ingest import load_pages_for_customer
+    from tools.customers import get_customer
+    if not get_customer(cid):
+        return jsonify({"status": "error", "error": "customer not found"}), 404
+    return jsonify({"pages": load_pages_for_customer(cid)})
 
 
-@admin_bp.route("/api/rag/confluence/pages", methods=["POST"])
+@admin_bp.route("/api/customers/<cid>/confluence/pages", methods=["POST"])
 @require_login
-def api_rag_confluence_pages_add():
-    """Register a Confluence page URL. Body: {"url": "..."}. Fetches title
-    + space from Confluence so the table can show real metadata."""
+def api_customer_confluence_pages_add(cid: str):
+    """Register a Confluence page on a customer. Body: {"url": "..."}.
+    Fetches title + space from Confluence so the table can show real metadata."""
     from tools.rag_confluence_ingest import add_page
     payload = request.get_json(silent=True) or {}
     url = (payload.get("url") or "").strip()
     if not url:
         return jsonify({"status": "error", "error": "url is required"}), 400
-    result = add_page(url)
+    result = add_page(cid, url)
     if "error" in result:
-        return jsonify({"status": "error", "error": result["error"]}), 400
+        status = 404 if "not found" in result["error"] else 400
+        return jsonify({"status": "error", "error": result["error"]}), status
     return jsonify({"status": "ok", "entry": result})
 
 
-@admin_bp.route("/api/rag/confluence/pages/<page_id>", methods=["DELETE"])
+@admin_bp.route("/api/customers/<cid>/confluence/pages/<page_id>", methods=["DELETE"])
 @require_login
-def api_rag_confluence_pages_remove(page_id: str):
+def api_customer_confluence_pages_remove(cid: str, page_id: str):
     from tools.rag_confluence_ingest import remove_page
-    removed = remove_page(page_id)
+    removed = remove_page(cid, page_id)
     if not removed:
         return jsonify({"status": "error", "error": "page not found"}), 404
     return jsonify({"status": "ok", "removed": page_id})
 
 
-@admin_bp.route("/api/rag/confluence/sync", methods=["POST"])
+@admin_bp.route("/api/customers/<cid>/confluence/sync", methods=["POST"])
 @require_login
-def api_rag_confluence_sync():
-    """Sync every registered Confluence page. Synchronous: dataset is small
-    (<20 pages typical). Returns the summary including per-page state so
-    the UI can refresh the table without a second round-trip."""
-    from tools.rag_confluence_ingest import sync_all
+def api_customer_confluence_sync(cid: str):
+    """Sync every Confluence page registered on this customer. Synchronous;
+    returns the summary so the UI can refresh without a second round-trip."""
+    from tools.rag_confluence_ingest import sync_for_customer
     try:
-        summary = sync_all()
+        summary = sync_for_customer(cid)
+        if "error" in summary:
+            return jsonify({"status": "error", "error": summary["error"]}), 404
         return jsonify({"status": "ok", "summary": summary})
     except Exception as e:
-        log.exception("Confluence sync failed: %s", e)
+        log.exception("Confluence sync for customer=%s failed: %s", cid, e)
         return jsonify({"status": "error", "error": f"{type(e).__name__}: {e}"}), 500
 
 

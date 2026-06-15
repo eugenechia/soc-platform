@@ -42,6 +42,7 @@ from tools.dedup_jira import (
     mark_as_duplicate,
     write_dedup_key,
 )
+from tools.customers import find_customer_by_jira_project
 from tools.enrichment import enrich_ticket, has_entity_data, set_priority, assign_jira_ticket
 from tools.gateway.dedup import derive_key_from_ticket
 from tools.historical_alerts import query_similar_alerts
@@ -163,12 +164,23 @@ def _run_enrichment(job_id: str, ticket_key: str) -> None:
         # enrichment comment only, NOT fed into the LLM Triage prompt.
         # Mitigates the prior failure mode where bad retrievals confused
         # the LLM and degraded priority decisions. LLM integration is a
-        # future opt-in (Phase 4b) contingent on retrieval quality.
+        # future opt-in (Phase 4c) contingent on retrieval quality.
+        #
+        # Phase 4b-rev (2026-06-15): retrieval is strictly customer-scoped.
+        # Resolve the customer from the ticket's project key BEFORE the call;
+        # tickets whose project key matches no customer get no Customer
+        # Context section (silent skip).
         rag_chunks = None
         try:
             summary_text = (last_issue["fields"].get("summary") or "")
             query = summary_text[:500]
-            rag_chunks = retrieve_customer_context(query)
+            project_key = ticket_key.split("-")[0]
+            customer = find_customer_by_jira_project(project_key)
+            customer_id = (customer or {}).get("id") or ""
+            if not customer_id:
+                logger.info("Enrichment %s: no customer matched project_key=%s — "
+                            "skipping RAG retrieval", job_id, project_key)
+            rag_chunks = retrieve_customer_context(query, customer_id=customer_id)
         except Exception as e:
             logger.warning("Enrichment %s: RAG retrieval orchestrator raised (%s); continuing without it: %s",
                            job_id, type(e).__name__, e)

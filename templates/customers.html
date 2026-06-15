@@ -442,6 +442,36 @@
           Optional per-tenant Defender XDR credentials. Empty list uses the global <code>DEFENDER_*</code> env-var fallback.
         </div>
       </div>
+      <div class="form-group" id="editConfluenceGroup">
+        <label>Confluence Sources (L1 Triage RAG)</label>
+        <div class="help-hint">
+          Confluence pages indexed for this customer's L1 Triage Customer Context. Pages here only surface in <strong>this</strong> customer's enrichment comments — never another customer's. Sync runs against this customer only.
+        </div>
+        <div style="display:flex; gap:8px; margin-top:8px;">
+          <input type="text" id="editConfluenceUrl" placeholder="https://logicalisasia.atlassian.net/wiki/spaces/SOC/pages/12345678/Title" style="flex:1; padding:9px 12px; border:1px solid var(--border); border-radius:6px; font-size:14px; font-family:inherit;">
+          <button type="button" class="btn btn-secondary btn-sm" id="editConfluenceAdd">Add page</button>
+          <button type="button" class="btn btn-primary btn-sm" id="editConfluenceSync">Sync now</button>
+        </div>
+        <div style="overflow-x:auto; margin-top:10px;">
+          <table id="editConfluenceTable" style="width:100%; border-collapse:collapse; font-size:13px;">
+            <thead>
+              <tr style="background:var(--bg-raised); text-transform:uppercase; font-size:11px; letter-spacing:0.3px; color:var(--text-muted);">
+                <th style="text-align:left; padding:8px 10px;">Title</th>
+                <th style="text-align:left; padding:8px 10px;">Space</th>
+                <th style="text-align:left; padding:8px 10px;">Last synced</th>
+                <th style="text-align:left; padding:8px 10px;">Chunks</th>
+                <th style="text-align:left; padding:8px 10px;">Last error</th>
+                <th style="text-align:left; padding:8px 10px;">URL</th>
+                <th style="padding:8px 10px;"></th>
+              </tr>
+            </thead>
+            <tbody id="editConfluenceTbody">
+              <tr><td colspan="7" style="padding:20px; text-align:center; color:var(--text-muted);">Loading…</td></tr>
+            </tbody>
+          </table>
+        </div>
+        <div id="editConfluenceResult" style="display:none; margin-top:10px; padding:10px 12px; background:var(--bg-raised); border-radius:6px; font-size:12px; font-family:ui-monospace, SFMono-Regular, Menlo, monospace; white-space:pre-wrap; word-break:break-word;"></div>
+      </div>
       <div class="form-group">
         <label>New Logo (optional)</label>
         <input type="file" id="editLogo" accept=".png,.jpg,.jpeg,.webp" style="font-size:13px; color:var(--text-muted);">
@@ -836,8 +866,145 @@
         : SYSTEM_DEFAULT_SECTIONS;
       renderCustomerSectionGrid('edit', saved);
 
+      // Phase 4b-rev — Confluence Sources table is per-customer; load it.
+      loadConfluencePages(c.id);
+
       document.getElementById('editModal').classList.add('active');
     }
+
+    // ── Phase 4b-rev: per-customer Confluence Sources management ──────────
+    function _confluenceRenderTable(pages) {
+      const tbody = document.getElementById('editConfluenceTbody');
+      if (!pages || !pages.length) {
+        tbody.innerHTML = '<tr><td colspan="7" style="padding:20px; text-align:center; color:var(--text-muted);">No Confluence pages configured yet — paste a URL above and click Add page.</td></tr>';
+        return;
+      }
+      const fmt = (iso) => {
+        if (!iso) return '—';
+        try {
+          return new Date(iso).toLocaleString('en-GB', { timeZone: 'Asia/Singapore', hour12: false }) + ' SGT';
+        } catch (_) { return iso; }
+      };
+      const esc = (s) => (s ?? '').toString()
+        .replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+      tbody.innerHTML = pages.map(p => `
+        <tr>
+          <td style="padding:8px 10px; max-width:240px; word-break:break-word;">${esc(p.title || '(untitled)')}</td>
+          <td style="padding:8px 10px;">${esc(p.space_key || '—')}</td>
+          <td style="padding:8px 10px;">${esc(fmt(p.last_synced_at))}</td>
+          <td style="padding:8px 10px; font-variant-numeric:tabular-nums;">${esc(p.chunk_count ?? 0)}</td>
+          <td style="padding:8px 10px; color:var(--danger); font-size:12px; max-width:180px; word-break:break-word;">${esc(p.last_error || '')}</td>
+          <td style="padding:8px 10px; max-width:200px; font-size:12px; color:var(--text-muted); word-break:break-all;"><a href="${esc(p.url)}" target="_blank" rel="noopener noreferrer">open</a></td>
+          <td style="padding:8px 10px;"><button type="button" class="btn-link" data-page-id="${esc(p.page_id)}" style="background:transparent; border:none; color:var(--danger); cursor:pointer; font-size:13px; padding:4px 6px; border-radius:4px;">Remove</button></td>
+        </tr>
+      `).join('');
+    }
+    function _confluenceShowResult(text, isError) {
+      const el = document.getElementById('editConfluenceResult');
+      el.style.display = 'block';
+      el.style.background = isError ? 'var(--danger-light, #FEE2E2)' : 'var(--bg-raised)';
+      el.style.color = isError ? 'var(--danger)' : '';
+      el.textContent = text;
+    }
+    async function loadConfluencePages(cid) {
+      if (!cid) return;
+      try {
+        const r = await fetch(`/admin/api/customers/${encodeURIComponent(cid)}/confluence/pages`);
+        const j = await r.json();
+        _confluenceRenderTable(j.pages || []);
+      } catch (err) {
+        _confluenceShowResult('Failed to load: ' + err.message, true);
+      }
+    }
+    async function addConfluencePage() {
+      const cid = document.getElementById('editId').value;
+      const url = (document.getElementById('editConfluenceUrl').value || '').trim();
+      if (!cid || !url) return;
+      const btn = document.getElementById('editConfluenceAdd');
+      btn.disabled = true;
+      _confluenceShowResult('Adding page…', false);
+      try {
+        const r = await fetch(`/admin/api/customers/${encodeURIComponent(cid)}/confluence/pages`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ url }),
+        });
+        const j = await r.json();
+        if (!r.ok || j.status !== 'ok') {
+          _confluenceShowResult('Error: ' + (j.error || 'unknown'), true);
+          return;
+        }
+        document.getElementById('editConfluenceUrl').value = '';
+        _confluenceShowResult('Added "' + (j.entry.title || j.entry.page_id) + '". Click "Sync now" to index its content.', false);
+        await loadConfluencePages(cid);
+      } catch (err) {
+        _confluenceShowResult('Request failed: ' + err.message, true);
+      } finally {
+        btn.disabled = false;
+      }
+    }
+    async function removeConfluencePage(pageId) {
+      const cid = document.getElementById('editId').value;
+      if (!cid || !pageId) return;
+      if (!confirm('Remove this Confluence page from the customer?\n\n(Its existing chunks will be deleted.)')) return;
+      _confluenceShowResult('Removing…', false);
+      try {
+        const r = await fetch(`/admin/api/customers/${encodeURIComponent(cid)}/confluence/pages/${encodeURIComponent(pageId)}`, {
+          method: 'DELETE',
+        });
+        const j = await r.json();
+        if (!r.ok || j.status !== 'ok') {
+          _confluenceShowResult('Error: ' + (j.error || 'unknown'), true);
+          return;
+        }
+        _confluenceShowResult('Removed page ' + pageId + '.', false);
+        await loadConfluencePages(cid);
+      } catch (err) {
+        _confluenceShowResult('Request failed: ' + err.message, true);
+      }
+    }
+    async function syncConfluencePages() {
+      const cid = document.getElementById('editId').value;
+      if (!cid) return;
+      const btn = document.getElementById('editConfluenceSync');
+      btn.disabled = true;
+      _confluenceShowResult('Syncing this customer\'s pages (can take 10-60s)…', false);
+      try {
+        const r = await fetch(`/admin/api/customers/${encodeURIComponent(cid)}/confluence/sync`, { method: 'POST' });
+        const j = await r.json();
+        if (!r.ok || j.status !== 'ok') {
+          _confluenceShowResult('Error: ' + (j.error || JSON.stringify(j)), true);
+          return;
+        }
+        const s = j.summary;
+        const text = `Sync complete — ${s.succeeded}/${s.pages} pages succeeded, ${s.chunks_total} chunks total` +
+                      (s.failed > 0 ? `, ${s.failed} failed (see Last error column).` : '.');
+        _confluenceShowResult(text, false);
+        _confluenceRenderTable(s.pages_state || []);
+      } catch (err) {
+        _confluenceShowResult('Request failed: ' + err.message, true);
+      } finally {
+        btn.disabled = false;
+      }
+    }
+    // Wire up the edit-modal Confluence controls. Listeners are stable for the
+    // lifetime of the page (we just retarget them at the current customer id
+    // by reading editId on demand).
+    document.addEventListener('DOMContentLoaded', () => {
+      const addBtn = document.getElementById('editConfluenceAdd');
+      const syncBtn = document.getElementById('editConfluenceSync');
+      const urlInput = document.getElementById('editConfluenceUrl');
+      const tbody = document.getElementById('editConfluenceTbody');
+      if (addBtn) addBtn.addEventListener('click', addConfluencePage);
+      if (syncBtn) syncBtn.addEventListener('click', syncConfluencePages);
+      if (urlInput) urlInput.addEventListener('keypress', (e) => {
+        if (e.key === 'Enter') { e.preventDefault(); addConfluencePage(); }
+      });
+      if (tbody) tbody.addEventListener('click', (e) => {
+        const btn = e.target.closest('button[data-page-id]');
+        if (btn) removeConfluencePage(btn.getAttribute('data-page-id'));
+      });
+    });
     function closeEditModal() {
       document.getElementById('editModal').classList.remove('active');
     }

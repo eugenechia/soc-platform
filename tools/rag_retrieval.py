@@ -74,15 +74,25 @@ def _run_with_timeout(fn, *, timeout_s: float):
     return result["value"], None
 
 
-def retrieve_customer_context(query: str) -> list[dict] | None:
+def retrieve_customer_context(query: str,
+                              customer_id: str | None = None) -> list[dict] | None:
     """Return up to RAG_TOP_K chunks above RAG_MIN_SCORE for the given query.
 
+    Args:
+        query: text concatenated from the Jira ticket summary + IOCs.
+        customer_id: Phase 4b-rev (2026-06-15). When non-empty, retrieval is
+            STRICTLY scoped to chunks whose ``customer_id`` metadata matches.
+            When None or empty, retrieval is skipped — every webhook is
+            expected to resolve a customer first. This prevents cross-
+            customer context leakage and matches the per-customer model
+            chosen in Phase 4b-rev.
+
     Returns:
-        list of dicts with keys {text, source, file, position, score} when
-        at least one chunk clears the score threshold.
-        None in every failure case (disabled, no provider, embed failure,
-        store failure, timeout, no chunks above threshold). Caller treats
-        None as "skip the Customer Context section in the comment".
+        list of dicts with keys {text, source, file, position, customer_id,
+        score} when at least one chunk clears the score threshold.
+        None in every failure case (disabled, no customer, no provider,
+        embed failure, store failure, timeout, no chunks above threshold).
+        Caller treats None as "skip the Customer Context section".
 
     This function MUST NOT raise. Every exception is caught and logged.
     """
@@ -93,6 +103,14 @@ def retrieve_customer_context(query: str) -> list[dict] | None:
     if not query or len(query.strip()) < _MIN_QUERY_LEN:
         logger.info("RAG retrieval skipped: query too short (len=%d)",
                     len(query.strip()) if query else 0)
+        return None
+
+    cid = (customer_id or "").strip()
+    if not cid:
+        # Per-customer model: no customer → no retrieval. Logged so the
+        # operator can spot orphan project keys quickly.
+        logger.info("RAG retrieval skipped: no customer_id supplied "
+                    "(ticket's project key didn't match any customer record)")
         return None
 
     timeout_s = _timeout_s()
@@ -106,7 +124,7 @@ def retrieve_customer_context(query: str) -> list[dict] | None:
         vec = embed_text(query)
         if vec is None:
             return []
-        hits = search(vec, top_k=top_k)
+        hits = search(vec, top_k=top_k, where={"customer_id": cid})
         # Apply similarity threshold AFTER retrieval so the cutoff is
         # transparent in logs.
         return [h for h in hits if h.get("score", 0.0) >= min_score]
