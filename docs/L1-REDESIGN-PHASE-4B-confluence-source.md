@@ -1,6 +1,6 @@
 # L1 Triage AI Redesign — Phase 4b: Confluence as a RAG source
 
-**Status:** Implementation in progress (2026-06-15)
+**Status:** Implementation deployed (per-customer model live 2026-06-15)
 **Predecessor:** [Phase 4 MVP](L1-REDESIGN-PHASE-4-rag-confluence.md) (local-folder ingest, shipped 2026-06-13)
 **Roadmap:** [L1-TRIAGE-REDESIGN-ROADMAP.md](L1-TRIAGE-REDESIGN-ROADMAP.md)
 **Current implementation:** [L1-TRIAGE.md](L1-TRIAGE.md)
@@ -140,3 +140,45 @@ az containerapp update --name soc-platform --resource-group rg-soc-platform \
 - Image / attachment extraction
 - Confluence webhook → push-driven re-sync
 - LLM Triage prompt integration (still Phase 4c onwards)
+
+---
+
+## 9. Addendum — per-customer rewrite (2026-06-15 PM)
+
+After the initial Phase 4b global UI shipped, the model was changed to **per-customer** before any real team use. Confluence pages now live on each customer record in `data/customers.json` under `confluence_pages`, and retrieval is strictly scoped to that customer's chunks.
+
+### What's different from §1–§7 above
+
+- **UI location** — Section 3 / 6 referred to a Confluence card on `/admin/rag`. That card is gone. Pages are managed inside the customer Edit modal at `/admin/customers` under "Confluence Sources".
+- **Persistence** — was `data/rag_confluence_pages.json` (global list); now `confluence_pages` array on each customer record.
+- **Sync button** — was global "Sync now"; now per-customer (one button per customer modal, syncs only that customer's pages).
+- **Chunk metadata** — chunks now carry `customer_id`. Chroma `where={"customer_id": "<cid>"}` filter enforces isolation.
+- **Webhook** — derives `customer_id` from `ticket_key.split("-")[0]` via `tools.customers.find_customer_by_jira_project()`. Orphan project keys (no customer matches) silently skip retrieval.
+
+### Strict isolation guarantee
+
+`retrieve_customer_context()` requires a non-empty `customer_id`. With no customer match, no chunks are returned. Customer A's chunks are NEVER surfaced in Customer B's ticket comments. Same chunk could in theory belong to both customers — they'd need to add the page to each customer separately, and Chroma would store two independent copies.
+
+### Admin endpoints (new, replacing the old global ones)
+
+```
+GET    /admin/api/customers/<cid>/confluence/pages
+POST   /admin/api/customers/<cid>/confluence/pages        # body: {url}
+DELETE /admin/api/customers/<cid>/confluence/pages/<id>
+POST   /admin/api/customers/<cid>/confluence/sync
+```
+
+Old `/admin/api/rag/confluence/*` routes are gone.
+
+### Updated test plan
+
+The §6 test plan from the original (pre-rewrite) text remains structurally valid but now runs against the customer modal. Adds two new scenarios:
+
+| # | Scenario | Expected |
+|---|---|---|
+| 9 | Cross-customer isolation | Add Customer A + Customer B with separate Confluence pages. Tickets in A's project show only A's chunks. |
+| 10 | Orphan project key | Create a ticket in a project no customer claims. Comment has no Customer Context. Webhook log says `no customer matched project_key=<X>`. |
+
+### Migration note
+
+The pre-rewrite `data/rag_confluence_pages.json` flat file is deprecated. If it exists with content, `tools/rag_confluence_ingest._warn_deprecated_global_file()` logs a one-shot WARNING at first import listing the entries. The operator manually re-adds them to the appropriate customer. No automated migration (the killswitch had been OFF in production, so no user-facing data should exist on that file in practice).
