@@ -41,7 +41,7 @@ from tools.rag_store import delete_by_file, upsert_chunks
 
 logger = logging.getLogger(__name__)
 
-_io_lock = threading.Lock()  # serialises customer-record reads/writes
+_io_lock = threading.RLock()  # serialises customer-record reads/writes; reentrant because callers (add_page/remove_page/sync_for_customer) hold this lock while calling save_pages_for_customer() which re-acquires it.
 
 
 # ─── Per-customer page-list accessors ────────────────────────────────────────
