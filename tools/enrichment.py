@@ -546,7 +546,8 @@ def _build_comment(ioc_results: list[dict], overall_verdict: str, action_taken: 
                    mitre_result: dict | None = None,
                    historical: dict | None = None,
                    rag_info: dict | None = None,
-                   kql_evidence: dict | None = None) -> str:
+                   kql_evidence: dict | None = None,
+                   ticket_key: str = "") -> str:
     lines = ["=== L1 Triage Report (Automated) ===", ""]
     verdict_display = _VERDICT_LABEL.get(overall_verdict, overall_verdict.upper())
 
@@ -579,6 +580,15 @@ def _build_comment(ioc_results: list[dict], overall_verdict: str, action_taken: 
     lines.append(f"IOCs found: {ioc_count}")
     lines.append(f"(Extracted observables checked: {len(ioc_results)})")
     lines.append("")
+
+    # Phase 5b (2026-06-15): per-IOC historical lookup budget. Each malicious
+    # IOC may consume one JQL call; cap protects webhook latency. Same shape
+    # as the existing SOCRADAR_TRIAGE_BUDGET_PER_TICKET pattern.
+    try:
+        from tools.ioc_history import budget_per_ticket as _ioc_history_budget
+        ioc_history_budget_remaining = _ioc_history_budget()
+    except Exception:
+        ioc_history_budget_remaining = 0
 
     for i, result in enumerate(ioc_results, 1):
         ioc = result["ioc"]
@@ -632,6 +642,24 @@ def _build_comment(ioc_results: list[dict], overall_verdict: str, action_taken: 
                 lines.append(f"    · {src} — {cat} (reliability {rel}, last seen {last})")
         else:
             lines.append("  SOCRadar:  Not configured")
+
+        # Phase 5b (2026-06-15): per-IOC historical Jira appearances for any
+        # IOC the reputation engines flagged as malicious. Killswitch-gated;
+        # budgeted to IOC_HISTORY_BUDGET_PER_TICKET to bound webhook latency
+        # (each call is one JQL search, ~1-2s on Jira Cloud). Failure-
+        # isolated: never raises out of this block — a None return just
+        # skips the line for that IOC.
+        if result.get("verdict") == "malicious" and ioc_history_budget_remaining > 0:
+            try:
+                from tools.ioc_history import lookup_ioc_history, render_line
+                hist = lookup_ioc_history(ioc.get("value", ""), exclude_ticket_key=ticket_key)
+                hist_line = render_line(hist)
+                if hist_line:
+                    lines.append(hist_line)
+            except Exception as _hist_err:
+                logger.warning("ioc_history render failed for %s (%s); skipping line",
+                               ioc.get("value", ""), _hist_err)
+            ioc_history_budget_remaining -= 1
 
         lines.append("")
 
@@ -912,7 +940,8 @@ def enrich_ticket(ticket_key: str, fields: dict,
             logger.warning("JIRA_L2_ACCOUNT_ID not set — cannot assign %s to L2", ticket_key)
 
     comment_text = _build_comment(ioc_results, overall_verdict, action_taken,
-                                   mitre_result, historical, rag_info, kql_evidence)
+                                   mitre_result, historical, rag_info, kql_evidence,
+                                   ticket_key=ticket_key)
     post_jira_comment(ticket_key, comment_text)
 
     return {
