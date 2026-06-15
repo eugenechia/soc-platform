@@ -426,6 +426,46 @@ def _append_mitre_section(lines: list[str], mitre_result: dict | None) -> None:
     lines.append("")
 
 
+def _append_sentinel_evidence_section(lines: list[str], kql_result: dict | None) -> None:
+    """Phase 5 (2026-06-15): inject the 'Sentinel Evidence' RAG-style block
+    into the enrichment comment. No-op when kql_result is None or has no
+    queries (KQL expansion disabled, customer has no Sentinel workspace,
+    auth failure, timeout, or LLM returned nothing).
+
+    Phase 5 MVP renders ONLY in the comment. NEVER fed into the LLM Triage
+    prompt — same conservative ladder as Phase 4 → 4c (separate killswitch
+    + threshold for prompt integration if/when we add Phase 5c)."""
+    if not kql_result:
+        return
+    queries = kql_result.get("queries") or []
+    if not queries:
+        return
+
+    workspace = kql_result.get("workspace_name") or "(unnamed)"
+    iters = kql_result.get("iterations", len(queries))
+    total = kql_result.get("total_rows", 0)
+    iter_word = "iteration" if iters == 1 else "iterations"
+    row_word = "row" if total == 1 else "rows"
+    lines.append(f"Sentinel Evidence ({workspace} — {iters} {iter_word}, {total} {row_word} total):")
+
+    for q in queries:
+        i = q.get("iteration", 0)
+        table = q.get("table") or "(unspecified table)"
+        rationale = (q.get("rationale") or "").strip()
+        row_count = q.get("row_count", 0)
+        rc_word = "row" if row_count == 1 else "rows"
+        # One-line summary per iteration. Full KQL is intentionally NOT
+        # rendered in the comment to keep it scannable — pull it from the
+        # logs if an analyst needs to reproduce.
+        prefix = f"  [{i}] {table}: {row_count} {rc_word}"
+        if rationale:
+            if len(rationale) > 200:
+                rationale = rationale[:197] + "..."
+            prefix += f" — {rationale}"
+        lines.append(prefix)
+    lines.append("")
+
+
 def _append_customer_knowledge_section(lines: list[str], rag_info: dict | None) -> None:
     """Phase 4 / 4b (2026-06-13 → 2026-06-15): inject the 'Customer Knowledge
     Base (Confluence)' block into the enrichment comment.
@@ -505,7 +545,8 @@ def _append_historical_section(lines: list[str], historical: dict | None) -> Non
 def _build_comment(ioc_results: list[dict], overall_verdict: str, action_taken: str,
                    mitre_result: dict | None = None,
                    historical: dict | None = None,
-                   rag_info: dict | None = None) -> str:
+                   rag_info: dict | None = None,
+                   kql_evidence: dict | None = None) -> str:
     lines = ["=== L1 Triage Report (Automated) ===", ""]
     verdict_display = _VERDICT_LABEL.get(overall_verdict, overall_verdict.upper())
 
@@ -522,6 +563,7 @@ def _build_comment(ioc_results: list[dict], overall_verdict: str, action_taken: 
             "",
         ]
         _append_customer_knowledge_section(lines, rag_info)
+        _append_sentinel_evidence_section(lines, kql_evidence)
         _append_historical_section(lines, historical)
         _append_mitre_section(lines, mitre_result)
         lines += [
@@ -594,6 +636,7 @@ def _build_comment(ioc_results: list[dict], overall_verdict: str, action_taken: 
         lines.append("")
 
     _append_customer_knowledge_section(lines, rag_info)
+    _append_sentinel_evidence_section(lines, kql_evidence)
     _append_historical_section(lines, historical)
     _append_mitre_section(lines, mitre_result)
     lines.append(f"VERDICT: {verdict_display}")
@@ -750,7 +793,8 @@ def remove_jira_label(ticket_key: str, label: str) -> bool:
 
 def enrich_ticket(ticket_key: str, fields: dict,
                   historical: dict | None = None,
-                  rag_info: dict | None = None) -> dict:
+                  rag_info: dict | None = None,
+                  kql_evidence: dict | None = None) -> dict:
     """Full enrichment pipeline for one Jira ticket.
 
     Reads typed Sentinel-style entity fields first (the canonical IOC source),
@@ -868,7 +912,7 @@ def enrich_ticket(ticket_key: str, fields: dict,
             logger.warning("JIRA_L2_ACCOUNT_ID not set — cannot assign %s to L2", ticket_key)
 
     comment_text = _build_comment(ioc_results, overall_verdict, action_taken,
-                                   mitre_result, historical, rag_info)
+                                   mitre_result, historical, rag_info, kql_evidence)
     post_jira_comment(ticket_key, comment_text)
 
     return {

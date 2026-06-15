@@ -236,7 +236,45 @@ def _run_enrichment(job_id: str, ticket_key: str) -> None:
 
         _run_triage_foundation(job_id, ticket_key, last_issue["fields"], historical, chunks_for_prompt)
 
-        result = enrich_ticket(ticket_key, last_issue["fields"], historical, rag_info)
+        # ── Phase 5: AI-driven KQL expansion ─────────────────────────────────
+        # Runs AFTER Phase 1 (so the triage call doesn't pay for KQL latency,
+        # which can be up to 60s) and BEFORE enrich_ticket so the rendered
+        # comment includes the Sentinel Evidence block. Killswitch defaults
+        # OFF — code ships dark. Hot path: bounded by KQL_EXPANSION_TIMEOUT_S
+        # and KQL_EXPANSION_MAX_ITERATIONS; failure-isolated (never raises;
+        # None return = skip the section).
+        kql_evidence = None
+        try:
+            from tools.kql_expansion import expand_with_kql
+            summary_text = (last_issue["fields"].get("summary") or "")
+            description_text = ""
+            try:
+                from tools.jira_client import _extract_adf_text
+                description_text = _extract_adf_text(last_issue["fields"].get("description")) or ""
+            except Exception:
+                description_text = ""
+            # Reuse the IOCs the enrichment pipeline will extract anyway —
+            # better than duplicating regex/entity extraction here.
+            iocs_for_kql: list[dict] = []
+            try:
+                from tools.enrichment import extract_iocs_from_entity_fields
+                iocs_for_kql = list(extract_iocs_from_entity_fields(last_issue["fields"]) or [])
+            except Exception as _ioc_err:
+                logger.warning("Enrichment %s: IOC extraction for KQL failed (%s); continuing with empty IOC list",
+                               job_id, _ioc_err)
+            kql_evidence = expand_with_kql(
+                customer=customer if 'customer' in locals() else None,
+                ticket_key=ticket_key,
+                ticket_summary=summary_text,
+                ticket_description=description_text,
+                iocs=iocs_for_kql,
+            )
+        except Exception as e:
+            logger.warning("Enrichment %s: KQL expansion orchestrator raised (%s); continuing without it: %s",
+                           job_id, type(e).__name__, e)
+            kql_evidence = None
+
+        result = enrich_ticket(ticket_key, last_issue["fields"], historical, rag_info, kql_evidence)
         _jobs[job_id].update({"status": "done", "result": result})
         logger.info("Enrichment %s complete: ticket=%s verdict=%s",
                     job_id, ticket_key, result.get("verdict"))
