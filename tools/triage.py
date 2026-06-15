@@ -53,7 +53,14 @@ Examples that warrant override:
 
 If the description is empty or unhelpful, return the baseline priority with confidence ~0.5 so the override is rejected.
 
-Historical context (when present) is a strong signal. A rule firing many times in the past 24h with mostly False-Positive outcomes is statistically likely to be FP again — be willing to de-escalate confidently. A rule with mixed outcomes deserves the baseline. A rule firing rarely or for the first time should rely on the ticket text itself."""
+Historical context (when present) is a strong signal. A rule firing many times in the past 24h with mostly False-Positive outcomes is statistically likely to be FP again — be willing to de-escalate confidently. A rule with mixed outcomes deserves the baseline. A rule firing rarely or for the first time should rely on the ticket text itself.
+
+Customer Knowledge Base context (when present) is high-quality customer-specific information retrieved from the customer's own Confluence pages — HVT lists, whitelists, asset inventories, escalation matrices, known-benign automations. Treat it as authoritative for that customer:
+- If a host or IP is flagged as a HVT / critical asset → escalate, even when the alert text alone is mild
+- If an IOC matches a documented whitelist or known-internal scanner → de-escalate, even when the alert text alone looks suspicious
+- If the context conflicts with itself or is unclear → fall back to the ticket text and ignore the noisy chunk
+
+Customer Knowledge Base chunks below the prompt-relevance threshold are NOT shown here even if the analyst sees them in the comment — anything that does appear in this prompt has passed a stricter score cut, so weight it accordingly."""
 
 
 async def _call_llm(prompt: str) -> str:
@@ -109,7 +116,8 @@ def _extract_text(adf_or_str) -> str:
 
 def _build_user_prompt(fields: dict, severity: str, baseline_priority: str,
                        entity_iocs: list[dict] | None,
-                       historical: dict | None = None) -> str:
+                       historical: dict | None = None,
+                       rag_chunks: list[dict] | None = None) -> str:
     summary = fields.get("summary") or "(none)"
     desc = _extract_text(fields.get("description")) or "(none)"
     # Cap description so we stay within token budget regardless of upstream size.
@@ -140,6 +148,27 @@ def _build_user_prompt(fields: dict, severity: str, baseline_priority: str,
             f"{historical['untriaged']} still untriaged\n"
         )
 
+    # Phase 4c (2026-06-15): customer-scoped RAG chunks above the stricter
+    # prompt threshold (RAG_PROMPT_MIN_SCORE, gated by RAG_TO_LLM_PROMPT_ENABLED).
+    # Caller in routes/webhook.py decides what passes through; this function
+    # just renders what it's given. Empty list / None → no block at all so
+    # the model isn't tempted to "explain" absence.
+    rag_block = ""
+    if rag_chunks:
+        lines = ["", "Customer Knowledge Base (from this customer's Confluence pages):"]
+        for c in rag_chunks:
+            text = (c.get("text") or "").strip()
+            if not text:
+                continue
+            source = c.get("source") or "doc"
+            score = float(c.get("score") or 0.0)
+            oneline = " ".join(text.split())
+            if len(oneline) > 320:
+                oneline = oneline[:317] + "..."
+            lines.append(f"- [{source}] {oneline} (relevance {score:.2f})")
+        if len(lines) > 2:
+            rag_block = "\n".join(lines) + "\n"
+
     return (
         f"SIEM severity: {severity or '(unknown)'}\n"
         f"Severity-mapped baseline priority: {baseline_priority or '(none — severity not recognised)'}\n\n"
@@ -147,12 +176,14 @@ def _build_user_prompt(fields: dict, severity: str, baseline_priority: str,
         f"Ticket description:\n{desc}\n\n"
         f"Extracted IOCs:\n{iocs_str}"
         f"{historical_block}"
+        f"{rag_block}"
     )
 
 
 def triage_priority(ticket_key: str, fields: dict, severity: str,
                     baseline_priority: str | None,
-                    historical: dict | None = None) -> dict | None:
+                    historical: dict | None = None,
+                    rag_chunks: list[dict] | None = None) -> dict | None:
     """Synchronous wrapper around the async LLM call.
 
     Returns a dict like:
@@ -165,6 +196,14 @@ def triage_priority(ticket_key: str, fields: dict, severity: str,
     tools.historical_alerts.query_similar_alerts(). When present and total>0,
     the LLM prompt includes the rule's recent FP/TP distribution as
     de-escalation evidence.
+
+    Phase 4c (2026-06-15): optional `rag_chunks` arg pre-filtered by the
+    caller against `RAG_PROMPT_MIN_SCORE` and gated by the
+    `RAG_TO_LLM_PROMPT_ENABLED` killswitch. When non-empty, the LLM prompt
+    includes a Customer Knowledge Base block so priority decisions can
+    factor in customer-specific HVT lists, whitelists, asset inventories,
+    etc. The function itself does NOT re-filter — it renders what it's
+    given. Pass `None` or `[]` to suppress the block entirely.
     """
     try:
         from tools.enrichment import extract_iocs_from_entity_fields
@@ -177,8 +216,11 @@ def triage_priority(ticket_key: str, fields: dict, severity: str,
     if historical and historical.get("total", 0) > 0:
         logger.info("triage_priority(%s): historical context included (%d siblings)",
                     ticket_key, historical["total"])
+    if rag_chunks:
+        logger.info("triage_priority(%s): customer knowledge base context included (%d chunks)",
+                    ticket_key, len(rag_chunks))
     user_prompt = _build_user_prompt(fields, severity, baseline_priority or "",
-                                     entity_iocs, historical)
+                                     entity_iocs, historical, rag_chunks)
 
     try:
         # asyncio.run is safe here because the webhook background thread has no

@@ -207,8 +207,34 @@ def _run_enrichment(job_id: str, ticket_key: str) -> None:
         # Runs before enrichment so the priority/assignee are correct by the
         # time the IOC pipeline kicks in. Each step is independently failure-
         # tolerant — a hiccup here must not block enrichment.
-        # NOTE: rag_info is deliberately NOT passed here. See Phase 4 design.
-        _run_triage_foundation(job_id, ticket_key, last_issue["fields"], historical)
+        #
+        # Phase 4c (2026-06-15): customer-scoped RAG context can now reach the
+        # LLM Triage prompt, gated by:
+        #   - RAG_TO_LLM_PROMPT_ENABLED (default false — code ships dark)
+        #   - RAG_PROMPT_MIN_SCORE (default 0.7 — stricter than the comment's
+        #     RAG_MIN_SCORE so noise that's safe to show analysts doesn't reach
+        #     the model's priority reasoning).
+        # We filter the SAME chunks already retrieved (no second retrieval).
+        chunks_for_prompt: list[dict] = []
+        try:
+            if rag_info and os.environ.get("RAG_TO_LLM_PROMPT_ENABLED", "false").strip().lower() == "true":
+                try:
+                    prompt_threshold = float(os.environ.get("RAG_PROMPT_MIN_SCORE", "0.7"))
+                except (TypeError, ValueError):
+                    prompt_threshold = 0.7
+                chunks_for_prompt = [
+                    c for c in (rag_info.get("chunks") or [])
+                    if float(c.get("score") or 0.0) >= prompt_threshold
+                ]
+                if chunks_for_prompt:
+                    logger.info("Enrichment %s: passing %d RAG chunk(s) to LLM Triage prompt (>= %.2f)",
+                                job_id, len(chunks_for_prompt), prompt_threshold)
+        except Exception as e:
+            logger.warning("Enrichment %s: RAG-to-prompt gate raised (%s); continuing without prompt chunks: %s",
+                           job_id, type(e).__name__, e)
+            chunks_for_prompt = []
+
+        _run_triage_foundation(job_id, ticket_key, last_issue["fields"], historical, chunks_for_prompt)
 
         result = enrich_ticket(ticket_key, last_issue["fields"], historical, rag_info)
         _jobs[job_id].update({"status": "done", "result": result})
@@ -220,7 +246,8 @@ def _run_enrichment(job_id: str, ticket_key: str) -> None:
 
 
 def _run_triage_foundation(job_id: str, ticket_key: str, fields: dict,
-                           historical: dict | None = None) -> None:
+                           historical: dict | None = None,
+                           rag_chunks_for_prompt: list[dict] | None = None) -> None:
     """Phase 1 pre-enrichment steps. Each step logs and continues on failure
     so the downstream enrichment pipeline always runs.
 
@@ -235,6 +262,13 @@ def _run_triage_foundation(job_id: str, ticket_key: str, fields: dict,
     Phase 3 (2026-06-13): optional `historical` arg (precomputed by the
     caller) is passed through to triage_priority() so the LLM sees the
     same-rule FP/TP distribution as de-escalation evidence.
+
+    Phase 4c (2026-06-15): optional `rag_chunks_for_prompt` arg — list of
+    chunks already filtered against `RAG_PROMPT_MIN_SCORE` and gated by
+    `RAG_TO_LLM_PROMPT_ENABLED` by the caller. Passed through to
+    triage_priority() so customer-specific HVT/whitelist/asset-inventory
+    context can influence the priority recommendation. Empty list or None
+    suppresses the block entirely (no behavioural change from Phase 4b).
     """
     # ── 1. Severity sync ────────────────────────────────────────────────
     severity_field_id = os.environ.get("JIRA_FIELD_SEVERITY", "customfield_10038")
@@ -259,7 +293,8 @@ def _run_triage_foundation(job_id: str, ticket_key: str, fields: dict,
                     job_id, ticket_key)
 
     # ── 3. LLM Triage priority override ─────────────────────────────────
-    rec = triage_priority(ticket_key, fields, severity, baseline_priority, historical)
+    rec = triage_priority(ticket_key, fields, severity, baseline_priority,
+                          historical, rag_chunks_for_prompt)
     if not rec:
         logger.info("Triage %s: LLM rec unavailable for %s — keeping baseline",
                     job_id, ticket_key)
