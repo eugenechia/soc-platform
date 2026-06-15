@@ -170,17 +170,35 @@ def _run_enrichment(job_id: str, ticket_key: str) -> None:
         # Resolve the customer from the ticket's project key BEFORE the call;
         # tickets whose project key matches no customer get no Customer
         # Context section (silent skip).
-        rag_chunks = None
+        # rag_info: shape {pages_searched: int, status: "matched"|"no_matches",
+        #                  chunks: list[dict]} OR None to suppress the section.
+        # We only build rag_info when the customer was resolved AND has at
+        # least one Confluence page registered AND retrieval actually ran
+        # (statuses "matched" / "no_matches"). Every other status — disabled,
+        # error, no_customer, no_query — is silent in the comment.
+        rag_info = None
         try:
             summary_text = (last_issue["fields"].get("summary") or "")
             query = summary_text[:500]
             project_key = ticket_key.split("-")[0]
             customer = find_customer_by_jira_project(project_key)
             customer_id = (customer or {}).get("id") or ""
+            pages_count = len((customer or {}).get("confluence_pages") or [])
             if not customer_id:
                 logger.info("Enrichment %s: no customer matched project_key=%s — "
                             "skipping RAG retrieval", job_id, project_key)
-            rag_chunks = retrieve_customer_context(query, customer_id=customer_id)
+            elif pages_count == 0:
+                logger.info("Enrichment %s: customer %s has no Confluence pages — "
+                            "skipping RAG retrieval", job_id, customer_id)
+            else:
+                retrieval = retrieve_customer_context(query, customer_id=customer_id)
+                status = (retrieval or {}).get("status") or "error"
+                if status in ("matched", "no_matches"):
+                    rag_info = {
+                        "pages_searched": pages_count,
+                        "status": status,
+                        "chunks": list((retrieval or {}).get("chunks") or []),
+                    }
         except Exception as e:
             logger.warning("Enrichment %s: RAG retrieval orchestrator raised (%s); continuing without it: %s",
                            job_id, type(e).__name__, e)
@@ -189,10 +207,10 @@ def _run_enrichment(job_id: str, ticket_key: str) -> None:
         # Runs before enrichment so the priority/assignee are correct by the
         # time the IOC pipeline kicks in. Each step is independently failure-
         # tolerant — a hiccup here must not block enrichment.
-        # NOTE: rag_chunks is deliberately NOT passed here. See Phase 4 design.
+        # NOTE: rag_info is deliberately NOT passed here. See Phase 4 design.
         _run_triage_foundation(job_id, ticket_key, last_issue["fields"], historical)
 
-        result = enrich_ticket(ticket_key, last_issue["fields"], historical, rag_chunks)
+        result = enrich_ticket(ticket_key, last_issue["fields"], historical, rag_info)
         _jobs[job_id].update({"status": "done", "result": result})
         logger.info("Enrichment %s complete: ticket=%s verdict=%s",
                     job_id, ticket_key, result.get("verdict"))

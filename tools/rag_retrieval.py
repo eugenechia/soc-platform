@@ -75,35 +75,43 @@ def _run_with_timeout(fn, *, timeout_s: float):
 
 
 def retrieve_customer_context(query: str,
-                              customer_id: str | None = None) -> list[dict] | None:
-    """Return up to RAG_TOP_K chunks above RAG_MIN_SCORE for the given query.
+                              customer_id: str | None = None) -> dict:
+    """Run customer-scoped RAG retrieval and return a status envelope.
 
     Args:
         query: text concatenated from the Jira ticket summary + IOCs.
         customer_id: Phase 4b-rev (2026-06-15). When non-empty, retrieval is
             STRICTLY scoped to chunks whose ``customer_id`` metadata matches.
-            When None or empty, retrieval is skipped — every webhook is
-            expected to resolve a customer first. This prevents cross-
-            customer context leakage and matches the per-customer model
-            chosen in Phase 4b-rev.
+            When None or empty, retrieval is skipped.
 
     Returns:
-        list of dicts with keys {text, source, file, position, customer_id,
-        score} when at least one chunk clears the score threshold.
-        None in every failure case (disabled, no customer, no provider,
-        embed failure, store failure, timeout, no chunks above threshold).
-        Caller treats None as "skip the Customer Context section".
+        dict ``{"status": <str>, "chunks": list[dict]}`` where status is one of:
+          - "matched"      — at least one chunk above RAG_MIN_SCORE
+          - "no_matches"   — searched, but every hit was below threshold
+          - "disabled"     — RAG_LOOKUP_ENABLED is not true
+          - "no_customer"  — caller didn't supply a customer_id
+          - "no_query"     — query too short to be meaningful
+          - "error"        — embed/store failure or timeout
+        chunks is always a list (possibly empty) of {text, source, file,
+        position, customer_id, score}. Caller decides which statuses to
+        surface in the analyst comment.
+
+    Phase 4b-rev (2026-06-15 PM): Previously this returned ``list | None``
+    and squashed every non-matching outcome into None, so the comment
+    builder couldn't tell "searched but nothing matched" apart from
+    "didn't search at all". The status envelope lets the comment builder
+    show "X pages searched, no relevant matches" when appropriate.
 
     This function MUST NOT raise. Every exception is caught and logged.
     """
     if not _enabled():
         logger.info("RAG lookup disabled by env")
-        return None
+        return {"status": "disabled", "chunks": []}
 
     if not query or len(query.strip()) < _MIN_QUERY_LEN:
         logger.info("RAG retrieval skipped: query too short (len=%d)",
                     len(query.strip()) if query else 0)
-        return None
+        return {"status": "no_query", "chunks": []}
 
     cid = (customer_id or "").strip()
     if not cid:
@@ -111,7 +119,7 @@ def retrieve_customer_context(query: str,
         # operator can spot orphan project keys quickly.
         logger.info("RAG retrieval skipped: no customer_id supplied "
                     "(ticket's project key didn't match any customer record)")
-        return None
+        return {"status": "no_customer", "chunks": []}
 
     timeout_s = _timeout_s()
     top_k = _top_k()
@@ -134,17 +142,17 @@ def retrieve_customer_context(query: str,
     except Exception as e:
         logger.warning("RAG retrieval orchestrator failed (%s): %s",
                        type(e).__name__, e)
-        return None
+        return {"status": "error", "chunks": []}
 
     if err:
         logger.warning("RAG retrieval failed: %s", err)
-        return None
+        return {"status": "error", "chunks": []}
     if not result:
         logger.info("RAG retrieval: 0 chunks above threshold %.2f (top_k=%d)",
                     min_score, top_k)
-        return None
+        return {"status": "no_matches", "chunks": []}
 
     top_score = max((h.get("score", 0.0) for h in result), default=0.0)
     logger.info("RAG retrieval: %d chunks above threshold %.2f (top score %.2f)",
                 len(result), min_score, top_score)
-    return result
+    return {"status": "matched", "chunks": result}

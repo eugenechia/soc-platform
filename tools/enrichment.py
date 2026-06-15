@@ -426,32 +426,50 @@ def _append_mitre_section(lines: list[str], mitre_result: dict | None) -> None:
     lines.append("")
 
 
-def _append_customer_context_section(lines: list[str], rag_chunks: list[dict] | None) -> None:
-    """Phase 4 (2026-06-13): inject the 'Customer Context' RAG block into
-    the enrichment comment. No-op when rag_chunks is None or empty (RAG
-    disabled, retrieval failed, or no chunks above threshold).
+def _append_customer_knowledge_section(lines: list[str], rag_info: dict | None) -> None:
+    """Phase 4 / 4b (2026-06-13 → 2026-06-15): inject the 'Customer Knowledge
+    Base (Confluence)' block into the enrichment comment.
 
-    The block is intentionally simple — one line per chunk, with source
-    tag in [brackets] and similarity score appended so analysts can
-    sanity-check relevance. RAG content is rendered for the analyst only;
-    it is NOT fed into the LLM Triage prompt (deliberate isolation against
-    the prior failure mode where bad retrievals confused the LLM)."""
-    if not rag_chunks:
+    rag_info shape (set by routes/webhook.py):
+        {"pages_searched": int, "status": "matched"|"no_matches",
+         "chunks": list[dict]}
+    Caller passes None to suppress the section entirely — that's how the
+    silent cases (RAG disabled, customer not resolved, customer has no
+    Confluence pages, embed/store error) are filtered out *before* this
+    function is invoked.
+
+    Header always includes the page count so analysts can deduce that the
+    AI consulted the customer's Confluence pages. When chunks is empty the
+    block still renders (analyst signal that the lookup ran but didn't find
+    anything above the similarity threshold).
+
+    RAG content is rendered for the analyst only; it is NOT fed into the
+    LLM Triage prompt (deliberate isolation against the prior failure mode
+    where bad retrievals confused the LLM)."""
+    if not rag_info:
         return
-    lines.append("Customer Context:")
-    for c in rag_chunks:
-        text = (c.get("text") or "").strip()
-        if not text:
-            continue
-        source = c.get("source") or "doc"
-        score = float(c.get("score") or 0.0)
-        # Single-line render: collapse internal whitespace + trim aggressively
-        # so the comment stays scannable. Full chunk is in the vector store
-        # if an analyst needs the full context.
-        oneline = " ".join(text.split())
-        if len(oneline) > 240:
-            oneline = oneline[:237] + "..."
-        lines.append(f"  ► [{source}] {oneline} — {score:.2f}")
+    pages = int(rag_info.get("pages_searched") or 0)
+    if pages <= 0:
+        return
+    chunks = list(rag_info.get("chunks") or [])
+    page_word = "page" if pages == 1 else "pages"
+    lines.append(f"Customer Knowledge Base (Confluence) — searched {pages} {page_word}:")
+    if not chunks:
+        lines.append("  ► No relevant matches above similarity threshold.")
+    else:
+        for c in chunks:
+            text = (c.get("text") or "").strip()
+            if not text:
+                continue
+            source = c.get("source") or "doc"
+            score = float(c.get("score") or 0.0)
+            # Single-line render: collapse internal whitespace + trim
+            # aggressively so the comment stays scannable. Full chunk is
+            # in the vector store if an analyst needs the full context.
+            oneline = " ".join(text.split())
+            if len(oneline) > 240:
+                oneline = oneline[:237] + "..."
+            lines.append(f"  ► [{source}] {oneline} — {score:.2f}")
     lines.append("")
 
 
@@ -487,7 +505,7 @@ def _append_historical_section(lines: list[str], historical: dict | None) -> Non
 def _build_comment(ioc_results: list[dict], overall_verdict: str, action_taken: str,
                    mitre_result: dict | None = None,
                    historical: dict | None = None,
-                   rag_chunks: list[dict] | None = None) -> str:
+                   rag_info: dict | None = None) -> str:
     lines = ["=== L1 Triage Report (Automated) ===", ""]
     verdict_display = _VERDICT_LABEL.get(overall_verdict, overall_verdict.upper())
 
@@ -503,7 +521,7 @@ def _build_comment(ioc_results: list[dict], overall_verdict: str, action_taken: 
             "  - SOCRadar:    No detections",
             "",
         ]
-        _append_customer_context_section(lines, rag_chunks)
+        _append_customer_knowledge_section(lines, rag_info)
         _append_historical_section(lines, historical)
         _append_mitre_section(lines, mitre_result)
         lines += [
@@ -575,7 +593,7 @@ def _build_comment(ioc_results: list[dict], overall_verdict: str, action_taken: 
 
         lines.append("")
 
-    _append_customer_context_section(lines, rag_chunks)
+    _append_customer_knowledge_section(lines, rag_info)
     _append_historical_section(lines, historical)
     _append_mitre_section(lines, mitre_result)
     lines.append(f"VERDICT: {verdict_display}")
@@ -732,7 +750,7 @@ def remove_jira_label(ticket_key: str, label: str) -> bool:
 
 def enrich_ticket(ticket_key: str, fields: dict,
                   historical: dict | None = None,
-                  rag_chunks: list[dict] | None = None) -> dict:
+                  rag_info: dict | None = None) -> dict:
     """Full enrichment pipeline for one Jira ticket.
 
     Reads typed Sentinel-style entity fields first (the canonical IOC source),
@@ -746,11 +764,15 @@ def enrich_ticket(ticket_key: str, fields: dict,
     the comment renders a 'Similar Alerts (past 24h)' block between IOC
     reputations and the MITRE section.
 
-    Phase 4 (2026-06-13): optional `rag_chunks` arg from
-    tools.rag_retrieval.retrieve_customer_context(). When non-empty, renders
-    a 'Customer Context' block. Phase 4 deliberately does NOT pass rag_chunks
-    into the LLM Triage call (mitigation against prior failure where bad
-    retrievals confused the model).
+    Phase 4 / 4b (2026-06-13 → 2026-06-15): optional `rag_info` arg built by
+    routes/webhook.py from tools.rag_retrieval.retrieve_customer_context().
+    Shape: {"pages_searched": int, "status": "matched"|"no_matches",
+    "chunks": list[dict]}. Caller passes None to suppress the section.
+    When present, renders a 'Customer Knowledge Base (Confluence)' block
+    so analysts can see the AI consulted the customer's Confluence pages
+    even when no relevant matches were found. Phase 4 deliberately does
+    NOT pass rag_info into the LLM Triage call (mitigation against prior
+    failure where bad retrievals confused the model).
     """
     from tools.secrets import get_secret
 
@@ -846,7 +868,7 @@ def enrich_ticket(ticket_key: str, fields: dict,
             logger.warning("JIRA_L2_ACCOUNT_ID not set — cannot assign %s to L2", ticket_key)
 
     comment_text = _build_comment(ioc_results, overall_verdict, action_taken,
-                                   mitre_result, historical, rag_chunks)
+                                   mitre_result, historical, rag_info)
     post_jira_comment(ticket_key, comment_text)
 
     return {
