@@ -98,6 +98,9 @@ assign_jira_ticket(ticket_key, JIRA_L2_ACCOUNT_ID)    # if clean/unknown AND L2 
 | [tools/rag_store.py](../tools/rag_store.py) | Phase 4 Chroma wrapper (persistent collection, upsert/search/delete helpers). Persists to `RAG_CHROMA_DIR` (default `/app/data/rag`). |
 | [tools/rag_embed.py](../tools/rag_embed.py) | Phase 4 Azure OpenAI embedding helper. Cached client. `embed_text()` / `embed_texts()`. |
 | [tools/rag_ingest.py](../tools/rag_ingest.py) | Phase 4 CLI ingest. `python -m tools.rag_ingest [--dry-run] [--source <bucket>]`. Walks `RAG_DOCS_DIR`, chunks markdown, embeds, upserts. Idempotent. |
+| [tools/rag_chunking.py](../tools/rag_chunking.py) | Phase 4b — shared `chunk_text()` used by both the local-folder and Confluence ingest paths. Paragraph-based, 500 char cap. |
+| [tools/confluence_client.py](../tools/confluence_client.py) | Phase 4b Confluence Cloud v2 REST wrapper. `fetch_page(page_id)` + `extract_page_id(url)`. Reuses Jira credentials by default. |
+| [tools/rag_confluence_ingest.py](../tools/rag_confluence_ingest.py) | Phase 4b — manages `data/rag_confluence_pages.json` list and orchestrates `sync_all()`. Per-page errors isolated; never raises. |
 | [tools/jira_client.py](../tools/jira_client.py) | `fetch_issue_by_key()`, `_extract_adf_text()`, `severity_to_priority()` (Phase 1 mapping), Basic Auth headers. |
 | [tools/socradar_rest.py](../tools/socradar_rest.py) | SOCRadar REST API client. Reads `SOCRADAR_THREAT_ANALYSIS_KEY` via `tools/secrets.get_secret()`. |
 | [tools/virustotal_client.py](../tools/virustotal_client.py) | VirusTotal v3 client. Reads `VT_API_KEY` via `get_secret()`. |

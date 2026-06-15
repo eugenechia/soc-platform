@@ -261,7 +261,10 @@ Update this section as each phase progresses. `[ ]` not started → `[~]` in pro
 - [~] **Phase 1** — Triage Foundation & Housekeeping (implementation complete 2026-06-08; awaiting team test sign-off — see [L1-REDESIGN-PHASE-1-triage-foundation.md](L1-REDESIGN-PHASE-1-triage-foundation.md))
 - [~] **Phase 2** — MITRE ATT&CK Mapping (implementation complete 2026-06-10; awaiting team test sign-off — see [L1-REDESIGN-PHASE-2-mitre-mapping.md](L1-REDESIGN-PHASE-2-mitre-mapping.md))
 - [~] **Phase 3** — Historical Alert Correlation (implementation complete 2026-06-13; awaiting team test sign-off — see [L1-REDESIGN-PHASE-3-historical-correlation.md](L1-REDESIGN-PHASE-3-historical-correlation.md))
-- [~] **Phase 4** — RAG over Confluence (MVP implementation complete 2026-06-13, killswitch OFF; awaiting Stage 2 content seed + team test sign-off — see [L1-REDESIGN-PHASE-4-rag-confluence.md](L1-REDESIGN-PHASE-4-rag-confluence.md))
+- [~] **Phase 4** — RAG over Confluence
+  - 4a (MVP, local-folder ingest): implementation complete 2026-06-13, killswitch OFF — see [L1-REDESIGN-PHASE-4-rag-confluence.md](L1-REDESIGN-PHASE-4-rag-confluence.md)
+  - 4b (Confluence source): implementation complete 2026-06-15 — see [L1-REDESIGN-PHASE-4B-confluence-source.md](L1-REDESIGN-PHASE-4B-confluence-source.md)
+  - Awaiting team content seed + sign-off before flipping `RAG_LOOKUP_ENABLED=true`
 - [ ] **Phase 5** — AI-driven KQL Expansion
 - [ ] **Phase 6** — AI Recommendation Synthesis
 - [ ] **Phase 7** — Finetuning Loop & Auto-close FP
