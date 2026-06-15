@@ -21,14 +21,33 @@ from typing import Any
 logger = logging.getLogger(__name__)
 
 _COLLECTION_NAME = "soc_platform_rag"
-_DEFAULT_CHROMA_DIR = "/app/data/rag"
+
+# IMPORTANT: DO NOT default to /app/data/rag (the Azure Files SMB mount).
+# Chroma uses SQLite, and SQLite over SMB hangs indefinitely because fcntl
+# locks aren't fully supported on the share. This bit us 2026-06-15: the
+# /admin/rag page would hang on chromadb.PersistentClient() init, blocking
+# the request thread forever. The cluster-wide DB (tools/db.py) uses
+# /tmp/soc_platform.db for the same reason — see DB_PATH in .env.example.
+#
+# Trade-off: /tmp is ephemeral, so ingested chunks are lost on container
+# restart. For Phase 4 MVP this is acceptable — re-ingest is one click on
+# /admin/rag (local-folder) plus one "Sync now" on the Confluence card.
+# Long-term fix would be a managed vector store (Azure AI Search / pgvector)
+# or running Chroma in client/server mode on a Linux volume that supports
+# proper file locks.
+_DEFAULT_CHROMA_DIR = "/tmp/rag"
 
 _client_lock = threading.Lock()
 _cached_collection: Any | None = None  # chromadb Collection type, lazy-imported
 
 
 def _chroma_dir() -> str:
-    return os.environ.get("RAG_CHROMA_DIR", _DEFAULT_CHROMA_DIR).strip() or _DEFAULT_CHROMA_DIR
+    chosen = os.environ.get("RAG_CHROMA_DIR", _DEFAULT_CHROMA_DIR).strip() or _DEFAULT_CHROMA_DIR
+    # Loud warning if someone points Chroma back at the SMB mount.
+    if chosen.startswith("/app/data"):
+        logger.warning("RAG_CHROMA_DIR=%s is on the Azure Files SMB mount — "
+                       "SQLite locks hang there. Use /tmp/rag instead.", chosen)
+    return chosen
 
 
 def _get_collection() -> Any | None:

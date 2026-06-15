@@ -53,7 +53,7 @@ So a first-time alert with no matching context simply gets no Customer Context l
 
 | Component | Choice | Rationale |
 |---|---|---|
-| Vector store | Chroma (persistent client) | Embedded, in-process. Persists to `/app/data/rag/` on the existing Azure Files share. Zero new managed infrastructure. |
+| Vector store | Chroma (persistent client) | Embedded, in-process. Persists to `/tmp/rag/` (see "SMB caveat" below). Zero new managed infrastructure. |
 | Embedding model | Azure OpenAI `text-embedding-3-small` | Already in tenant (data residency satisfied), ~$0.02/1M tokens. |
 | Ingest source | Local Markdown files | `/app/data/rag_docs/<bucket>/*.md`. Team drops files via Storage Explorer; ingest is manual via `/admin/rag/reingest`. |
 | Chunking | Paragraph-based, 500 char cap | Good-enough MVP. |
@@ -200,7 +200,15 @@ az containerapp update \
 
 ---
 
-## 8. What's NOT in Phase 4
+## 8. SMB caveat (important)
+
+`RAG_CHROMA_DIR` MUST point to a local-FS path (default `/tmp/rag`), NOT the Azure Files SMB mount at `/app/data/rag`. Chroma uses SQLite, and SQLite over SMB hangs indefinitely on the file locks. The cluster DB (`tools/db.py`) defaults `DB_PATH=/tmp/soc_platform.db` for the same reason.
+
+**Trade-off:** `/tmp/` is ephemeral, so ingested chunks are lost on container restart (deploys, scaling, manual restarts). Re-ingest is one click on `/admin/rag` (local folder) plus one "Sync now" on the Confluence card. For Phase 4 MVP this is acceptable; a longer-term Phase 4c would move to a managed vector store (Azure AI Search / pgvector).
+
+Symptom if `RAG_CHROMA_DIR` ever gets pointed back at `/app/data/...`: `/admin/rag` hangs forever on page load (witnessed 2026-06-15 during initial deploy). Logs show a startup warning `RAG_CHROMA_DIR=... is on the Azure Files SMB mount` — heed that warning.
+
+## 9. What's NOT in Phase 4
 
 - Live Confluence sync (manual local-folder ingest for MVP)
 - LLM Triage prompt integration (Phase 4b — only after retrieval quality is proven and the team explicitly opts in)
