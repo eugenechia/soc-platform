@@ -28,10 +28,11 @@ import os
 import sys
 from pathlib import Path
 
+from tools.rag_chunking import chunk_text as _chunk_text
+
 logger = logging.getLogger(__name__)
 
 _DEFAULT_DOCS_DIR = "/app/data/rag_docs"
-_MAX_CHUNK_CHARS = 500
 _VALID_EXTENSIONS = {".md", ".markdown", ".txt"}
 
 
@@ -43,34 +44,6 @@ def _chunk_id(file_path: str, position: int) -> str:
     """Stable id so re-ingest replaces a chunk in place rather than appending."""
     h = hashlib.sha1(f"{file_path}|{position}".encode()).hexdigest()[:16]
     return f"chunk-{h}"
-
-
-def _chunk_text(text: str, max_chars: int = _MAX_CHUNK_CHARS) -> list[str]:
-    """Paragraph-based chunking with a hard size cap. Splits on blank lines
-    first, then further splits any oversize paragraph by sentence breaks
-    (period + space) or, as a last resort, raw character cap."""
-    paragraphs = [p.strip() for p in text.split("\n\n") if p.strip()]
-    chunks: list[str] = []
-    for p in paragraphs:
-        if len(p) <= max_chars:
-            chunks.append(p)
-            continue
-        # Soft-split on sentence-ish boundaries first.
-        remaining = p
-        while remaining:
-            if len(remaining) <= max_chars:
-                chunks.append(remaining)
-                break
-            # Find the last period+space within max_chars.
-            cut = remaining.rfind(". ", 0, max_chars)
-            if cut == -1 or cut < max_chars // 2:
-                # No good sentence break — hard cut at max_chars.
-                cut = max_chars
-            else:
-                cut += 1  # include the period
-            chunks.append(remaining[:cut].strip())
-            remaining = remaining[cut:].strip()
-    return [c for c in chunks if c]
 
 
 def _iter_source_files(root: Path, source_filter: str | None = None):

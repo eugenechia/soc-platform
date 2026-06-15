@@ -240,6 +240,56 @@ def api_rag_reingest():
         return jsonify({"status": "error", "error": f"{type(e).__name__}: {e}"}), 500
 
 
+# ── Phase 4b: Confluence source admin ────────────────────────────────────────
+
+@admin_bp.route("/api/rag/confluence/pages", methods=["GET"])
+@require_login
+def api_rag_confluence_pages_list():
+    from tools.rag_confluence_ingest import load_pages
+    return jsonify({"pages": load_pages()})
+
+
+@admin_bp.route("/api/rag/confluence/pages", methods=["POST"])
+@require_login
+def api_rag_confluence_pages_add():
+    """Register a Confluence page URL. Body: {"url": "..."}. Fetches title
+    + space from Confluence so the table can show real metadata."""
+    from tools.rag_confluence_ingest import add_page
+    payload = request.get_json(silent=True) or {}
+    url = (payload.get("url") or "").strip()
+    if not url:
+        return jsonify({"status": "error", "error": "url is required"}), 400
+    result = add_page(url)
+    if "error" in result:
+        return jsonify({"status": "error", "error": result["error"]}), 400
+    return jsonify({"status": "ok", "entry": result})
+
+
+@admin_bp.route("/api/rag/confluence/pages/<page_id>", methods=["DELETE"])
+@require_login
+def api_rag_confluence_pages_remove(page_id: str):
+    from tools.rag_confluence_ingest import remove_page
+    removed = remove_page(page_id)
+    if not removed:
+        return jsonify({"status": "error", "error": "page not found"}), 404
+    return jsonify({"status": "ok", "removed": page_id})
+
+
+@admin_bp.route("/api/rag/confluence/sync", methods=["POST"])
+@require_login
+def api_rag_confluence_sync():
+    """Sync every registered Confluence page. Synchronous: dataset is small
+    (<20 pages typical). Returns the summary including per-page state so
+    the UI can refresh the table without a second round-trip."""
+    from tools.rag_confluence_ingest import sync_all
+    try:
+        summary = sync_all()
+        return jsonify({"status": "ok", "summary": summary})
+    except Exception as e:
+        log.exception("Confluence sync failed: %s", e)
+        return jsonify({"status": "error", "error": f"{type(e).__name__}: {e}"}), 500
+
+
 # ── Logo serving ───────────────────────────────────────────────────────────────
 
 @admin_bp.route("/data/logos/<filename>")
