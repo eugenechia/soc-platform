@@ -967,13 +967,17 @@
       const cid = document.getElementById('editId').value;
       if (!cid) return;
       const btn = document.getElementById('editConfluenceSync');
+      const originalText = btn.textContent;
       btn.disabled = true;
+      btn.textContent = 'Syncing…';
       _confluenceShowResult('Syncing this customer\'s pages (can take 10-60s)…', false);
       try {
         const r = await fetch(`/admin/api/customers/${encodeURIComponent(cid)}/confluence/sync`, { method: 'POST' });
         const j = await r.json();
         if (!r.ok || j.status !== 'ok') {
-          _confluenceShowResult('Error: ' + (j.error || JSON.stringify(j)), true);
+          const msg = 'Confluence sync failed:\n\n' + (j.error || JSON.stringify(j));
+          _confluenceShowResult(msg, true);
+          alert(msg);
           return;
         }
         const s = j.summary;
@@ -981,10 +985,21 @@
                       (s.failed > 0 ? `, ${s.failed} failed (see Last error column).` : '.');
         _confluenceShowResult(text, false);
         _confluenceRenderTable(s.pages_state || []);
+        // Per user request 2026-06-15: explicit confirmation dialog so the
+        // operator never has to guess whether the sync finished.
+        let dialog = `Confluence sync complete.\n\n` +
+                     `Pages: ${s.pages}\n` +
+                     `Succeeded: ${s.succeeded}\n` +
+                     `Chunks indexed: ${s.chunks_total}`;
+        if (s.failed > 0) dialog += `\nFailed: ${s.failed} (see the "Last error" column)`;
+        alert(dialog);
       } catch (err) {
-        _confluenceShowResult('Request failed: ' + err.message, true);
+        const msg = 'Confluence sync request failed:\n\n' + err.message;
+        _confluenceShowResult(msg, true);
+        alert(msg);
       } finally {
         btn.disabled = false;
+        btn.textContent = originalText;
       }
     }
     // Wire up the edit-modal Confluence controls. Listeners are stable for the
