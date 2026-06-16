@@ -542,11 +542,28 @@ def _append_historical_section(lines: list[str], historical: dict | None) -> Non
     lines.append("")
 
 
+def _append_whitelist_match_section(lines: list[str], matches: list[dict] | None) -> None:
+    """Phase 5e (2026-06-16): direct (literal substring) IOC hits in the
+    customer's Confluence chunks. Surfaces whitelist + reference-table
+    matches that vector RAG misses because tabular data embeds poorly."""
+    if not matches:
+        return
+    lines.append(f"Direct Whitelist Match ({len(matches)}):")
+    for m in matches:
+        ioc_type = (m.get("ioc_type") or "?").upper()
+        lines.append(f"  ► [{ioc_type}] {m.get('ioc','')} — {m.get('source','')}")
+        snippet = m.get("snippet", "")
+        if snippet:
+            lines.append(f"      « {snippet} »")
+    lines.append("")
+
+
 def _build_comment(ioc_results: list[dict], overall_verdict: str, action_taken: str,
                    mitre_result: dict | None = None,
                    historical: dict | None = None,
                    rag_info: dict | None = None,
                    kql_evidence: dict | None = None,
+                   whitelist_matches: list[dict] | None = None,
                    ticket_key: str = "") -> str:
     lines = ["=== L1 Triage Report (Automated) ===", ""]
     verdict_display = _VERDICT_LABEL.get(overall_verdict, overall_verdict.upper())
@@ -563,6 +580,7 @@ def _build_comment(ioc_results: list[dict], overall_verdict: str, action_taken: 
             "  - SOCRadar:    No detections",
             "",
         ]
+        _append_whitelist_match_section(lines, whitelist_matches)
         _append_customer_knowledge_section(lines, rag_info)
         _append_sentinel_evidence_section(lines, kql_evidence)
         _append_historical_section(lines, historical)
@@ -663,6 +681,7 @@ def _build_comment(ioc_results: list[dict], overall_verdict: str, action_taken: 
 
         lines.append("")
 
+    _append_whitelist_match_section(lines, whitelist_matches)
     _append_customer_knowledge_section(lines, rag_info)
     _append_sentinel_evidence_section(lines, kql_evidence)
     _append_historical_section(lines, historical)
@@ -847,6 +866,31 @@ def _adf_mitre_block(mitre_result: dict | None) -> list[dict]:
     ]
 
 
+def _adf_whitelist_match_block(matches: list[dict] | None) -> list[dict]:
+    """Phase 5e (2026-06-16): rendered as a 'success' panel with a 4-col
+    table. Sits ABOVE Customer Knowledge Base because a literal whitelist
+    hit is a stronger signal than a semantic similarity hit — analyst eye
+    lands on it first within the comment body."""
+    from tools import adf
+    if not matches:
+        return []
+    rows = []
+    for m in matches:
+        rows.append([
+            m.get("ioc", ""),
+            (m.get("ioc_type") or "").upper(),
+            m.get("source", ""),
+            m.get("snippet", ""),
+        ])
+    return [
+        adf.heading(3, "Direct Whitelist Match"),
+        adf.paragraph(
+            adf.text("IOC values found verbatim in the customer's Confluence knowledge base — strong signal of a known-benign destination/source.", italic=True)
+        ),
+        adf.table(["IOC", "Type", "Source", "Context"], rows),
+    ]
+
+
 def _adf_sentinel_block(kql_result: dict | None) -> list[dict]:
     from tools import adf
     if not kql_result:
@@ -952,6 +996,7 @@ def _build_comment_adf(ioc_results: list[dict], overall_verdict: str, action_tak
                       historical: dict | None = None,
                       rag_info: dict | None = None,
                       kql_evidence: dict | None = None,
+                      whitelist_matches: list[dict] | None = None,
                       ticket_key: str = "") -> dict:
     """Return a full ADF document for the enrichment comment. Same input
     signature as _build_comment() so callers don't change."""
@@ -970,6 +1015,7 @@ def _build_comment_adf(ioc_results: list[dict], overall_verdict: str, action_tak
     ]
 
     blocks.extend(_adf_ioc_block(ioc_results, ticket_key))
+    blocks.extend(_adf_whitelist_match_block(whitelist_matches))
     blocks.extend(_adf_customer_knowledge_block(rag_info))
     blocks.extend(_adf_sentinel_block(kql_evidence))
     blocks.extend(_adf_historical_block(historical))
@@ -1274,6 +1320,22 @@ def enrich_ticket(ticket_key: str, fields: dict,
             action_taken += " (JIRA_L2_ACCOUNT_ID not configured — assignment skipped)"
             logger.warning("JIRA_L2_ACCOUNT_ID not set — cannot assign %s to L2", ticket_key)
 
+    # Phase 5e (2026-06-16) — literal-substring IOC lookup in the customer's
+    # Confluence chunks. Sidesteps vector-RAG's weakness on tabular whitelist
+    # data. Killswitch-gated; returns [] silently on any failure.
+    whitelist_matches: list[dict] = []
+    try:
+        from tools.whitelist_match import find_direct_matches
+        from tools.customers import find_customer_by_jira_project
+        project_key = ticket_key.split("-")[0] if ticket_key else ""
+        cust = find_customer_by_jira_project(project_key) if project_key else None
+        cid = (cust or {}).get("id", "")
+        ioc_list = [r["ioc"] for r in ioc_results if isinstance(r, dict) and r.get("ioc")]
+        whitelist_matches = find_direct_matches(customer_id=cid, iocs=ioc_list)
+    except Exception:
+        logger.exception("whitelist_match dispatch failed for %s", ticket_key)
+        whitelist_matches = []
+
     # Phase 5c (2026-06-16) — try ADF first when killswitch ON; on any failure
     # (HTTP 400 from Jira on a malformed doc, network glitch, our renderer
     # throwing on unexpected input) fall back to the plain-text comment so an
@@ -1283,6 +1345,7 @@ def enrich_ticket(ticket_key: str, fields: dict,
         try:
             adf_doc = _build_comment_adf(ioc_results, overall_verdict, action_taken,
                                           mitre_result, historical, rag_info, kql_evidence,
+                                          whitelist_matches=whitelist_matches,
                                           ticket_key=ticket_key)
             posted = post_jira_comment_adf(ticket_key, adf_doc)
         except Exception as e:
@@ -1291,6 +1354,7 @@ def enrich_ticket(ticket_key: str, fields: dict,
     if not posted:
         comment_text = _build_comment(ioc_results, overall_verdict, action_taken,
                                        mitre_result, historical, rag_info, kql_evidence,
+                                       whitelist_matches=whitelist_matches,
                                        ticket_key=ticket_key)
         post_jira_comment(ticket_key, comment_text)
 
