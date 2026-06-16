@@ -693,6 +693,7 @@ def api_schedules_create():
         "day_of_month": data.get("day_of_month", 1),
         "day_of_week": data.get("day_of_week"),
         "sections": data.get("sections", []),
+        "use_jira": bool(data.get("use_jira", True)),
         "use_sentinel": bool(data.get("use_sentinel", False)),
         "use_splunk": bool(data.get("use_splunk", False)),
         "use_socradar": bool(data.get("use_socradar", False)),
@@ -718,8 +719,8 @@ def api_schedules_update(schedule_id):
         return jsonify({"error": "Schedule not found."}), 404
     data = request.json or {}
     for key in ("frequency", "day_of_month", "day_of_week", "sections",
-                "use_sentinel", "use_splunk", "use_socradar", "email_recipients",
-                "enabled", "aggregation_mode"):
+                "use_jira", "use_sentinel", "use_splunk", "use_socradar",
+                "email_recipients", "enabled", "aggregation_mode"):
         if key in data:
             existing[key] = data[key]
     # Normalise aggregation_mode to the two valid values.

@@ -8,7 +8,9 @@ import asyncio
 import logging
 import threading
 import base64
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
+
+SGT = timezone(timedelta(hours=8))  # report generation timestamps display in SGT
 from io import BytesIO
 import zipfile
 
@@ -1087,7 +1089,7 @@ def _save_report(job_id: str, config: dict, markdown: str, data: dict,
         "aggregation_mode": config.get("aggregation_mode", "merged"),
         "workspace_name":   config.get("workspace_name", ""),
         "project_name":     config.get("project_name", ""),
-        "generated_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+        "generated_at": datetime.now(SGT).strftime("%Y-%m-%d %H:%M:%S GMT+8"),
         "markdown": markdown,
         "data": data,
         "charts_b64": charts_b64,

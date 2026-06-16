@@ -157,6 +157,38 @@
     }
     .toggle-switch input:checked + .toggle-track { background: var(--success); }
     .toggle-switch input:checked + .toggle-track::after { transform: translateX(16px); }
+
+    /* Section-grid (parity with reports.html / customers.html). Grouped by
+       data source — operators tick the sections they want this schedule to
+       emit. Pre-filled from the chosen customer's default_sections, but each
+       schedule can override per its own needs. */
+    .section-grid {
+      display: flex; flex-direction: column;
+      max-height: 320px; overflow-y: auto;
+      padding: 8px 12px; border: 1px solid var(--border);
+      border-radius: var(--radius-sm); background: var(--bg-base);
+    }
+    .section-group-heading {
+      font-size: 12px; font-weight: 700; color: var(--accent);
+      text-transform: uppercase; letter-spacing: 0.5px;
+      padding: 8px 0 4px; margin-top: 10px;
+      border-bottom: 1px solid var(--border);
+    }
+    .section-group-heading:first-child { margin-top: 0; }
+    .section-subgrid {
+      display: grid; grid-template-columns: 1fr 1fr;
+      gap: 8px; padding: 8px 0;
+    }
+    .section-subgrid label {
+      display: flex; align-items: center; gap: 8px;
+      font-size: 13px; padding: 6px 10px;
+      background: var(--bg-raised); border: 1px solid var(--border);
+      border-radius: var(--radius-sm); cursor: pointer;
+      transition: border-color 0.15s;
+    }
+    .section-subgrid label:hover { border-color: var(--accent); }
+    .section-subgrid input[type="checkbox"] { accent-color: var(--accent); }
+    @media (max-width: 600px) { .section-subgrid { grid-template-columns: 1fr; } }
   </style>
 </head>
 <body>
@@ -213,9 +245,10 @@
 
         <div class="form-group">
           <label>Customer</label>
-          <select id="schedCustomer" required>
+          <select id="schedCustomer" required onchange="onSchedCustomerChange()">
             <option value="">Select customer...</option>
           </select>
+          <p class="form-hint">Picking a customer pre-fills the section selection below from their defaults.</p>
         </div>
 
         <div class="form-row">
@@ -236,10 +269,20 @@
         <div class="form-group">
           <label>Data Sources</label>
           <div class="checkbox-group">
+            <label><input type="checkbox" id="schedJira" checked> Jira</label>
             <label><input type="checkbox" id="schedSentinel"> Microsoft Sentinel</label>
             <label><input type="checkbox" id="schedSplunk"> Splunk</label>
             <label><input type="checkbox" id="schedSocradar"> SOCRadar</label>
           </div>
+          <p class="form-hint">Jira is the primary source of ticket data for scheduled reports and is left on by default. The other three pull supplementary signals (Sentinel alerts, Splunk events, SOCRadar threat intel).</p>
+        </div>
+
+        <div class="form-group">
+          <label>Report Sections</label>
+          <div class="section-grid" id="schedSectionGrid">
+            <div style="color:var(--text-muted); font-size:13px; padding:8px;">Pick a customer above to populate the section list.</div>
+          </div>
+          <p class="form-hint">Pre-filled from the customer's default sections — modify per schedule as needed. Empty selection falls back to customer defaults at run-time.</p>
         </div>
 
         <div class="form-group">
@@ -404,8 +447,12 @@
       document.getElementById('scheduleForm').reset();
       document.getElementById('scheduleId').value = '';
       document.getElementById('schedEnabled').checked = true;
+      document.getElementById('schedJira').checked = true;
       document.getElementById('schedAggregationMode').value = 'merged';
       updateDayField();
+      // Empty section grid until a customer is picked
+      document.getElementById('schedSectionGrid').innerHTML =
+        '<div style="color:var(--text-muted); font-size:13px; padding:8px;">Pick a customer above to populate the section list.</div>';
       document.getElementById('scheduleModal').classList.add('active');
     }
 
@@ -425,13 +472,91 @@
       } else {
         document.getElementById('schedDay').value = s.day_of_month ?? 1;
       }
+      document.getElementById('schedJira').checked = s.use_jira !== false; // default true if missing
       document.getElementById('schedSentinel').checked = s.use_sentinel;
       document.getElementById('schedSplunk').checked = s.use_splunk;
       document.getElementById('schedSocradar').checked = s.use_socradar;
       document.getElementById('schedEmail').value = s.email_recipients || '';
       document.getElementById('schedAggregationMode').value = s.aggregation_mode || 'merged';
       document.getElementById('schedEnabled').checked = s.enabled;
+      // Populate section grid: schedule's own sections if set, else customer defaults.
+      const cust = customers.find(c => c.id === s.customer_id);
+      const seed = (s.sections && s.sections.length)
+        ? s.sections
+        : (cust && cust.default_sections) || [];
+      renderSchedSectionGrid(seed);
       document.getElementById('scheduleModal').classList.add('active');
+    }
+
+    function onSchedCustomerChange() {
+      const cid = document.getElementById('schedCustomer').value;
+      if (!cid) {
+        document.getElementById('schedSectionGrid').innerHTML =
+          '<div style="color:var(--text-muted); font-size:13px; padding:8px;">Pick a customer above to populate the section list.</div>';
+        return;
+      }
+      const cust = customers.find(c => c.id === cid);
+      const seed = (cust && cust.default_sections) || [];
+      renderSchedSectionGrid(seed);
+    }
+
+    // Render checkboxes for every known section, grouped by source. Sections in
+    // `selectedIds` start checked. We preserve the customer's saved order within
+    // each source group, then append unselected sections from that group.
+    function renderSchedSectionGrid(selectedIds) {
+      const grid = document.getElementById('schedSectionGrid');
+      grid.innerHTML = '';
+      if (!allSections.length) {
+        grid.innerHTML = '<div style="color:var(--text-muted); font-size:13px; padding:8px;">No sections available.</div>';
+        return;
+      }
+
+      const sourceLabels = {
+        jira: 'Jira', splunk: 'Splunk', sentinel: 'Microsoft Sentinel',
+        socradar: 'SOCRadar', general: 'General'
+      };
+      const sourceOrder = ['jira', 'splunk', 'sentinel', 'socradar', 'general'];
+
+      const grouped = {};
+      allSections.forEach(s => {
+        const src = s.source || 'other';
+        if (!grouped[src]) grouped[src] = [];
+        grouped[src].push(s);
+      });
+
+      const selSet = new Set(selectedIds);
+
+      sourceOrder.forEach(src => {
+        const items = grouped[src];
+        if (!items || !items.length) return;
+
+        // Selected first (in saved order), then remaining in catalog order.
+        const orderedSelected = selectedIds
+          .map(id => items.find(it => it.id === id))
+          .filter(Boolean);
+        const remaining = items.filter(it => !selSet.has(it.id));
+        const orderedItems = [...orderedSelected, ...remaining];
+
+        const heading = document.createElement('div');
+        heading.className = 'section-group-heading';
+        heading.textContent = sourceLabels[src] || src;
+        grid.appendChild(heading);
+
+        const subgrid = document.createElement('div');
+        subgrid.className = 'section-subgrid';
+        orderedItems.forEach(s => {
+          const lbl = document.createElement('label');
+          lbl.innerHTML = `<input type="checkbox" data-section="${s.id}" data-source="${src}" ${selSet.has(s.id) ? 'checked' : ''}><span>${s.label}</span>`;
+          subgrid.appendChild(lbl);
+        });
+        grid.appendChild(subgrid);
+      });
+    }
+
+    function getSelectedSchedSections() {
+      const grid = document.getElementById('schedSectionGrid');
+      return Array.from(grid.querySelectorAll('input[type="checkbox"][data-section]:checked'))
+        .map(el => el.dataset.section);
     }
 
     function closeModal() {
@@ -447,17 +572,18 @@
         frequency: freq,
         day_of_month: freq === 'monthly' ? day : null,
         day_of_week: freq === 'weekly' ? day : null,
+        use_jira: document.getElementById('schedJira').checked,
         use_sentinel: document.getElementById('schedSentinel').checked,
         use_splunk: document.getElementById('schedSplunk').checked,
         use_socradar: document.getElementById('schedSocradar').checked,
         email_recipients: document.getElementById('schedEmail').value.trim(),
         enabled: document.getElementById('schedEnabled').checked,
         aggregation_mode: document.getElementById('schedAggregationMode').value || 'merged',
-        sections: [],
+        sections: getSelectedSchedSections(),
       };
 
       const id = document.getElementById('scheduleId').value;
-      const url = id ? `/admin/api/schedules/${id}` : '/api/schedules';
+      const url = id ? `/admin/api/schedules/${id}` : '/admin/api/schedules';
       const method = id ? 'PUT' : 'POST';
 
       const r = await fetch(url, {

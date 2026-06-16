@@ -16,7 +16,9 @@ import os
 import json
 import logging
 import threading
-from datetime import datetime
+from datetime import datetime, timedelta, timezone
+
+SGT = timezone(timedelta(hours=8))  # report/schedule timestamps display in SGT
 
 import psycopg2
 import psycopg2.extras
@@ -209,6 +211,9 @@ def _migrate_columns(con: "_ConnWrapper") -> None:
         ("reports",   "workspace_name",   "TEXT DEFAULT ''"),
         ("reports",   "project_name",     "TEXT DEFAULT ''"),
         ("schedules", "aggregation_mode", "TEXT DEFAULT 'merged'"),
+        # 2026-06-16: schedule data-source parity with the manual report form.
+        # use_jira default 1 because all pre-existing schedules implicitly used Jira.
+        ("schedules", "use_jira",         "INTEGER DEFAULT 1"),
     ]
     for table, col, decl in additions:
         if col not in existing_cols(table):
@@ -263,7 +268,7 @@ def save_report(report_dict: dict) -> None:
                 report_dict.get("report_type", ""),
                 report_dict.get("start_date", ""),
                 report_dict.get("end_date", ""),
-                report_dict.get("generated_at", datetime.now().strftime("%Y-%m-%d %H:%M:%S")),
+                report_dict.get("generated_at", datetime.now(SGT).strftime("%Y-%m-%d %H:%M:%S GMT+8")),
                 report_dict.get("markdown", ""),
                 json.dumps(stats) if stats else None,
                 json.dumps(charts_b64_raw) if charts_b64_raw else None,
@@ -408,8 +413,8 @@ def save_schedule(schedule: dict) -> None:
               (id, customer_id, frequency, day_of_month, day_of_week,
                sections_json, use_sentinel, use_splunk, use_socradar,
                email_recipients, enabled, last_run, created_at,
-               aggregation_mode)
-            VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
+               aggregation_mode, use_jira)
+            VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
             ON CONFLICT (id) DO UPDATE SET
               customer_id      = EXCLUDED.customer_id,
               frequency        = EXCLUDED.frequency,
@@ -423,7 +428,8 @@ def save_schedule(schedule: dict) -> None:
               enabled          = EXCLUDED.enabled,
               last_run         = EXCLUDED.last_run,
               created_at       = EXCLUDED.created_at,
-              aggregation_mode = EXCLUDED.aggregation_mode
+              aggregation_mode = EXCLUDED.aggregation_mode,
+              use_jira         = EXCLUDED.use_jira
             """,
             (
                 schedule["id"],
@@ -440,6 +446,7 @@ def save_schedule(schedule: dict) -> None:
                 schedule.get("last_run"),
                 schedule.get("created_at", datetime.now().strftime("%Y-%m-%d %H:%M:%S")),
                 schedule.get("aggregation_mode", "merged") or "merged",
+                1 if schedule.get("use_jira", True) else 0,
             )
         )
 
@@ -483,6 +490,7 @@ def _row_to_schedule(row: dict) -> dict:
         "day_of_month": row.get("day_of_month"),
         "day_of_week": row.get("day_of_week"),
         "sections": sections,
+        "use_jira": bool(row.get("use_jira", 1)),
         "use_sentinel": bool(row.get("use_sentinel")),
         "use_splunk": bool(row.get("use_splunk")),
         "use_socradar": bool(row.get("use_socradar")),
