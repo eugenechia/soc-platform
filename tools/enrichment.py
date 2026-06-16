@@ -672,6 +672,312 @@ def _build_comment(ioc_results: list[dict], overall_verdict: str, action_taken: 
     return "\n".join(lines)
 
 
+# ─── Phase 5c (2026-06-16) — ADF table renderer ──────────────────────────────
+#
+# Mirrors _build_comment() but emits ADF (Atlassian Document Format) so the
+# enrichment comment renders as panels, headings, and tables in Jira instead
+# of dense paragraphs. Feature-flagged via COMMENT_ADF_ENABLED — default off
+# until verified end-to-end on a synthetic webhook. On Jira HTTP 400 (any
+# ADF validation failure), enrich_ticket() falls back to the plain-text
+# _build_comment() path so an analyst never sees an empty comment.
+
+_VERDICT_PANEL_TYPE = {
+    "malicious":  "error",   # red
+    "suspicious": "warning", # amber
+    "benign":     "success", # green
+    "unknown":    "note",    # grey
+}
+
+
+def _adf_ioc_block(ioc_results: list[dict], ticket_key: str) -> list[dict]:
+    """Build the ADF nodes for the per-IOC details section.
+
+    Each malicious IOC gets its own subheading + 2-col key/value Origin
+    table (IPs only) + Reputation table + a 'Previously flagged' line if
+    history is available. Same per-IOC budget rules as _build_comment.
+    """
+    from tools import adf
+
+    if not ioc_results:
+        return [
+            adf.heading(3, "IOCs"),
+            adf.paragraph(
+                adf.text("No extractable IOCs in this ticket — reputation engines were not queried.", italic=True)
+            ),
+        ]
+
+    ioc_count = sum(1 for r in ioc_results if r.get("verdict") == "malicious")
+    out: list[dict] = [
+        adf.heading(3, f"IOCs ({ioc_count} flagged · {len(ioc_results)} checked)")
+    ]
+
+    try:
+        from tools.ioc_history import budget_per_ticket as _ioc_history_budget
+        ioc_history_budget_remaining = _ioc_history_budget()
+    except Exception:
+        ioc_history_budget_remaining = 0
+
+    for i, result in enumerate(ioc_results, 1):
+        ioc = result["ioc"]
+        out.append(adf.heading(4, adf.text(f"[{i}] ", italic=True),
+                                    adf.text(ioc["value"], code=True),
+                                    adf.text(f" ({ioc['type'].upper()})")))
+
+        vt = result.get("virustotal")
+        ab = result.get("abuseipdb")
+
+        if ioc["type"] == "ip":
+            origin_rows = _adf_origin_rows(vt, ab)
+            if origin_rows:
+                out.append(adf.table(["Field", "Value"], origin_rows))
+
+        rep_rows: list[list] = []
+        # VirusTotal row
+        if vt:
+            mal = vt.get("malicious_count", 0)
+            tot = vt.get("total_engines", 0)
+            rep = vt.get("reputation", 0)
+            det = f"{mal} / {tot}" if tot else "—"
+            conf = f"{(mal/tot)*100:.1f}%" if tot else "—"
+            notes = f"Reputation {rep}"
+            rep_rows.append(["VirusTotal", det, conf, notes])
+        else:
+            rep_rows.append(["VirusTotal", "Not configured", "—", "—"])
+
+        # AbuseIPDB row
+        if ioc["type"] == "ip":
+            if ab:
+                rep_rows.append(["AbuseIPDB", "—", f"{ab.get('confidence_score', 0)}%", "—"])
+            else:
+                rep_rows.append(["AbuseIPDB", "Not configured", "—", "—"])
+        else:
+            rep_rows.append(["AbuseIPDB", "N/A (IP only)", "—", "—"])
+
+        # SOCRadar row
+        sr = result.get("socradar")
+        if sr:
+            verdict = sr.get("verdict", "unknown").title()
+            score = sr.get("score", 0)
+            cats = sr.get("categories") or []
+            notes = ", ".join(cats) if cats else "—"
+            rep_rows.append(["SOCRadar", verdict, f"{score} / 100", notes])
+            for f in (sr.get("top_findings") or [])[:3]:
+                src = f.get("source") or "?"
+                cat = f.get("category") or "?"
+                rel = f.get("reliability") or 0
+                last = _format_sgt(f.get("last_seen") or "")
+                rep_rows.append([
+                    adf.paragraph(adf.text("  · ", italic=True), adf.text(src, italic=True)),
+                    "—",
+                    f"rel {rel}",
+                    f"{cat} · last seen {last}",
+                ])
+        else:
+            rep_rows.append(["SOCRadar", "Not configured", "—", "—"])
+
+        out.append(adf.table(["Engine", "Detections", "Confidence", "Notes"], rep_rows))
+
+        # Per-IOC historical
+        if result.get("verdict") == "malicious" and ioc_history_budget_remaining > 0:
+            try:
+                from tools.ioc_history import lookup_ioc_history, render_line
+                hist = lookup_ioc_history(ioc.get("value", ""), exclude_ticket_key=ticket_key)
+                hist_line = render_line(hist)
+                if hist_line:
+                    out.append(adf.paragraph(adf.text(hist_line, italic=True)))
+            except Exception as _hist_err:
+                logger.warning("ioc_history ADF render failed for %s (%s)",
+                               ioc.get("value", ""), _hist_err)
+            ioc_history_budget_remaining -= 1
+
+    return out
+
+
+def _adf_origin_rows(vt: dict | None, ab: dict | None) -> list[list]:
+    """Build origin key/value rows for the per-IOC Origin table. Drops empty
+    fields so the table stays compact."""
+    ab = ab or {}
+    vt = vt or {}
+    rows: list[list] = []
+
+    country_name = ab.get("country_name") or ""
+    country_code = ab.get("country_code") or vt.get("country") or ""
+    if country_name and country_code:
+        rows.append(["Country", f"{country_name} ({country_code})"])
+    elif country_name or country_code:
+        rows.append(["Country", country_name or country_code])
+
+    isp = ab.get("isp") or ""
+    as_owner = vt.get("as_owner") or ""
+    if isp:
+        rows.append(["ISP", isp])
+    elif as_owner:
+        rows.append(["AS Owner", as_owner])
+
+    if vt.get("network"):
+        rows.append(["Network", vt["network"]])
+    if ab.get("usage_type"):
+        rows.append(["Usage", ab["usage_type"]])
+    if ab.get("domain"):
+        rows.append(["Domain", ab["domain"]])
+
+    hostnames = ab.get("hostnames") or []
+    if hostnames:
+        first = hostnames[0]
+        suffix = f" (+{len(hostnames) - 1} more)" if len(hostnames) > 1 else ""
+        rows.append(["Reverse DNS", f"{first}{suffix}"])
+
+    return rows
+
+
+def _adf_mitre_block(mitre_result: dict | None) -> list[dict]:
+    from tools import adf
+    if not mitre_result:
+        return []
+    techniques = mitre_result.get("techniques") or []
+    if not techniques:
+        return []
+    rows = []
+    for t in techniques:
+        pct = int(round(t.get("confidence", 0) * 100))
+        rows.append([t["id"], t.get("tactic", "—"), t.get("name", "—"), f"{pct}%"])
+    return [
+        adf.heading(3, "MITRE ATT&CK"),
+        adf.table(["ID", "Tactic", "Name", "Confidence"], rows),
+    ]
+
+
+def _adf_sentinel_block(kql_result: dict | None) -> list[dict]:
+    from tools import adf
+    if not kql_result:
+        return []
+    queries = kql_result.get("queries") or []
+    if not queries:
+        return []
+    workspace = kql_result.get("workspace_name") or "(unnamed)"
+    iters = kql_result.get("iterations", len(queries))
+    total = kql_result.get("total_rows", 0)
+    iter_word = "iteration" if iters == 1 else "iterations"
+    row_word = "row" if total == 1 else "rows"
+
+    rows = []
+    for q in queries:
+        i = q.get("iteration", 0)
+        table_name = q.get("table") or "(unspecified)"
+        rationale = (q.get("rationale") or "").strip()
+        row_count = q.get("row_count", 0)
+        if len(rationale) > 200:
+            rationale = rationale[:197] + "..."
+        rows.append([str(i), table_name, str(row_count), rationale or "—"])
+
+    return [
+        adf.heading(3, f"Sentinel Evidence ({workspace})"),
+        adf.paragraph(
+            adf.text(f"{iters} {iter_word} · {total} {row_word} total", italic=True)
+        ),
+        adf.table(["#", "Table", "Hits", "LLM rationale"], rows),
+    ]
+
+
+def _adf_customer_knowledge_block(rag_info: dict | None) -> list[dict]:
+    from tools import adf
+    if not rag_info:
+        return []
+    pages = int(rag_info.get("pages_searched") or 0)
+    if pages <= 0:
+        return []
+    chunks = list(rag_info.get("chunks") or [])
+    page_word = "page" if pages == 1 else "pages"
+
+    blocks = [
+        adf.heading(3, "Customer Knowledge Base (Confluence)"),
+        adf.paragraph(
+            adf.text(f"Searched {pages} {page_word}", italic=True)
+        ),
+    ]
+    if not chunks:
+        blocks.append(adf.paragraph(
+            adf.text("No relevant matches above similarity threshold.", italic=True)
+        ))
+        return blocks
+
+    rows = []
+    for c in chunks:
+        text_val = (c.get("text") or "").strip()
+        if not text_val:
+            continue
+        source = c.get("source") or "doc"
+        score = float(c.get("score") or 0.0)
+        oneline = " ".join(text_val.split())
+        if len(oneline) > 240:
+            oneline = oneline[:237] + "..."
+        rows.append([source, f"{score:.2f}", oneline])
+    blocks.append(adf.table(["Source", "Score", "Snippet"], rows))
+    return blocks
+
+
+def _adf_historical_block(historical: dict | None) -> list[dict]:
+    from tools import adf
+    if not historical or historical.get("total", 0) <= 0:
+        return []
+    window = historical.get("window_hours", 24)
+    total = historical["total"]
+    tp = historical.get("true_positive", 0)
+    fp = historical.get("false_positive", 0)
+    unk = historical.get("unknown", 0)
+    unt = historical.get("untriaged", 0)
+    prefix = historical.get("rule_prefix") or ""
+    first_seen = _format_sgt(historical.get("first_seen_at") or "")
+
+    rows = [
+        ["True-Positive", str(tp)],
+        ["False-Positive", str(fp)],
+        ["Unknown", str(unk)],
+        ["Untriaged", f"{unt} (still in flight)" if unt else "0"],
+    ]
+    if prefix:
+        rows.append(["Matched on", f'"{prefix}"'])
+    if first_seen:
+        rows.append(["Earliest sibling", first_seen])
+
+    return [
+        adf.heading(3, f"Similar Alerts (past {window}h)"),
+        adf.paragraph(adf.text(f"{total} similar alert(s) found", italic=True)),
+        adf.table(["Category", "Count"], rows),
+    ]
+
+
+def _build_comment_adf(ioc_results: list[dict], overall_verdict: str, action_taken: str,
+                      mitre_result: dict | None = None,
+                      historical: dict | None = None,
+                      rag_info: dict | None = None,
+                      kql_evidence: dict | None = None,
+                      ticket_key: str = "") -> dict:
+    """Return a full ADF document for the enrichment comment. Same input
+    signature as _build_comment() so callers don't change."""
+    from tools import adf
+
+    verdict_display = _VERDICT_LABEL.get(overall_verdict, overall_verdict.upper())
+    panel_type = _VERDICT_PANEL_TYPE.get(overall_verdict, "note")
+
+    blocks: list[dict] = [
+        # Verdict panel at the top — color-coded for one-second triage.
+        adf.panel(panel_type,
+            adf.paragraph(adf.text("VERDICT: ", bold=True), adf.text(verdict_display, bold=True)),
+            adf.paragraph(adf.text("ACTION: ", bold=True), adf.text(action_taken)),
+        ),
+        adf.heading(2, "L1 Triage Report (Automated)"),
+    ]
+
+    blocks.extend(_adf_ioc_block(ioc_results, ticket_key))
+    blocks.extend(_adf_customer_knowledge_block(rag_info))
+    blocks.extend(_adf_sentinel_block(kql_evidence))
+    blocks.extend(_adf_historical_block(historical))
+    blocks.extend(_adf_mitre_block(mitre_result))
+
+    return adf.doc(*blocks)
+
+
 # ─── Jira Actions ─────────────────────────────────────────────────────────────
 
 def _jira_headers() -> dict:
@@ -688,7 +994,9 @@ def _jira_headers() -> dict:
 
 
 def post_jira_comment(ticket_key: str, text: str) -> bool:
-    """Post a plain-text comment to a Jira issue using ADF format."""
+    """Post a plain-text comment to a Jira issue. Each input line becomes one
+    ADF paragraph — preserves today's pre-Phase-5c layout. Used as the
+    fallback path when the structured ADF post fails."""
     if not JIRA_URL:
         logger.warning("JIRA_URL not set — cannot post comment to %s", ticket_key)
         return False
@@ -709,6 +1017,33 @@ def post_jira_comment(ticket_key: str, text: str) -> bool:
         return True
     except Exception as e:
         logger.error("post_jira_comment %s failed: %s", ticket_key, e)
+        return False
+
+
+def post_jira_comment_adf(ticket_key: str, adf_doc: dict) -> bool:
+    """Post a pre-built ADF document as a Jira comment (Phase 5c).
+
+    Returns True on success, False on any failure (HTTP error, network, or
+    bad ADF shape). Caller is expected to fall back to ``post_jira_comment``
+    with a plain-text rendering when this returns False so the analyst
+    never sees an empty comment."""
+    if not JIRA_URL:
+        logger.warning("JIRA_URL not set — cannot post ADF comment to %s", ticket_key)
+        return False
+
+    url = f"{JIRA_URL}/rest/api/3/issue/{ticket_key}/comment"
+    body = {"body": adf_doc}
+
+    try:
+        r = httpx.post(url, headers=_jira_headers(), json=body, timeout=30)
+        if r.status_code >= 400:
+            logger.error("post_jira_comment_adf %s HTTP %s: %s",
+                         ticket_key, r.status_code, r.text[:500])
+            return False
+        logger.info("Posted ADF enrichment comment to %s", ticket_key)
+        return True
+    except Exception as e:
+        logger.error("post_jira_comment_adf %s failed: %s", ticket_key, e)
         return False
 
 
@@ -939,10 +1274,25 @@ def enrich_ticket(ticket_key: str, fields: dict,
             action_taken += " (JIRA_L2_ACCOUNT_ID not configured — assignment skipped)"
             logger.warning("JIRA_L2_ACCOUNT_ID not set — cannot assign %s to L2", ticket_key)
 
-    comment_text = _build_comment(ioc_results, overall_verdict, action_taken,
-                                   mitre_result, historical, rag_info, kql_evidence,
-                                   ticket_key=ticket_key)
-    post_jira_comment(ticket_key, comment_text)
+    # Phase 5c (2026-06-16) — try ADF first when killswitch ON; on any failure
+    # (HTTP 400 from Jira on a malformed doc, network glitch, our renderer
+    # throwing on unexpected input) fall back to the plain-text comment so an
+    # analyst always sees the triage evidence.
+    posted = False
+    if os.environ.get("COMMENT_ADF_ENABLED", "false").lower() == "true":
+        try:
+            adf_doc = _build_comment_adf(ioc_results, overall_verdict, action_taken,
+                                          mitre_result, historical, rag_info, kql_evidence,
+                                          ticket_key=ticket_key)
+            posted = post_jira_comment_adf(ticket_key, adf_doc)
+        except Exception as e:
+            logger.exception("ADF comment build/post failed for %s — falling back to plain text", ticket_key)
+
+    if not posted:
+        comment_text = _build_comment(ioc_results, overall_verdict, action_taken,
+                                       mitre_result, historical, rag_info, kql_evidence,
+                                       ticket_key=ticket_key)
+        post_jira_comment(ticket_key, comment_text)
 
     return {
         "ticket": ticket_key,
