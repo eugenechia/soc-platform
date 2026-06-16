@@ -1090,6 +1090,11 @@ def _save_report(job_id: str, config: dict, markdown: str, data: dict,
         "workspace_name":   config.get("workspace_name", ""),
         "project_name":     config.get("project_name", ""),
         "generated_at": datetime.now(SGT).strftime("%Y-%m-%d %H:%M:%S GMT+8"),
+        # tools/scheduler.py::_fire_schedule injects _schedule_id into the job
+        # config when a scheduled run kicks off; manual /reports submissions
+        # never carry this key. The History UI uses this to tab between
+        # 'Generated' (manual) and 'Scheduled' lists.
+        "source": "scheduled" if config.get("_schedule_id") else "manual",
         "markdown": markdown,
         "data": data,
         "charts_b64": charts_b64,
@@ -1126,6 +1131,7 @@ def _load_reports_list(customer_id: str = "", start_date: str = "",
                 "start_date": r.get("start_date", ""),
                 "end_date": r.get("end_date", ""),
                 "generated_at": r.get("generated_at", ""),
+                "source": r.get("source", "manual"),
             })
         except Exception:
             continue

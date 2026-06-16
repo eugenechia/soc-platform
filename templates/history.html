@@ -167,6 +167,35 @@
     }
     .backup-pill-run-btn:hover:not(:disabled) { background: var(--accent-light); color: var(--accent); border-color: var(--accent); }
     .backup-pill-run-btn:disabled { opacity: 0.5; cursor: not-allowed; }
+
+    /* Source tabs (Generated vs Scheduled) */
+    .history-tabs {
+      display: flex; gap: 4px; margin-bottom: 16px;
+      border-bottom: 1px solid var(--border);
+    }
+    .history-tab {
+      background: transparent; border: none;
+      padding: 10px 18px; margin-bottom: -1px;
+      font-size: 14px; font-weight: 500;
+      color: var(--text-muted); cursor: pointer;
+      border-bottom: 2px solid transparent;
+      transition: color 0.15s, border-color 0.15s;
+      display: inline-flex; align-items: center; gap: 8px;
+    }
+    .history-tab:hover { color: var(--text-primary); }
+    .history-tab.active {
+      color: var(--accent);
+      border-bottom-color: var(--accent);
+    }
+    .history-tab .count {
+      display: inline-flex; align-items: center; justify-content: center;
+      min-width: 22px; height: 20px; padding: 0 6px;
+      background: var(--bg-raised); color: var(--text-muted);
+      border-radius: 10px; font-size: 12px; font-weight: 600;
+    }
+    .history-tab.active .count {
+      background: var(--accent-light); color: var(--accent);
+    }
   </style>
 </head>
 <body>
@@ -203,8 +232,16 @@
         <span class="backup-pill muted" id="backupPill" title="Loading…">loading…</span>
         <button class="backup-pill-run-btn" id="backupRunBtn" onclick="runBackupNow()">Run backup now</button>
       </div>
-      <h2>Generated Reports</h2>
+      <h2>Report History</h2>
       <p class="subtitle">View, export, or delete previously generated reports</p>
+      <div class="history-tabs" role="tablist">
+        <button type="button" class="history-tab active" data-tab="manual" onclick="switchSourceTab('manual')">
+          Generated Report <span class="count" id="countManual">0</span>
+        </button>
+        <button type="button" class="history-tab" data-tab="scheduled" onclick="switchSourceTab('scheduled')">
+          Scheduled Report <span class="count" id="countScheduled">0</span>
+        </button>
+      </div>
       <div id="reportList">
         <div class="empty-state">Loading...</div>
       </div>
@@ -255,13 +292,32 @@
       }
     }
 
+    // Cached list + current tab selection. loadReports fetches once and
+    // renderReports filters by currentSourceTab so tab switches don't refetch.
+    let allReports = [];
+    let currentSourceTab = 'manual';
+
     async function loadReports() {
       const r = await fetch('/reports/api/reports');
-      const reports = await r.json();
+      allReports = await r.json();
+      renderReports();
+    }
+
+    function renderReports() {
+      const manual = allReports.filter(x => (x.source || 'manual') === 'manual');
+      const scheduled = allReports.filter(x => (x.source || 'manual') === 'scheduled');
+      document.getElementById('countManual').textContent = manual.length;
+      document.getElementById('countScheduled').textContent = scheduled.length;
+
+      const rows = currentSourceTab === 'scheduled' ? scheduled : manual;
       const list = document.getElementById('reportList');
 
-      if (!reports.length) {
-        list.innerHTML = '<div class="empty-state">No reports generated yet. Go to the <a href="/reports/" style="color:var(--accent);">Report Generator</a> to create one.</div>';
+      if (!rows.length) {
+        const label = currentSourceTab === 'scheduled' ? 'scheduled' : 'generated';
+        const cta = currentSourceTab === 'scheduled'
+          ? `Configure a recurring schedule on the <a href="/admin/schedules" style="color:var(--accent);">Schedules</a> page — reports fired by the scheduler will appear here.`
+          : `Go to the <a href="/reports/" style="color:var(--accent);">Report Generator</a> to create one.`;
+        list.innerHTML = `<div class="empty-state">No ${label} reports yet. ${cta}</div>`;
         return;
       }
 
@@ -277,7 +333,7 @@
             </tr>
           </thead>
           <tbody>
-            ${reports.map(r => `
+            ${rows.map(r => `
               <tr>
                 <td><strong>${r.customer_name}</strong></td>
                 <td>${r.report_type}</td>
@@ -294,6 +350,14 @@
           </tbody>
         </table>
       `;
+    }
+
+    function switchSourceTab(tab) {
+      currentSourceTab = tab;
+      document.querySelectorAll('.history-tab').forEach(el => {
+        el.classList.toggle('active', el.dataset.tab === tab);
+      });
+      renderReports();
     }
 
     async function viewReport(id) {

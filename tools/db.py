@@ -210,6 +210,10 @@ def _migrate_columns(con: "_ConnWrapper") -> None:
         ("reports",   "aggregation_mode", "TEXT DEFAULT 'merged'"),
         ("reports",   "workspace_name",   "TEXT DEFAULT ''"),
         ("reports",   "project_name",     "TEXT DEFAULT ''"),
+        # 2026-06-16: distinguish manually-generated vs scheduler-fired reports
+        # so /admin/history can tab between them. Default 'manual' for backward
+        # compat — every existing row pre-dates the scheduler being functional.
+        ("reports",   "source",           "TEXT DEFAULT 'manual'"),
         ("schedules", "aggregation_mode", "TEXT DEFAULT 'merged'"),
         # 2026-06-16: schedule data-source parity with the manual report form.
         # use_jira default 1 because all pre-existing schedules implicitly used Jira.
@@ -243,8 +247,8 @@ def save_report(report_dict: dict) -> None:
             INSERT INTO reports
               (id, customer_id, customer_name, report_type, start_date, end_date,
                generated_at, markdown, stats_json, charts_b64, sections_json, logo_path,
-               aggregation_mode, workspace_name, project_name)
-            VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
+               aggregation_mode, workspace_name, project_name, source)
+            VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
             ON CONFLICT (id) DO UPDATE SET
               customer_id      = EXCLUDED.customer_id,
               customer_name    = EXCLUDED.customer_name,
@@ -259,7 +263,8 @@ def save_report(report_dict: dict) -> None:
               logo_path        = EXCLUDED.logo_path,
               aggregation_mode = EXCLUDED.aggregation_mode,
               workspace_name   = EXCLUDED.workspace_name,
-              project_name     = EXCLUDED.project_name
+              project_name     = EXCLUDED.project_name,
+              source           = EXCLUDED.source
             """,
             (
                 report_dict.get("id", ""),
@@ -277,6 +282,7 @@ def save_report(report_dict: dict) -> None:
                 report_dict.get("aggregation_mode", "merged"),
                 report_dict.get("workspace_name", ""),
                 report_dict.get("project_name", ""),
+                report_dict.get("source", "manual"),
             )
         )
 
@@ -312,7 +318,7 @@ def load_reports_list(customer_id: str | None = None,
 
     where = ("WHERE " + " AND ".join(clauses)) if clauses else ""
     sql = f"""
-        SELECT id, customer_name, report_type, start_date, end_date, generated_at
+        SELECT id, customer_name, report_type, start_date, end_date, generated_at, source
         FROM reports
         {where}
         ORDER BY generated_at DESC
@@ -365,6 +371,7 @@ def _row_to_report(row: dict) -> dict:
         "aggregation_mode": row.get("aggregation_mode", "merged") or "merged",
         "workspace_name":   row.get("workspace_name", "") or "",
         "project_name":     row.get("project_name", "") or "",
+        "source":           row.get("source", "manual") or "manual",
         # data key is not stored in DB (too large / not needed for exports)
         "data": {"stats": stats},
     }
