@@ -1024,3 +1024,21 @@ def api_advisories_save(customer_id):
         "dropped_threat_analytics": len(ta_raw) - len(ta_clean),
         "dropped_ioc": len(ioc_raw) - len(ioc_clean),
     })
+
+
+# ── Backup status + manual trigger (D1, 2026-06-16) ─────────────────────────
+
+@admin_bp.route("/api/backup/status", methods=["GET"])
+@require_login
+def api_backup_status():
+    """Return last/next backup timestamps + file counts for the UI freshness pill."""
+    from tools import backup as _backup
+    return jsonify(_backup.backup_status())
+
+
+@admin_bp.route("/api/backup/run-now", methods=["POST"])
+@require_login
+def api_backup_run_now():
+    """Trigger a manual backup. Rate-limited to once per 5 minutes."""
+    from tools import backup as _backup
+    return jsonify(_backup.run_nightly_backup(manual=True))

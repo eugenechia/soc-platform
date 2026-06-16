@@ -40,3 +40,8 @@ azure-keyvault-secrets>=4.8.0
 
 # Phase 4 — RAG over Confluence (embedded persistent vector store; runs in-process)
 chromadb>=0.5.0
+
+# D1 (2026-06-16) — Postgres replaces SQLite-on-Azure-Files (SMB doesn't support
+# POSIX advisory locks, so SQLite writes silently fail). psycopg2-binary bundles
+# its own libpq so no system packages are needed for the driver itself.
+psycopg2-binary>=2.9.9

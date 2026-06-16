@@ -139,6 +139,34 @@
     .report-content li { margin: 0.3em 0; }
 
     .export-bar { display: flex; gap: 10px; margin-top: 20px; padding-top: 20px; border-top: 1px solid var(--border); }
+
+    /* D1 backup freshness pill */
+    .backup-pill-row {
+      display: flex; align-items: center; gap: 12px;
+      margin-bottom: 16px; padding-bottom: 12px;
+      border-bottom: 1px solid var(--border);
+      flex-wrap: wrap;
+    }
+    .backup-pill-row .label { font-size: 13px; color: var(--text-muted); font-weight: 500; }
+    .backup-pill {
+      display: inline-flex; align-items: center; gap: 6px;
+      padding: 4px 10px; border-radius: 12px;
+      font-size: 13px; font-weight: 500;
+      background: var(--accent-light); color: var(--accent);
+      cursor: help;
+    }
+    .backup-pill.warn { background: #FEF3C7; color: #B45309; }
+    .backup-pill.danger { background: var(--danger-light); color: var(--danger); }
+    .backup-pill.muted { background: var(--bg-raised); color: var(--text-muted); }
+    [data-theme="dark"] .backup-pill.warn { background: #3A2A1A; color: #FCD34D; }
+    .backup-pill-run-btn {
+      margin-left: auto;
+      background: var(--bg-raised); border: 1px solid var(--border);
+      color: var(--text-primary); padding: 4px 12px; border-radius: var(--radius-sm);
+      font-size: 13px; cursor: pointer; transition: all 0.15s;
+    }
+    .backup-pill-run-btn:hover:not(:disabled) { background: var(--accent-light); color: var(--accent); border-color: var(--accent); }
+    .backup-pill-run-btn:disabled { opacity: 0.5; cursor: not-allowed; }
   </style>
 </head>
 <body>
@@ -170,6 +198,11 @@
 
   <div class="main">
     <div class="card">
+      <div class="backup-pill-row">
+        <span class="label">Last DB backup:</span>
+        <span class="backup-pill muted" id="backupPill" title="Loading…">loading…</span>
+        <button class="backup-pill-run-btn" id="backupRunBtn" onclick="runBackupNow()">Run backup now</button>
+      </div>
       <h2>Generated Reports</h2>
       <p class="subtitle">View, export, or delete previously generated reports</p>
       <div id="reportList">
@@ -335,8 +368,78 @@
       finally { window.exportLoading?.hide(); }
     }
 
+    // D1 backup freshness pill
+    const BACKUP_KIND = 'db';
+    function relativeTime(ms) {
+      const sec = Math.floor(ms/1000);
+      if (sec < 60) return 'just now';
+      const min = Math.floor(sec/60);
+      if (min < 60) return min + ' min ago';
+      const h = Math.floor(min/60);
+      if (h < 48) return h + 'h ago';
+      return Math.floor(h/24) + 'd ago';
+    }
+    function renderBackupPill(info) {
+      const pill = document.getElementById('backupPill');
+      if (!pill) return;
+      if (!info || !info.last_at) {
+        pill.className = 'backup-pill danger';
+        pill.textContent = 'never';
+        pill.title = 'No backups exist yet. Click "Run backup now" to create the first.';
+        return;
+      }
+      const last = new Date(info.last_at);
+      const ms = Date.now() - last.getTime();
+      const hours = ms / 3600000;
+      let cls = 'backup-pill';
+      if (hours > 72) cls += ' danger';
+      else if (hours > 36) cls += ' warn';
+      pill.className = cls;
+      pill.textContent = relativeTime(ms);
+      const sizeKB = Math.max(1, Math.round((info.size_bytes||0)/1024));
+      pill.title = `Last:  ${info.last_at}\nSize:  ${sizeKB} KB\nCount: ${info.count}\nNext:  ${info.next_at}`;
+    }
+    async function loadBackupStatus() {
+      const pill = document.getElementById('backupPill');
+      try {
+        const r = await fetch('/admin/api/backup/status');
+        const s = await r.json();
+        renderBackupPill(s[BACKUP_KIND]);
+      } catch (e) {
+        if (pill) {
+          pill.className = 'backup-pill danger';
+          pill.textContent = 'status unavailable';
+          pill.title = String(e);
+        }
+      }
+    }
+    async function runBackupNow() {
+      const btn = document.getElementById('backupRunBtn');
+      const orig = btn.textContent;
+      btn.disabled = true;
+      btn.textContent = 'Running…';
+      try {
+        const r = await fetch('/admin/api/backup/run-now', { method: 'POST' });
+        const res = await r.json();
+        if (res.rate_limited) {
+          alert('Backup recently ran. Try again in ' + (res.retry_after_seconds||0) + ' seconds.');
+        } else if (res.errors && res.errors.length) {
+          alert('Backup completed with errors:\n' + res.errors.join('\n'));
+        }
+        if (res.status) renderBackupPill(res.status[BACKUP_KIND]);
+        else await loadBackupStatus();
+      } catch (e) {
+        alert('Backup request failed: ' + e);
+      } finally {
+        btn.disabled = false;
+        btn.textContent = orig;
+      }
+    }
+
     initTheme();
     loadReports();
+    loadBackupStatus();
+    setInterval(loadBackupStatus, 60000);
   </script>
 
   <style>

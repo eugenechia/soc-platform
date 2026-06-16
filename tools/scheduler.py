@@ -48,6 +48,29 @@ def init_scheduler(app) -> None:
         id="check_schedules",
         replace_existing=True,
     )
+
+    # D1 nightly backup — dumps Postgres + customers.json to /app/data/backups
+    # Killswitch via BACKUP_ENABLED env (default true). Runs at BACKUP_SCHEDULE_HOUR
+    # SGT (default 02:00). misfire_grace_time=3600 covers cases where the container
+    # was restarting at fire moment so we don't silently skip a night.
+    if os.environ.get("BACKUP_ENABLED", "true").lower() == "true":
+        try:
+            from tools import backup as _backup
+            backup_hour = int(os.environ.get("BACKUP_SCHEDULE_HOUR", "2"))
+            _scheduler.add_job(
+                _backup.run_nightly_backup,
+                trigger="cron",
+                hour=backup_hour,
+                minute=0,
+                timezone="Asia/Singapore",
+                id="nightly_backup",
+                replace_existing=True,
+                misfire_grace_time=3600,
+            )
+            logger.info("Nightly backup job registered for %02d:00 SGT.", backup_hour)
+        except Exception:
+            logger.exception("Failed to register nightly_backup job — scheduler still starting")
+
     _scheduler.start()
     logger.info("Scheduler started — checking every 5 minutes for due reports.")
 

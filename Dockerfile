@@ -1,6 +1,7 @@
 FROM python:3.12-slim
 
 # weasyprint runtime libs (Cairo, Pango, GDK-Pixbuf) + font packages
+# postgresql-client supplies pg_dump for the D1 nightly backup workflow
 RUN apt-get update && apt-get install -y \
     ca-certificates \
     fonts-liberation \
@@ -11,6 +12,7 @@ RUN apt-get update && apt-get install -y \
     libglib2.0-0 \
     libpango-1.0-0 \
     libpangocairo-1.0-0 \
+    postgresql-client \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app

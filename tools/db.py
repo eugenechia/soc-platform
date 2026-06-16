@@ -1,5 +1,5 @@
 """
-SQLite persistence layer for SOC-Report.
+PostgreSQL persistence layer for SOC-Report.
 
 Provides:
   - reports table: historical report storage (replaces flat JSON reads)
@@ -7,36 +7,139 @@ Provides:
 
 Flat JSON files in data/reports/ continue to be written in parallel so the
 ZIP backup/import feature remains intact. This module owns all read paths.
+
+Migration history: ported from SQLite-on-Azure-Files (broken: SMB does not
+implement POSIX locks) to Azure Database for PostgreSQL Flexible Server in
+the D1 migration (2026-06-16). Public API is unchanged.
 """
 import os
 import json
-import sqlite3
 import logging
+import threading
 from datetime import datetime
 
-logger = logging.getLogger(__name__)
+import psycopg2
+import psycopg2.extras
+import psycopg2.pool
 
-_DB_PATH = os.environ.get(
-    "DB_PATH",
-    os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "data", "soc_platform.db"),
-)
+logger = logging.getLogger(__name__)
 
 _REPORTS_DIR = os.path.join(
     os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
     "data", "reports"
 )
 
+_pool: psycopg2.pool.ThreadedConnectionPool | None = None
+_pool_lock = threading.Lock()
 
-def _conn() -> sqlite3.Connection:
-    con = sqlite3.connect(_DB_PATH, check_same_thread=False)
-    con.row_factory = sqlite3.Row
-    return con
+
+def _get_pool() -> psycopg2.pool.ThreadedConnectionPool:
+    """Lazily create the connection pool on first use.
+
+    Pool sizing: minconn=1, maxconn=5 is plenty for a single-worker Gunicorn
+    (4 request threads + 1 APScheduler thread). Pool reuses connections so
+    we avoid TLS handshake on every query.
+    """
+    global _pool
+    if _pool is None:
+        with _pool_lock:
+            if _pool is None:
+                dsn = os.environ.get("DATABASE_URL")
+                if not dsn:
+                    raise RuntimeError(
+                        "DATABASE_URL environment variable is not set. "
+                        "Set it to a postgresql:// connection string."
+                    )
+                _pool = psycopg2.pool.ThreadedConnectionPool(
+                    minconn=1, maxconn=5, dsn=dsn
+                )
+                logger.info("Postgres connection pool created (minconn=1, maxconn=5)")
+    return _pool
+
+
+class _ConnWrapper:
+    """Thin wrapper so this module can keep its sqlite3-style ``con.execute(...)``
+    call shape after the port. Internal-only; the 11-function public API is
+    unchanged.
+
+    Use as::
+
+        with _conn() as con:
+            row = con.execute("SELECT ... WHERE id = %s", (rid,)).fetchone()
+
+    On exit, commits if no exception was raised, otherwise rolls back. Either
+    way the connection is returned to the pool.
+    """
+
+    def __init__(self) -> None:
+        self._pool = _get_pool()
+        self._conn: psycopg2.extensions.connection | None = None
+
+    def __enter__(self) -> "_ConnWrapper":
+        self._conn = self._pool.getconn()
+        return self
+
+    def __exit__(self, exc_type, exc_val, exc_tb) -> bool:
+        try:
+            if self._conn is not None:
+                if exc_type is None:
+                    self._conn.commit()
+                else:
+                    self._conn.rollback()
+        finally:
+            if self._conn is not None:
+                self._pool.putconn(self._conn)
+                self._conn = None
+        return False  # propagate exceptions
+
+    def execute(self, sql: str, params: tuple | list = ()) -> "_CursorResult":
+        cur = self._conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
+        cur.execute(sql, params)
+        return _CursorResult(cur)
+
+    def executescript(self, script: str) -> None:
+        """Mirror sqlite3.Connection.executescript(): run a multi-statement DDL/DML
+        string. Postgres supports multi-statement strings in cursor.execute(),
+        but they cannot return rows — fine for DDL.
+        """
+        cur = self._conn.cursor()
+        try:
+            cur.execute(script)
+        finally:
+            cur.close()
+
+
+class _CursorResult:
+    """Mirror sqlite3's chainable cursor: ``.execute(...).fetchone()`` works.
+
+    RealDictCursor yields dicts directly, so callers can use ``row['col']`` or
+    pass to ``dict(row)`` like they did with ``sqlite3.Row``.
+    """
+
+    def __init__(self, cur: psycopg2.extras.RealDictCursor) -> None:
+        self._cur = cur
+
+    def fetchone(self) -> dict | None:
+        try:
+            return self._cur.fetchone()
+        finally:
+            self._cur.close()
+
+    def fetchall(self) -> list[dict]:
+        try:
+            return self._cur.fetchall()
+        finally:
+            self._cur.close()
+
+
+def _conn() -> _ConnWrapper:
+    return _ConnWrapper()
 
 
 def init_db() -> None:
     """Create tables if they do not exist. Called once at app startup.
 
-    Also runs idempotent ALTER TABLE migrations for columns added after the
+    Also runs idempotent ADD COLUMN migrations for columns added after the
     initial schema (see ``_migrate_columns`` below). New deployments and
     long-running ones converge on the same schema.
     """
@@ -74,15 +177,14 @@ def init_db() -> None:
             );
         """)
         _migrate_columns(con)
-    logger.info("Database initialised at %s", _DB_PATH)
+    logger.info("Database initialised (Postgres)")
 
 
-def _migrate_columns(con: sqlite3.Connection) -> None:
+def _migrate_columns(con: "_ConnWrapper") -> None:
     """Idempotent column additions for live DBs.
 
-    SQLite's ALTER TABLE only supports ADD COLUMN (no IF NOT EXISTS), so we
-    introspect PRAGMA table_info and only issue ADDs for columns that are
-    actually missing. Safe to call at every startup.
+    Introspects ``information_schema.columns`` and only issues ADDs for columns
+    that are actually missing. Safe to call at every startup.
 
     Phase C (2026-06): adds ``aggregation_mode`` + ``workspace_name`` to
     reports, ``aggregation_mode`` to schedules.
@@ -93,8 +195,14 @@ def _migrate_columns(con: sqlite3.Connection) -> None:
     the column default ('merged' / '').
     """
     def existing_cols(table: str) -> set:
-        rows = con.execute(f"PRAGMA table_info({table})").fetchall()
-        return {r[1] for r in rows}  # row[1] = column name
+        rows = con.execute(
+            """
+            SELECT column_name FROM information_schema.columns
+            WHERE table_schema = 'public' AND table_name = %s
+            """,
+            (table,),
+        ).fetchall()
+        return {r["column_name"] for r in rows}
 
     additions = [
         ("reports",   "aggregation_mode", "TEXT DEFAULT 'merged'"),
@@ -127,11 +235,26 @@ def save_report(report_dict: dict) -> None:
     with _conn() as con:
         con.execute(
             """
-            INSERT OR REPLACE INTO reports
+            INSERT INTO reports
               (id, customer_id, customer_name, report_type, start_date, end_date,
                generated_at, markdown, stats_json, charts_b64, sections_json, logo_path,
                aggregation_mode, workspace_name, project_name)
-            VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+            VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
+            ON CONFLICT (id) DO UPDATE SET
+              customer_id      = EXCLUDED.customer_id,
+              customer_name    = EXCLUDED.customer_name,
+              report_type      = EXCLUDED.report_type,
+              start_date       = EXCLUDED.start_date,
+              end_date         = EXCLUDED.end_date,
+              generated_at     = EXCLUDED.generated_at,
+              markdown         = EXCLUDED.markdown,
+              stats_json       = EXCLUDED.stats_json,
+              charts_b64       = EXCLUDED.charts_b64,
+              sections_json    = EXCLUDED.sections_json,
+              logo_path        = EXCLUDED.logo_path,
+              aggregation_mode = EXCLUDED.aggregation_mode,
+              workspace_name   = EXCLUDED.workspace_name,
+              project_name     = EXCLUDED.project_name
             """,
             (
                 report_dict.get("id", ""),
@@ -156,7 +279,7 @@ def save_report(report_dict: dict) -> None:
 def load_report(report_id: str) -> dict | None:
     """Load a full report record. Returns dict in the same shape as the flat JSON files."""
     with _conn() as con:
-        row = con.execute("SELECT * FROM reports WHERE id = ?", (report_id,)).fetchone()
+        row = con.execute("SELECT * FROM reports WHERE id = %s", (report_id,)).fetchone()
     if not row:
         return None
     return _row_to_report(dict(row))
@@ -170,16 +293,16 @@ def load_reports_list(customer_id: str | None = None,
     clauses = []
     params: list = []
     if customer_id:
-        clauses.append("customer_id = ?")
+        clauses.append("customer_id = %s")
         params.append(customer_id)
     if report_type:
-        clauses.append("report_type = ?")
+        clauses.append("report_type = %s")
         params.append(report_type)
     if start_date:
-        clauses.append("start_date >= ?")
+        clauses.append("start_date >= %s")
         params.append(start_date)
     if end_date:
-        clauses.append("end_date <= ?")
+        clauses.append("end_date <= %s")
         params.append(end_date)
 
     where = ("WHERE " + " AND ".join(clauses)) if clauses else ""
@@ -196,11 +319,11 @@ def load_reports_list(customer_id: str | None = None,
 
 def delete_report(report_id: str) -> None:
     with _conn() as con:
-        con.execute("DELETE FROM reports WHERE id = ?", (report_id,))
+        con.execute("DELETE FROM reports WHERE id = %s", (report_id,))
 
 
 def _row_to_report(row: dict) -> dict:
-    """Convert a SQLite row dict to the same shape the flat JSON files use."""
+    """Convert a DB row dict to the same shape the flat JSON files use."""
     charts_b64 = {}
     if row.get("charts_b64"):
         try:
@@ -246,7 +369,7 @@ def _row_to_report(row: dict) -> dict:
 
 def migrate_from_json() -> int:
     """
-    One-time import of all existing flat JSON report files into SQLite.
+    One-time import of all existing flat JSON report files into the database.
     Returns the number of records imported.
     """
     if not os.path.exists(_REPORTS_DIR):
@@ -254,7 +377,7 @@ def migrate_from_json() -> int:
 
     imported = 0
     with _conn() as con:
-        existing_ids = {r[0] for r in con.execute("SELECT id FROM reports").fetchall()}
+        existing_ids = {r["id"] for r in con.execute("SELECT id FROM reports").fetchall()}
 
     for fname in os.listdir(_REPORTS_DIR):
         if not fname.endswith(".json"):
@@ -281,12 +404,26 @@ def save_schedule(schedule: dict) -> None:
     with _conn() as con:
         con.execute(
             """
-            INSERT OR REPLACE INTO schedules
+            INSERT INTO schedules
               (id, customer_id, frequency, day_of_month, day_of_week,
                sections_json, use_sentinel, use_splunk, use_socradar,
                email_recipients, enabled, last_run, created_at,
                aggregation_mode)
-            VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+            VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
+            ON CONFLICT (id) DO UPDATE SET
+              customer_id      = EXCLUDED.customer_id,
+              frequency        = EXCLUDED.frequency,
+              day_of_month     = EXCLUDED.day_of_month,
+              day_of_week      = EXCLUDED.day_of_week,
+              sections_json    = EXCLUDED.sections_json,
+              use_sentinel     = EXCLUDED.use_sentinel,
+              use_splunk       = EXCLUDED.use_splunk,
+              use_socradar     = EXCLUDED.use_socradar,
+              email_recipients = EXCLUDED.email_recipients,
+              enabled          = EXCLUDED.enabled,
+              last_run         = EXCLUDED.last_run,
+              created_at       = EXCLUDED.created_at,
+              aggregation_mode = EXCLUDED.aggregation_mode
             """,
             (
                 schedule["id"],
@@ -318,18 +455,18 @@ def load_schedules(enabled_only: bool = False) -> list[dict]:
 
 def load_schedule(schedule_id: str) -> dict | None:
     with _conn() as con:
-        row = con.execute("SELECT * FROM schedules WHERE id = ?", (schedule_id,)).fetchone()
+        row = con.execute("SELECT * FROM schedules WHERE id = %s", (schedule_id,)).fetchone()
     return _row_to_schedule(dict(row)) if row else None
 
 
 def delete_schedule(schedule_id: str) -> None:
     with _conn() as con:
-        con.execute("DELETE FROM schedules WHERE id = ?", (schedule_id,))
+        con.execute("DELETE FROM schedules WHERE id = %s", (schedule_id,))
 
 
 def update_schedule_last_run(schedule_id: str, dt: str) -> None:
     with _conn() as con:
-        con.execute("UPDATE schedules SET last_run = ? WHERE id = ?", (dt, schedule_id))
+        con.execute("UPDATE schedules SET last_run = %s WHERE id = %s", (dt, schedule_id))
 
 
 def _row_to_schedule(row: dict) -> dict:
