@@ -73,7 +73,13 @@ async def _call_llm(payload_json: str) -> str:
             {"role": "system", "content": _SYSTEM_PROMPT},
             {"role": "user", "content": payload_json},
         ],
-        max_completion_tokens=120,
+        # gpt-5.3-chat is a reasoning model: ~64 reasoning tokens (occasionally
+        # more) count against this cap BEFORE any visible text. A tight cap
+        # (e.g. 120) intermittently gets fully consumed by reasoning, leaving
+        # finish_reason='length' with empty content. Keep generous headroom —
+        # billing is per token actually generated, not the cap — while
+        # MAX_CHARS still enforces a concise one-line recommendation.
+        max_completion_tokens=512,
     )
     return (response.choices[0].message.content or "").strip()
 
