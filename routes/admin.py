@@ -326,6 +326,7 @@ def api_customers_create():
     jira_service_request_issuetype = request.form.get("jira_service_request_issuetype", "").strip()
     jira_change_request_issuetype = request.form.get("jira_change_request_issuetype", "").strip()
     industry = request.form.get("industry", "").strip()
+    org_profile = request.form.get("org_profile", "").strip()
     sentinel_workspace_id = request.form.get("sentinel_workspace_id", "").strip()
     sentinel_tenant_id = request.form.get("sentinel_tenant_id", "").strip()
     sentinel_client_id = request.form.get("sentinel_client_id", "").strip()
@@ -417,6 +418,7 @@ def api_customers_create():
         "jira_service_request_issuetype": jira_service_request_issuetype or "Service Request",
         "jira_change_request_issuetype": jira_change_request_issuetype or "Change",
         "industry": industry,
+        "org_profile": org_profile,
         # Phase C — canonical multi-workspace fields. Empty list is OK; the
         # client will refuse to fetch but the record is still valid.
         "sentinel_workspaces": sentinel_workspaces,
@@ -478,6 +480,9 @@ def api_customers_update(cid):
         industry_val = request.form.get("industry", None)
         if industry_val is not None:
             customer["industry"] = industry_val.strip()
+        org_profile_val = request.form.get("org_profile", None)
+        if org_profile_val is not None:
+            customer["org_profile"] = org_profile_val.strip()
         sentinel_workspace_id_val = request.form.get("sentinel_workspace_id", None)
         if sentinel_workspace_id_val is not None:
             customer["sentinel_workspace_id"] = sentinel_workspace_id_val.strip()

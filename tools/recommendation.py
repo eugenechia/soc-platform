@@ -39,15 +39,20 @@ You will be given a JSON object containing every piece of enrichment evidence th
 - Historical alert correlation (similar alerts in the past 24h and their L2 outcomes)
 - Customer Knowledge Base chunks retrieved from the customer's Confluence pages
 - Sentinel KQL hunting evidence (if any)
+- The CUSTOMER PROFILE: the customer's industry, a short org profile, and any compliance regimes
+- An INDUSTRY LENS: curated guidance on what an analyst in this customer's industry prioritises, the compliance framing that applies, which patterns are routinely benign for this vertical, and the default escalation posture
+- ASSET CONTEXT: whether the affected host/IP matched the customer's documented asset inventory, and its criticality
 
-Your job: write a SHORT, ACTIONABLE recommendation telling the analyst what to do next. Not a summary of the data — they can read that themselves. A recommendation. It will be shown on a single line inside the color-coded verdict box at the top of the ticket, so it must be scannable in one second.
+Your job: write a SHORT, ACTIONABLE recommendation telling the analyst what to do next, TAILORED TO THIS CUSTOMER'S INDUSTRY and the asset at stake. Not a summary of the data — they can read that themselves. A recommendation. It will be shown on a single line inside the color-coded verdict box at the top of the ticket, so it must be scannable in one second.
 
 Output rules:
 - Plain text only — no markdown, no JSON, no bullet points.
 - ONE imperative sentence (two at most). Hard ceiling ~40 words. Be specific, not wordy.
 - Lead with the recommended action (verb-first): "Verify ...", "Contain ...", "Escalate ...", "Close ...", "Hunt ...".
 - Reference the single strongest piece of evidence by name (e.g. "Defender already quarantined", "VirusTotal 47/86", "documented critical HVT"). Pick the one that most drives the decision — do not list every signal.
-- If the customer knowledge base flagged the asset as critical/HVT, weight that very heavily.
+- WEIGHT the recommendation through the INDUSTRY LENS: bias toward its escalation posture, treat its listed priorities as high-stakes, and lean toward de-escalation when the alert matches one of its common false-positive patterns. Where compliance framing materially changes the action (e.g. PCI cardholder data, PHI), name it briefly.
+- If ASSET CONTEXT shows the affected host is a documented CRITICAL/HIGH asset, weight that very heavily and escalate accordingly. The structured asset match and industry lens OVERRIDE generic reputation when they conflict (a clean-reputation IP hitting a crown-jewel system still warrants verification).
+- The INDUSTRY LENS is curated guidance — apply it, but do NOT invent compliance obligations or industry facts beyond what it states.
 - If historical similar alerts were mostly False-Positive, lean toward auto-suppression guidance.
 - If the platform's verdict is "unknown" because evidence is conflicting, name the single contradiction driving the uncertainty.
 - NEVER restate the verdict — that's already shown on the line above this one.
@@ -60,6 +65,10 @@ Examples of good output:
 "Close as False Positive — source IP is the Confluence-documented vuln scanner (10.20.15.7) and AbuseIPDB confidence is 0."
 
 "Escalate to L2 now — VirusTotal 47/86 on a destination documented as a critical asset; pull EDR timeline and check lateral movement."
+
+"Escalate — outbound to this host originates from a documented cardholder-data server (PCI scope); confirm no card data left the segment before closing."
+
+"Close as benign — open-campus scan against a low-criticality lab host matches expected academic-network noise; no crown-jewel asset involved."
 
 Now produce the recommendation."""
 
@@ -103,7 +112,10 @@ def _summarise_evidence(*, ticket_summary: str, ticket_description: str,
                        mitre_result: dict | None,
                        historical: dict | None,
                        rag_info: dict | None,
-                       kql_evidence: dict | None) -> dict:
+                       kql_evidence: dict | None,
+                       customer_profile: dict | None = None,
+                       industry_lens: str = "",
+                       asset_matches: list[dict] | None = None) -> dict:
     """Build a compact JSON-ready dict from the assembled evidence.
 
     We deliberately trim each section: full IOC payloads + chunk texts can be
@@ -179,11 +191,31 @@ def _summarise_evidence(*, ticket_summary: str, ticket_description: str,
             ],
         }
 
+    profile_compact = None
+    if customer_profile:
+        profile_compact = {
+            "industry": customer_profile.get("industry") or "unspecified",
+            "org_profile": _trim(customer_profile.get("org_profile") or "", 400),
+            "compliance_regime": [str(c) for c in (customer_profile.get("compliance_regime") or [])][:6],
+        }
+
+    asset_compact = None
+    if asset_matches:
+        asset_compact = [
+            {"value": a.get("value"), "type": a.get("type"),
+             "criticality": a.get("criticality"),
+             "snippet": _trim(a.get("snippet") or "", 240)}
+            for a in asset_matches[:4]
+        ]
+
     return {
         "ticket_summary": _trim(ticket_summary, 400),
         "ticket_description": _trim(ticket_description, 1500),
         "platform_verdict": overall_verdict,
         "platform_action": action_taken,
+        "customer_profile": profile_compact,
+        "industry_lens": industry_lens or None,
+        "asset_context": asset_compact,
         "iocs": iocs_for_llm,
         "mitre_techniques": techniques,
         "historical": historical_compact,
@@ -199,11 +231,21 @@ def synthesize_recommendation(*, ticket_summary: str = "", ticket_description: s
                               mitre_result: dict | None = None,
                               historical: dict | None = None,
                               rag_info: dict | None = None,
-                              kql_evidence: dict | None = None) -> str | None:
+                              kql_evidence: dict | None = None,
+                              customer_profile: dict | None = None,
+                              industry_lens: str = "",
+                              asset_matches: list[dict] | None = None) -> str | None:
     """Synthesise a next-action recommendation from all available evidence.
 
     Returns the recommendation string (one concise imperative line, plain
     text), or None if killswitch is OFF or anything fails. Never raises.
+
+    Industry-aware (2026-06-19): callers may pass ``customer_profile``
+    (industry / org_profile / compliance_regime), ``industry_lens`` (a
+    pre-rendered text block from tools.industry_lens.get_industry_lens), and
+    ``asset_matches`` (from tools.asset_inventory.find_asset_matches) to tailor
+    the recommendation to the customer's vertical and the asset at stake. All
+    optional — omitting them reproduces the prior generic behaviour.
     """
     if os.environ.get("RECOMMENDATION_SYNTHESIS_ENABLED", "false").lower() != "true":
         return None
@@ -219,6 +261,9 @@ def synthesize_recommendation(*, ticket_summary: str = "", ticket_description: s
             historical=historical,
             rag_info=rag_info,
             kql_evidence=kql_evidence,
+            customer_profile=customer_profile,
+            industry_lens=industry_lens,
+            asset_matches=asset_matches or [],
         )
         payload = json.dumps(evidence, ensure_ascii=False)
 

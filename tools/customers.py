@@ -142,6 +142,18 @@ def _normalize_customer(record: dict) -> dict:
     if not isinstance(out.get("confluence_pages"), list):
         out["confluence_pages"] = []
 
+    # Industry-aware recommendations (2026-06-19): structured customer context
+    # that DETERMINISTICALLY drives the Phase 6 recommendation lens. Kept as
+    # structured fields (not relying on vector RAG) because industry/profile are
+    # stable facts and a ticket-summary query rarely retrieves an "org profile"
+    # page. `industry` keys into tools.industry_lens; "" / "unknown" → default lens.
+    if not isinstance(out.get("industry"), str):
+        out["industry"] = ""
+    if not isinstance(out.get("org_profile"), str):
+        out["org_profile"] = ""
+    if not isinstance(out.get("compliance_regime"), list):
+        out["compliance_regime"] = []
+
     return out
 
 

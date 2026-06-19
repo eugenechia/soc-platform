@@ -329,13 +329,21 @@
           <label>Industry</label>
           <select id="addIndustry">
             <option value="">-- Select industry --</option>
-            <option value="Healthcare">Healthcare</option>
-            <option value="Financial Services">Financial Services</option>
-            <option value="Academia">Academia</option>
-            <option value="Enterprise">Enterprise</option>
-            <option value="Government">Government</option>
-            <option value="Information Technology">Information Technology</option>
+            <option value="finance">Finance / Banking / Insurance</option>
+            <option value="academia">Academia / Education / Research</option>
+            <option value="healthcare">Healthcare / Life Sciences</option>
+            <option value="government">Government / Public Sector</option>
+            <option value="retail">Retail / E-commerce</option>
+            <option value="manufacturing">Manufacturing / Industrial / OT</option>
+            <option value="technology">Technology / IT / SaaS</option>
+            <option value="energy_utilities">Energy / Utilities</option>
           </select>
+          <div class="help-hint" style="margin-top:4px;">Drives the industry-tailored "Recommended Action" in triage comments.</div>
+        </div>
+        <div class="form-group">
+          <label>Organisation Profile (optional)</label>
+          <textarea id="addOrgProfile" rows="2" placeholder="e.g. Regional retail bank, ~3000 staff, cardholder-data environment in the payments segment."></textarea>
+          <div class="help-hint" style="margin-top:4px;">Short free-text context blended into the AI recommendation.</div>
         </div>
         <div class="form-group">
           <label>Logo (optional)</label>
@@ -404,13 +412,21 @@
         <label>Industry</label>
         <select id="editIndustry">
           <option value="">-- Select industry --</option>
-          <option value="Healthcare">Healthcare</option>
-          <option value="Financial Services">Financial Services</option>
-          <option value="Academia">Academia</option>
-          <option value="Enterprise">Enterprise</option>
-          <option value="Government">Government</option>
-          <option value="Information Technology">Information Technology</option>
+          <option value="finance">Finance / Banking / Insurance</option>
+          <option value="academia">Academia / Education / Research</option>
+          <option value="healthcare">Healthcare / Life Sciences</option>
+          <option value="government">Government / Public Sector</option>
+          <option value="retail">Retail / E-commerce</option>
+          <option value="manufacturing">Manufacturing / Industrial / OT</option>
+          <option value="technology">Technology / IT / SaaS</option>
+          <option value="energy_utilities">Energy / Utilities</option>
         </select>
+        <div class="help-hint" style="margin-top:4px;">Drives the industry-tailored "Recommended Action" in triage comments.</div>
+      </div>
+      <div class="form-group">
+        <label>Organisation Profile (optional)</label>
+        <textarea id="editOrgProfile" rows="2" placeholder="e.g. Regional retail bank, ~3000 staff, cardholder-data environment in the payments segment."></textarea>
+        <div class="help-hint" style="margin-top:4px;">Short free-text context blended into the AI recommendation.</div>
       </div>
       <div class="form-group">
         <label>Jira Request Type</label>
@@ -799,6 +815,7 @@
       const addJiraProjJson = document.getElementById('addJiraProjectsJson').value.trim();
       if (addJiraProjJson) fd.append('jira_projects_json', addJiraProjJson);
       fd.append('industry', document.getElementById('addIndustry').value);
+      fd.append('org_profile', document.getElementById('addOrgProfile').value);
       const logo = document.getElementById('addLogo');
       if (logo.files.length) fd.append('logo', logo.files[0]);
 
@@ -839,6 +856,7 @@
       document.getElementById('editShort').value = c.short_name || '';
       document.getElementById('editJiraKey').value = c.jira_project_key || '';
       document.getElementById('editIndustry').value = c.industry || '';
+      document.getElementById('editOrgProfile').value = c.org_profile || '';
       document.getElementById('editRequestType').value = c.jira_request_type || 'Report an Incident';
       document.getElementById('editIncidentIssueType').value = c.jira_incident_issuetype || '[System] Incident';
       document.getElementById('editSrIssueType').value = c.jira_service_request_issuetype || 'Service Request';
@@ -1086,6 +1104,7 @@
       const editJiraProjJson = document.getElementById('editJiraProjectsJson').value.trim();
       if (editJiraProjJson) fd.append('jira_projects_json', editJiraProjJson);
       fd.append('industry', document.getElementById('editIndustry').value);
+      fd.append('org_profile', document.getElementById('editOrgProfile').value);
       const logo = document.getElementById('editLogo');
       if (logo.files.length) fd.append('logo', logo.files[0]);
 

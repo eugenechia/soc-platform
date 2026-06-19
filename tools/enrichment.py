@@ -1355,6 +1355,33 @@ def enrich_ticket(ticket_key: str, fields: dict,
     # inside the verdict box. Killswitch-gated (RECOMMENDATION_SYNTHESIS_ENABLED,
     # default OFF), failure-isolated (returns None on any error), and bounded by
     # RECOMMENDATION_TIMEOUT_S. Never short-circuits the rest of the comment.
+    # Industry-aware context (2026-06-19): the customer's structured profile +
+    # curated industry lens + asset-inventory match tailor the recommendation to
+    # the customer's vertical and the asset at stake. Resolved here (failure-
+    # isolated) so a lookup miss degrades to the prior generic recommendation
+    # rather than dropping the line. Lens/profile are deterministic (no RAG
+    # dependency); asset match is killswitch-gated substring lookup.
+    customer_profile = None
+    industry_lens = ""
+    asset_matches: list[dict] = []
+    try:
+        from tools.customers import find_customer_by_jira_project
+        from tools.industry_lens import get_industry_lens
+        from tools.asset_inventory import find_asset_matches
+        _pkey = ticket_key.split("-")[0] if ticket_key else ""
+        _cust = find_customer_by_jira_project(_pkey) if _pkey else None
+        if _cust:
+            customer_profile = {
+                "industry": _cust.get("industry") or "",
+                "org_profile": _cust.get("org_profile") or "",
+                "compliance_regime": _cust.get("compliance_regime") or [],
+            }
+            industry_lens = get_industry_lens(_cust.get("industry"))
+            _ioc_list = [r["ioc"] for r in ioc_results if isinstance(r, dict) and r.get("ioc")]
+            asset_matches = find_asset_matches(customer_id=_cust.get("id", ""), iocs=_ioc_list)
+    except Exception:
+        logger.exception("Industry-context resolution failed for %s", ticket_key)
+
     recommendation = None
     try:
         from tools.recommendation import synthesize_recommendation
@@ -1368,6 +1395,9 @@ def enrich_ticket(ticket_key: str, fields: dict,
             historical=historical,
             rag_info=rag_info,
             kql_evidence=kql_evidence,
+            customer_profile=customer_profile,
+            industry_lens=industry_lens,
+            asset_matches=asset_matches,
         )
     except Exception:
         logger.exception("Recommendation synthesis dispatch failed for %s", ticket_key)
