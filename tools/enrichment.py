@@ -588,7 +588,7 @@ def _build_comment(ioc_results: list[dict], overall_verdict: str, action_taken: 
         _append_mitre_section(lines, mitre_result)
         lines += [
             f"VERDICT: {verdict_display}",
-            f"ACTION:  {action_taken}",
+            f"AUTO-TRIAGE: {action_taken}",
         ]
         if recommendation:
             lines.append(f"RECOMMENDED ACTION: {recommendation}")
@@ -690,7 +690,7 @@ def _build_comment(ioc_results: list[dict], overall_verdict: str, action_taken: 
     _append_historical_section(lines, historical)
     _append_mitre_section(lines, mitre_result)
     lines.append(f"VERDICT: {verdict_display}")
-    lines.append(f"ACTION:  {action_taken}")
+    lines.append(f"AUTO-TRIAGE: {action_taken}")
     if recommendation:
         lines.append(f"RECOMMENDED ACTION: {recommendation}")
     return "\n".join(lines)
@@ -1012,11 +1012,11 @@ def _build_comment_adf(ioc_results: list[dict], overall_verdict: str, action_tak
     panel_type = _VERDICT_PANEL_TYPE.get(overall_verdict, "note")
 
     # Verdict panel at the top — color-coded for one-second triage.
-    # VERDICT (outcome) → ACTION (mechanical routing) → RECOMMENDED ACTION
+    # VERDICT (outcome) → AUTO-TRIAGE (mechanical routing) → RECOMMENDED ACTION
     # (Phase 6 AI guidance, only when synthesis produced one).
     verdict_paras = [
         adf.paragraph(adf.text("VERDICT: ", bold=True), adf.text(verdict_display, bold=True)),
-        adf.paragraph(adf.text("ACTION: ", bold=True), adf.text(action_taken)),
+        adf.paragraph(adf.text("AUTO-TRIAGE: ", bold=True), adf.text(action_taken)),
     ]
     if recommendation:
         verdict_paras.append(
