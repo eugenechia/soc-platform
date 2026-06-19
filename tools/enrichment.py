@@ -563,6 +563,7 @@ def _build_comment(ioc_results: list[dict], overall_verdict: str, action_taken: 
                    historical: dict | None = None,
                    rag_info: dict | None = None,
                    kql_evidence: dict | None = None,
+                   recommendation: str | None = None,
                    whitelist_matches: list[dict] | None = None,
                    ticket_key: str = "") -> str:
     lines = ["=== L1 Triage Report (Automated) ===", ""]
@@ -589,6 +590,8 @@ def _build_comment(ioc_results: list[dict], overall_verdict: str, action_taken: 
             f"VERDICT: {verdict_display}",
             f"ACTION:  {action_taken}",
         ]
+        if recommendation:
+            lines.append(f"RECOMMENDED ACTION: {recommendation}")
         return "\n".join(lines)
 
     # An "IOC" here means an observable that at least one reputation engine flagged
@@ -688,6 +691,8 @@ def _build_comment(ioc_results: list[dict], overall_verdict: str, action_taken: 
     _append_mitre_section(lines, mitre_result)
     lines.append(f"VERDICT: {verdict_display}")
     lines.append(f"ACTION:  {action_taken}")
+    if recommendation:
+        lines.append(f"RECOMMENDED ACTION: {recommendation}")
     return "\n".join(lines)
 
 
@@ -996,6 +1001,7 @@ def _build_comment_adf(ioc_results: list[dict], overall_verdict: str, action_tak
                       historical: dict | None = None,
                       rag_info: dict | None = None,
                       kql_evidence: dict | None = None,
+                      recommendation: str | None = None,
                       whitelist_matches: list[dict] | None = None,
                       ticket_key: str = "") -> dict:
     """Return a full ADF document for the enrichment comment. Same input
@@ -1005,12 +1011,20 @@ def _build_comment_adf(ioc_results: list[dict], overall_verdict: str, action_tak
     verdict_display = _VERDICT_LABEL.get(overall_verdict, overall_verdict.upper())
     panel_type = _VERDICT_PANEL_TYPE.get(overall_verdict, "note")
 
+    # Verdict panel at the top — color-coded for one-second triage.
+    # VERDICT (outcome) → ACTION (mechanical routing) → RECOMMENDED ACTION
+    # (Phase 6 AI guidance, only when synthesis produced one).
+    verdict_paras = [
+        adf.paragraph(adf.text("VERDICT: ", bold=True), adf.text(verdict_display, bold=True)),
+        adf.paragraph(adf.text("ACTION: ", bold=True), adf.text(action_taken)),
+    ]
+    if recommendation:
+        verdict_paras.append(
+            adf.paragraph(adf.text("RECOMMENDED ACTION: ", bold=True), adf.text(recommendation))
+        )
+
     blocks: list[dict] = [
-        # Verdict panel at the top — color-coded for one-second triage.
-        adf.panel(panel_type,
-            adf.paragraph(adf.text("VERDICT: ", bold=True), adf.text(verdict_display, bold=True)),
-            adf.paragraph(adf.text("ACTION: ", bold=True), adf.text(action_taken)),
-        ),
+        adf.panel(panel_type, *verdict_paras),
         adf.heading(2, "L1 Triage Report (Automated)"),
     ]
 
@@ -1336,6 +1350,29 @@ def enrich_ticket(ticket_key: str, fields: dict,
         logger.exception("whitelist_match dispatch failed for %s", ticket_key)
         whitelist_matches = []
 
+    # Phase 6 (2026-06-19) — synthesise a recommended next-action from ALL the
+    # evidence assembled above and render it as a 'RECOMMENDED ACTION' line
+    # inside the verdict box. Killswitch-gated (RECOMMENDATION_SYNTHESIS_ENABLED,
+    # default OFF), failure-isolated (returns None on any error), and bounded by
+    # RECOMMENDATION_TIMEOUT_S. Never short-circuits the rest of the comment.
+    recommendation = None
+    try:
+        from tools.recommendation import synthesize_recommendation
+        recommendation = synthesize_recommendation(
+            ticket_summary=summary,
+            ticket_description=desc_text,
+            overall_verdict=overall_verdict,
+            action_taken=action_taken,
+            ioc_results=ioc_results,
+            mitre_result=mitre_result,
+            historical=historical,
+            rag_info=rag_info,
+            kql_evidence=kql_evidence,
+        )
+    except Exception:
+        logger.exception("Recommendation synthesis dispatch failed for %s", ticket_key)
+        recommendation = None
+
     # Phase 5c (2026-06-16) — try ADF first when killswitch ON; on any failure
     # (HTTP 400 from Jira on a malformed doc, network glitch, our renderer
     # throwing on unexpected input) fall back to the plain-text comment so an
@@ -1345,6 +1382,7 @@ def enrich_ticket(ticket_key: str, fields: dict,
         try:
             adf_doc = _build_comment_adf(ioc_results, overall_verdict, action_taken,
                                           mitre_result, historical, rag_info, kql_evidence,
+                                          recommendation=recommendation,
                                           whitelist_matches=whitelist_matches,
                                           ticket_key=ticket_key)
             posted = post_jira_comment_adf(ticket_key, adf_doc)
@@ -1354,6 +1392,7 @@ def enrich_ticket(ticket_key: str, fields: dict,
     if not posted:
         comment_text = _build_comment(ioc_results, overall_verdict, action_taken,
                                        mitre_result, historical, rag_info, kql_evidence,
+                                       recommendation=recommendation,
                                        whitelist_matches=whitelist_matches,
                                        ticket_key=ticket_key)
         post_jira_comment(ticket_key, comment_text)
