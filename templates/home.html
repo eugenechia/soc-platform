@@ -201,11 +201,6 @@
       flex-shrink: 0;
       transition: background 0.2s, box-shadow 0.2s;
     }
-    .status-label {
-      font-size: 0.95rem;
-      font-weight: 700;
-      color: var(--text-muted);
-    }
     .status-sub {
       font-size: 0.8rem;
       color: var(--text-muted);
@@ -264,6 +259,21 @@
     .cust-tier.tier-active   { color: #16A34A; }
     .cust-tier.tier-limited  { color: #F59E0B; }
     .cust-tier.tier-inactive { color: #94A3B8; }
+    .cust-legend {
+      margin-top: 10px;
+      padding-top: 10px;
+      border-top: 1px solid var(--border);
+      display: flex;
+      flex-direction: column;
+      gap: 3px;
+      font-size: 0.72rem;
+      color: var(--text-muted);
+      line-height: 1.45;
+    }
+    .cust-legend b { font-weight: 700; }
+    .cust-legend .tier-active   { color: #16A34A; }
+    .cust-legend .tier-limited  { color: #F59E0B; }
+    .cust-legend .tier-inactive { color: #94A3B8; }
   </style>
 </head>
 <body>
@@ -304,15 +314,19 @@
         </div>
         <div class="card-title">L1 Triage</div>
         <div class="card-desc">
-          Automated Jira ticket triage — IOC enrichment, verdict, MITRE mapping, AI recommendations. Per-customer coverage below.
+          Automated Jira ticket triage — IOC enrichment, verdict, MITRE mapping, AI recommendations.
         </div>
         <div class="status-row">
           <span class="status-dot" id="triage-dot"></span>
-          <span class="status-label" id="triage-label">Checking…</span>
+          <span class="status-sub" id="triage-sub">Checking…</span>
         </div>
-        <div class="status-sub" id="triage-sub">Jira API · AI model</div>
         <div class="cust-summary" id="triage-cust-summary"></div>
         <div class="cust-list" id="triage-customers"></div>
+        <div class="cust-legend">
+          <span><b class="tier-active">Active</b> — triaged, full enrichment (Sentinel + RAG)</span>
+          <span><b class="tier-limited">Limited</b> — triaged, missing Sentinel or RAG</span>
+          <span><b class="tier-inactive">Inactive</b> — not in triage scope</span>
+        </div>
       </div>
     </div>
 
@@ -328,26 +342,25 @@
   <script>
     (function () {
       var dot = document.getElementById('triage-dot');
-      var label = document.getElementById('triage-label');
       var sub = document.getElementById('triage-sub');
       var MAP = {
-        operational: { color: '#16A34A', text: 'Operational' },
-        degraded:    { color: '#F59E0B', text: 'Degraded' },
-        down:        { color: '#DC2626', text: 'Down' },
-        unknown:     { color: '#94A3B8', text: 'Unknown' }
+        operational: '#16A34A',
+        degraded:    '#F59E0B',
+        down:        '#DC2626',
+        unknown:     '#94A3B8'
       };
       var summaryEl = document.getElementById('triage-cust-summary');
       var listEl = document.getElementById('triage-customers');
       function paint(state, checks) {
-        var m = MAP[state] || MAP.unknown;
-        dot.style.background = m.color;
-        dot.style.boxShadow = '0 0 0 4px ' + m.color + '22';
-        label.textContent = m.text;
-        label.style.color = m.color;
+        var color = MAP[state] || MAP.unknown;
+        dot.style.background = color;
+        dot.style.boxShadow = '0 0 0 4px ' + color + '22';
         if (checks) {
           var j = checks.jira && checks.jira.ok ? 'OK' : 'down';
           var l = checks.llm && checks.llm.ok ? 'OK' : 'down';
           sub.textContent = 'Jira API: ' + j + ' · AI model: ' + l;
+        } else {
+          sub.textContent = 'Status unavailable';
         }
       }
       function cap(s) { return s.charAt(0).toUpperCase() + s.slice(1); }
