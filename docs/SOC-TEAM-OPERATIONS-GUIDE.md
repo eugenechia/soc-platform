@@ -74,17 +74,17 @@ In Jira, run a report or count for the past 7 days:
 - Is the `Unknown` count unusually high? (Indicates IOCs not covered by threat intel — flag to platform admin)
 - Are any `True-Positive` tickets going unreviewed past 24 hours?
 
-If the False Positive rate is above ~80% for a specific alert rule repeatedly across the week, flag the rule name to the platform administrator for suppression (the L2 suppression list is maintained in Confluence).
+If the Benign Positive rate is above ~80% for a specific alert rule repeatedly across the week, flag the rule name to the platform administrator for suppression (the L2 suppression list is maintained in Confluence).
 
 ### 2. L2 Suppression list review (Wednesday, 10 min)
 
-The platform automatically suppresses certain recurring false-positive alert types using a list maintained in Confluence. Weekly check:
+The platform automatically suppresses certain recurring benign-positive alert types using a list maintained in Confluence. Weekly check:
 
 - Open Confluence → SOC Runbooks → L2 Suppression List
 - Review any entries added in the past week
-- Confirm suppressed rules are still correct — remove entries for rules that are no longer false positives
+- Confirm suppressed rules are still correct — remove entries for rules that are no longer benign positives
 
-If a new alert rule is generating consistent False Positives, add it to the suppression list in Confluence. The platform syncs from Confluence daily.
+If a new alert rule is generating consistent Benign Positives, add it to the suppression list in Confluence. The platform syncs from Confluence daily.
 
 ### 3. Scheduled reports verification (Friday, 10 min)
 

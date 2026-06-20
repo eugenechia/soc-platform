@@ -20,7 +20,7 @@ The team has since approved a far richer design (captured in the swim-lane diagr
 - **AI-driven KQL expansion** — LLM generates Sentinel queries from observed IOCs, executes them, feeds results back as context
 - **AI Recommendation Synthesis** combining all evidence into a MITRE-aligned action plan
 - **Finetuning feedback loop** — analyst-confirmed verdicts get fed back into the RAG store for future triages
-- **Auto-close high-confidence False Positives**
+- **Auto-close high-confidence Benign Positives**
 
 Goal: deliver each capability incrementally, with team validation between phases, so the production pipeline stays trustworthy throughout the redesign.
 
@@ -91,7 +91,7 @@ Decision: True Positive?
 | Add enrichment comment to Jira | ✅ exists | enhanced across all phases |
 | Auto-update Jira label | ✅ `Potential-TP` only | **Phase 1** (explicit verdicts) |
 | AI Recommendation aligned with MITRE | ❌ not implemented | **Phase 6** |
-| True Positive / False Positive decision | ⚠️ implicit (only "potential") | **Phase 1** (label) + **Phase 6** (synthesis) |
+| True Positive / Benign Positive decision | ⚠️ implicit (only "potential") | **Phase 1** (label) + **Phase 6** (synthesis) |
 | Finetuning feedback loop | ❌ not implemented | **Phase 7** |
 | Auto-close FP tickets | ❌ not implemented | **Phase 7** |
 

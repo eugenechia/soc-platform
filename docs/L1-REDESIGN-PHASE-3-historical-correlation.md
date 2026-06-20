@@ -10,7 +10,7 @@
 
 ## 1. What this phase delivers
 
-Every triaged Jira ticket gains a **Similar Alerts (past 24h)** section in the enrichment comment, broken down by Phase 1 verdict label, plus the same historical context is fed into the Phase 1 LLM Triage call so the model can de-escalate priority when a rule has a high false-positive rate.
+Every triaged Jira ticket gains a **Similar Alerts (past 24h)** section in the enrichment comment, broken down by Phase 1 verdict label, plus the same historical context is fed into the Phase 1 LLM Triage call so the model can de-escalate priority when a rule has a high benign-positive rate.
 
 Sample comment output:
 
