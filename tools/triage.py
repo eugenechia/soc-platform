@@ -53,7 +53,7 @@ Examples that warrant override:
 
 If the description is empty or unhelpful, return the baseline priority with confidence ~0.5 so the override is rejected.
 
-Historical context (when present) is a strong signal. A rule firing many times in the past 24h with mostly False-Positive outcomes is statistically likely to be FP again — be willing to de-escalate confidently. A rule with mixed outcomes deserves the baseline. A rule firing rarely or for the first time should rely on the ticket text itself.
+Historical context (when present) is a strong signal. A rule firing many times in the past 24h with mostly Benign-Positive outcomes is statistically likely to be benign again — be willing to de-escalate confidently. A rule with mixed outcomes deserves the baseline. A rule firing rarely or for the first time should rely on the ticket text itself.
 
 Customer Knowledge Base context (when present) is high-quality customer-specific information retrieved from the customer's own Confluence pages — HVT lists, whitelists, asset inventories, escalation matrices, known-benign automations. Treat it as authoritative for that customer:
 - If a host or IP is flagged as a HVT / critical asset → escalate, even when the alert text alone is mild
@@ -143,7 +143,7 @@ def _build_user_prompt(fields: dict, severity: str, baseline_priority: str,
             f"- {historical['total']} similar alerts matched by summary prefix "
             f"\"{prefix}\"\n"
             f"- {historical['true_positive']} confirmed True-Positive · "
-            f"{historical['false_positive']} confirmed False-Positive · "
+            f"{historical['false_positive']} confirmed Benign-Positive · "
             f"{historical['unknown']} Unknown · "
             f"{historical['untriaged']} still untriaged\n"
         )

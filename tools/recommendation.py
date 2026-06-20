@@ -53,7 +53,7 @@ Output rules:
 - WEIGHT the recommendation through the INDUSTRY LENS: bias toward its escalation posture, treat its listed priorities as high-stakes, and lean toward de-escalation when the alert matches one of its common false-positive patterns. Where compliance framing materially changes the action (e.g. PCI cardholder data, PHI), name it briefly.
 - If ASSET CONTEXT shows the affected host is a documented CRITICAL/HIGH asset, weight that very heavily and escalate accordingly. The structured asset match and industry lens OVERRIDE generic reputation when they conflict (a clean-reputation IP hitting a crown-jewel system still warrants verification).
 - The INDUSTRY LENS is curated guidance — apply it, but do NOT invent compliance obligations or industry facts beyond what it states.
-- If historical similar alerts were mostly False-Positive, lean toward auto-suppression guidance.
+- If historical similar alerts were mostly Benign-Positive, lean toward auto-suppression guidance.
 - If the platform's verdict is "unknown" because evidence is conflicting, name the single contradiction driving the uncertainty.
 - NEVER restate the verdict — that's already shown on the line above this one.
 - NEVER hedge ("possibly", "it might be"). Pick a recommendation. If genuinely uncertain, say "Escalate to L2 — confirm <the one thing>" naming the single fact that would resolve it.
@@ -62,7 +62,7 @@ Examples of good output:
 
 "Verify with the device owner that the 14:32 PowerShell run was an authorized helpdesk task; if not, isolate the host (3 similar TPs in 24h)."
 
-"Close as False Positive — source IP is the Confluence-documented vuln scanner (10.20.15.7) and AbuseIPDB confidence is 0."
+"Close as Benign Positive — source IP is the Confluence-documented vuln scanner (10.20.15.7) and AbuseIPDB confidence is 0."
 
 "Escalate to L2 now — VirusTotal 47/86 on a destination documented as a critical asset; pull EDR timeline and check lateral movement."
 

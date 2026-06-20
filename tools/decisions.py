@@ -2,7 +2,7 @@
 Phase 7 — Decision capture (2026-06-16).
 
 Append-only log of L2 analyst decisions on triage tickets. When the analyst
-adds a 'True-Positive' or 'False-Positive' label to a ticket that the
+adds a 'True-Positive' or 'Benign-Positive' label to a ticket that the
 platform previously labelled 'Unknown' / 'Malicious' / 'Clean', a row is
 appended to ``data/triage_decisions.jsonl``.
 
@@ -54,7 +54,7 @@ def record_decision(*, ticket_key: str, project_key: str, customer_id: str,
             "project_key": project_key,
             "customer_id": customer_id,
             "rule_prefix": rule_prefix or "",
-            "l2_label": l2_label,           # "True-Positive" | "False-Positive" | "Unknown"
+            "l2_label": l2_label,           # "True-Positive" | "Benign-Positive" | "Unknown"
             "platform_verdict": platform_verdict,  # what the platform originally decided
             "decided_at": (decided_at or datetime.now(SGT)).isoformat(timespec="seconds"),
         }

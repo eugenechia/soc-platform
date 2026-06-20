@@ -25,12 +25,12 @@ JIRA_URL = os.environ.get("JIRA_URL", "").rstrip("/")
 # ─── L1 Triage labels ─────────────────────────────────────────────────────────
 # Jira labels applied to triaged tickets based on the aggregated verdict.
 # Phase 1 (2026-06-08): switched defaults from generic IOC_Detection /
-# investigating to explicit True-Positive / False-Positive / Unknown so the
+# investigating to explicit True-Positive / Benign-Positive / Unknown so the
 # label conveys the triage outcome directly. The label must already exist in
 # the target Jira instance — the webhook handler only ADDS the label, it does
 # not create it. Override via env if your Jira convention differs.
 _TRIAGE_MALICIOUS_LABEL = os.environ.get("JIRA_TRIAGE_MALICIOUS_LABEL", "True-Positive")
-_TRIAGE_CLEAN_LABEL     = os.environ.get("JIRA_TRIAGE_CLEAN_LABEL",     "False-Positive")
+_TRIAGE_CLEAN_LABEL     = os.environ.get("JIRA_TRIAGE_CLEAN_LABEL",     "Benign-Positive")
 _TRIAGE_UNKNOWN_LABEL   = os.environ.get("JIRA_TRIAGE_UNKNOWN_LABEL",   "Unknown")
 
 # ─── Custom field IDs for Sentinel-style structured entity fields ─────────────
@@ -333,7 +333,7 @@ def determine_verdict(results: list[dict]) -> str:
 
 _VERDICT_LABEL = {
     "malicious": "TRUE-POSITIVE",
-    "clean":     "FALSE-POSITIVE",
+    "clean":     "BENIGN-POSITIVE",
     "unknown":   "UNKNOWN",
 }
 
@@ -531,7 +531,7 @@ def _append_historical_section(lines: list[str], historical: dict | None) -> Non
 
     lines.append(f"Similar Alerts (past {window}h): {total}")
     lines.append(f"  ├─ True-Positive:  {tp}")
-    lines.append(f"  ├─ False-Positive: {fp}")
+    lines.append(f"  ├─ Benign-Positive: {fp}")
     lines.append(f"  ├─ Unknown:        {unk}")
     suffix = " (still in flight)" if unt else ""
     lines.append(f"  └─ Untriaged:      {unt}{suffix}")
@@ -987,7 +987,7 @@ def _adf_historical_block(historical: dict | None) -> list[dict]:
 
     rows = [
         ["True-Positive", str(tp)],
-        ["False-Positive", str(fp)],
+        ["Benign-Positive", str(fp)],
         ["Unknown", str(unk)],
         ["Untriaged", f"{unt} (still in flight)" if unt else "0"],
     ]
@@ -1307,7 +1307,7 @@ def enrich_ticket(ticket_key: str, fields: dict,
     l2_id = get_secret("JIRA_L2_ACCOUNT_ID")
 
     # Phase 1 (2026-06-08): verdict-to-label mapping is now explicit across all
-    # three outcomes (True-Positive / False-Positive / Unknown). The "unknown"
+    # three outcomes (True-Positive / Benign-Positive / Unknown). The "unknown"
     # case previously fell through to clean; it now gets its own label so an
     # analyst can distinguish "we checked and it's benign" from "we couldn't
     # tell" at a glance. Assignment routing (L1 for TP, L2 for FP and Unknown)
@@ -1333,7 +1333,7 @@ def enrich_ticket(ticket_key: str, fields: dict,
             logger.warning("JIRA_L2_ACCOUNT_ID not set — cannot assign %s to L2", ticket_key)
     else:
         add_jira_label(ticket_key, _TRIAGE_CLEAN_LABEL)
-        action_taken = (f"Ticket judged a False Positive — labelled "
+        action_taken = (f"Ticket judged a Benign Positive — labelled "
                         f"'{_TRIAGE_CLEAN_LABEL}'. Routed to L2 SOC Analyst for sign-off.")
         if l2_id:
             assign_jira_ticket(ticket_key, l2_id)

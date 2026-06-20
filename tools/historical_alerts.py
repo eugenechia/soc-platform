@@ -3,7 +3,7 @@ Phase 3 L1 Triage redesign — historical alert correlation.
 
 Looks up "similar alerts in the past 24h" for a freshly-created Jira ticket
 and returns counts grouped by Phase 1 verdict label (True-Positive /
-False-Positive / Unknown / Untriaged). The result feeds two consumers:
+Benign-Positive / Unknown / Untriaged). The result feeds two consumers:
 
   1. tools.triage.triage_priority() — historical FP rate is a strong
      de-escalation signal for the LLM Triage call.
@@ -63,7 +63,7 @@ def _label_names() -> dict[str, str]:
     `labels` list on each candidate ticket."""
     return {
         "tp":      (os.environ.get("JIRA_TRIAGE_MALICIOUS_LABEL", "True-Positive") or "").strip().lower(),
-        "fp":      (os.environ.get("JIRA_TRIAGE_CLEAN_LABEL",     "False-Positive") or "").strip().lower(),
+        "fp":      (os.environ.get("JIRA_TRIAGE_CLEAN_LABEL",     "Benign-Positive") or "").strip().lower(),
         "unknown": (os.environ.get("JIRA_TRIAGE_UNKNOWN_LABEL",   "Unknown") or "").strip().lower(),
     }
 

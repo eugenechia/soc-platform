@@ -414,7 +414,7 @@ def _apply_dedup_if_strict_match(ticket_key: str, fields: dict) -> dict | None:
 def _handle_issue_updated(payload: dict):
     """Phase 7 (2026-06-16) — capture L2 decisions from label changes.
 
-    When the analyst adds a 'True-Positive' / 'False-Positive' / 'Unknown'
+    When the analyst adds a 'True-Positive' / 'Benign-Positive' / 'Unknown'
     label to a ticket, we log an immutable decision row to data/
     triage_decisions.jsonl. Used by future few-shot triage prompts and
     auto-close FP (sub-features 2 + 3, deferred). Failure-isolated:
@@ -436,7 +436,7 @@ def _handle_issue_updated(payload: dict):
 
     # Determine which triage label was newly added.
     _ML  = os.environ.get("JIRA_TRIAGE_MALICIOUS_LABEL", "True-Positive")
-    _CL  = os.environ.get("JIRA_TRIAGE_CLEAN_LABEL",     "False-Positive")
+    _CL  = os.environ.get("JIRA_TRIAGE_CLEAN_LABEL",     "Benign-Positive")
     _UL  = os.environ.get("JIRA_TRIAGE_UNKNOWN_LABEL",   "Unknown")
     triage_labels = {_ML, _CL, _UL}
 
