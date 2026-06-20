@@ -28,6 +28,7 @@ from routes.admin import admin_bp
 from routes.exports import exports_bp
 from routes.webhook import webhook_bp
 from routes.gateway import gateway_bp
+from routes.status import status_bp
 
 
 def create_app() -> Flask:
@@ -55,6 +56,7 @@ def create_app() -> Flask:
     app.register_blueprint(exports_bp,      url_prefix="/exports")
     app.register_blueprint(webhook_bp,      url_prefix="/webhook")
     app.register_blueprint(gateway_bp,      url_prefix="/api")
+    app.register_blueprint(status_bp,       url_prefix="/status")
 
     # Every request requires an authenticated Entra ID session, except:
     # /auth/*    SSO flow
