@@ -62,7 +62,7 @@ Investigation Phase (status → "Investigation")              ◄── tools/en
 [NEW PHASE 6]  AI Recommendation Synthesis (MITRE-aligned)
         │
         ▼
-Update Jira: explicit verdict label (True-Positive / False-Positive / Unknown)   ◄── [NEW PHASE 1]
+Update Jira: explicit verdict label (True-Positive / Benign-Positive / Unknown)   ◄── [NEW PHASE 1]
 Post enrichment comment summarising all evidence                                 ◄── enhanced over phases
         │
         ▼
@@ -134,7 +134,7 @@ Phases 2/3/4/5 could technically run in parallel after Phase 1 — but the chose
 - Auto-assign tickets to a GSOC group/queue (not individual L1/L2)
 - Switch `tools/socradar_rest.py` from `os.environ.get` to `tools/secrets.get_secret()`
 - Add a pre-enrichment LLM Triage call that updates Jira priority based on impact analysis
-- Replace single `Potential-TP` label with explicit verdicts: `True-Positive`, `False-Positive`, `Unknown`
+- Replace single `Potential-TP` label with explicit verdicts: `True-Positive`, `Benign-Positive`, `Unknown`
 - Update enrichment comment template to reflect new verdict states
 
 **Team-visible after Phase 1:** Tickets arrive with correct severity + GSOC assignment, get an initial priority update from AI within seconds, and end up with one of three explicit verdict labels.

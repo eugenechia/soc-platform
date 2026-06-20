@@ -80,7 +80,7 @@ determine_verdict(): malicious | clean | unknown
         ▼
 post_jira_comment(ticket_key, summary)                # always runs
 add_jira_label(ticket_key, "True-Positive")           # if malicious
-add_jira_label(ticket_key, "False-Positive")          # if clean
+add_jira_label(ticket_key, "Benign-Positive")          # if clean
 add_jira_label(ticket_key, "Unknown")                 # if unknown
 assign_jira_ticket(ticket_key, JIRA_L1_ACCOUNT_ID)    # if malicious AND L1 set
 assign_jira_ticket(ticket_key, JIRA_L2_ACCOUNT_ID)    # if clean/unknown AND L2 set

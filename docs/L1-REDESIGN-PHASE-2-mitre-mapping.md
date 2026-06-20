@@ -91,7 +91,7 @@ After deploy, validate by creating test tickets in the SCDM Jira project.
 | # | Scenario | Setup | Expected result |
 |---|---|---|---|
 | 1 | MITRE section present — malicious ticket | Ticket with a known-malicious IOC (C2 IP that VT/SOCRadar flags) | Enrichment comment includes `MITRE ATT&CK Mapping:` section with 1–3 techniques before `VERDICT: TRUE-POSITIVE` |
-| 2 | MITRE section present — clean ticket | Ticket with `8.8.8.8` or `google.com` | Comment includes MITRE section (techniques may be generic); `VERDICT: FALSE-POSITIVE` unchanged |
+| 2 | MITRE section present — clean ticket | Ticket with `8.8.8.8` or `google.com` | Comment includes MITRE section (techniques may be generic); `VERDICT: BENIGN-POSITIVE` unchanged |
 | 3 | MITRE section present — no IOCs | Ticket with empty entity fields | Comment includes MITRE section if LLM can infer from summary; `VERDICT: UNKNOWN` unchanged |
 | 4 | Killswitch | Set `MITRE_MAPPING_ENABLED=false` on Container App; create any ticket | Comment posts without `MITRE ATT&CK Mapping:` section; rest unchanged |
 | 5 | Failure resilience | (Internal test) Temporarily rename `data/mitre_attack_index.json`; rebuild; create ticket | Comment posts without MITRE section; webhook log shows `MITRE mapping failed … skipping`; no pipeline failure |

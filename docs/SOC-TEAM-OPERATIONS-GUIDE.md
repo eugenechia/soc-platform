@@ -17,7 +17,7 @@ When a Sentinel or Splunk alert creates a Jira ticket, the platform automaticall
 4. Looks up every IOC (IP, domain, hash) against threat intel sources
 5. Maps the alert to MITRE ATT&CK tactics and techniques
 6. Posts an enrichment comment to the Jira ticket
-7. Labels the ticket: `True-Positive`, `False-Positive`, or `Unknown`
+7. Labels the ticket: `True-Positive`, `Benign-Positive`, or `Unknown`
 
 The SOC team's job is to **review the AI output, confirm or override the verdict, and handle True Positives** for escalation.
 
@@ -51,14 +51,14 @@ Open Jira SCDM and filter by:
 
 Pick any 2–3 tickets created in the last 24 hours and confirm they have:
 - [ ] An `=== L1 Triage Report (Automated) ===` comment
-- [ ] A label (`True-Positive`, `False-Positive`, or `Unknown`)
+- [ ] A label (`True-Positive`, `Benign-Positive`, or `Unknown`)
 - [ ] Priority set (not left as default "Medium" unless that's genuinely correct)
 
 If tickets are missing comments or labels, flag to the platform administrator — do not triage manually until confirmed.
 
 ### 3. Confirm False Positives (5 min)
 
-Tickets labelled `False-Positive` by the platform still require a brief analyst confirmation before closing:
+Tickets labelled `Benign-Positive` by the platform still require a brief analyst confirmation before closing:
 - Glance at the IOC block and the MITRE mapping
 - If you agree it's benign, close the ticket using the standard close workflow (Resolution Category: False Positive)
 - If you disagree, re-label manually and escalate
@@ -70,7 +70,7 @@ Tickets labelled `False-Positive` by the platform still require a brief analyst 
 ### 1. Verdict distribution review (Monday, 15 min)
 
 In Jira, run a report or count for the past 7 days:
-- How many `True-Positive` vs `False-Positive` vs `Unknown`?
+- How many `True-Positive` vs `Benign-Positive` vs `Unknown`?
 - Is the `Unknown` count unusually high? (Indicates IOCs not covered by threat intel — flag to platform admin)
 - Are any `True-Positive` tickets going unreviewed past 24 hours?
 
@@ -156,7 +156,7 @@ Flag to platform administrator. The portal going down does not affect L1 Triage 
 | Label | Meaning | What to do |
 |---|---|---|
 | `True-Positive` | AI confirmed malicious IOC | Review MITRE mapping, escalate if warranted, close after investigation |
-| `False-Positive` | All IOCs checked and clean | Confirm briefly, close as False Positive |
+| `Benign-Positive` | All IOCs checked and clean | Confirm briefly, close as False Positive |
 | `Unknown` | No IOCs found or intel sources returned no data | Manual IOC review required |
 | `[DUPLICATE]` in summary | Automatically detected duplicate of an existing ticket | Already auto-closed; no action needed |
 | `auto-suppressed-tuning` | Suppressed by the L2 suppression list | Confirm suppression is still correct; no action otherwise |

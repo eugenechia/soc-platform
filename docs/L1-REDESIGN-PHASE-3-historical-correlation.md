@@ -17,7 +17,7 @@ Sample comment output:
 ```
 Similar Alerts (past 24h): 12
   ├─ True-Positive:  2
-  ├─ False-Positive: 8
+  ├─ Benign-Positive: 8
   ├─ Unknown:        1
   └─ Untriaged:      1 (still in flight)
   Matched on: "Brute force attempt on host srv-"
@@ -81,7 +81,7 @@ Each matched sibling is categorised by reading its `labels` array:
 | Label present | Category |
 |---|---|
 | `True-Positive` (or env-overridden `JIRA_TRIAGE_MALICIOUS_LABEL`) | True-Positive |
-| `False-Positive` (or env-overridden `JIRA_TRIAGE_CLEAN_LABEL`) | False-Positive |
+| `Benign-Positive` (or env-overridden `JIRA_TRIAGE_CLEAN_LABEL`) | Benign-Positive |
 | `Unknown` (or env-overridden `JIRA_TRIAGE_UNKNOWN_LABEL`) | Unknown |
 | None of the above | Untriaged (still in flight or never triaged) |
 
@@ -91,11 +91,11 @@ When historical data is present, the Phase 1 LLM Triage call gets an additional 
 
 > Historical context for this rule (past 24h):
 > - 12 similar alerts (matched by summary prefix "Brute force attempt on host srv-")
-> - 2 confirmed True-Positive · 8 confirmed False-Positive · 1 Unknown · 1 still untriaged
+> - 2 confirmed True-Positive · 8 confirmed Benign-Positive · 1 Unknown · 1 still untriaged
 
 System-prompt guidance added:
 
-> Historical context is a strong signal. A rule firing many times in 24h with mostly False-Positive outcomes is statistically likely to be FP again — be willing to de-escalate confidently. A rule with mixed outcomes deserves the baseline. A rule firing rarely or for the first time should rely on the ticket text itself.
+> Historical context is a strong signal. A rule firing many times in 24h with mostly Benign-Positive outcomes is statistically likely to be FP again — be willing to de-escalate confidently. A rule with mixed outcomes deserves the baseline. A rule firing rarely or for the first time should rely on the ticket text itself.
 
 The same `confidence ≥ 0.7` override threshold from Phase 1 still gates whether the LLM's recommendation takes effect.
 
@@ -116,7 +116,7 @@ After deploy, validate by creating test tickets in the SCDM Jira project.
 | # | Scenario | Setup | Expected result |
 |---|---|---|---|
 | 1 | First occurrence | Create ticket with a brand-new summary pattern | No Historical section in comment (silently omitted). Webhook log shows `Historical lookup: 0 similar alerts in past 24h`. |
-| 2 | Repeating noisy rule (mostly FP) | Create 5 tickets with the same summary prefix; mark first 4 as False-Positive. Create the 5th. | 5th ticket shows 4 prior, 4 FP. LLM Triage rationale references the FP context; priority may de-escalate. |
+| 2 | Repeating noisy rule (mostly FP) | Create 5 tickets with the same summary prefix; mark first 4 as Benign-Positive. Create the 5th. | 5th ticket shows 4 prior, 4 FP. LLM Triage rationale references the FP context; priority may de-escalate. |
 | 3 | Alert storm of confirmed threats | Create 3 tickets with same prefix; label all as True-Positive. Create a 4th. | 4th ticket shows 3 TP siblings. LLM holds or escalates priority. |
 | 4 | Mixed verdicts | Create siblings: 2 TP, 2 FP, 1 Unknown. Create another. | Comment shows clean per-verdict breakdown; LLM rationale reflects the mix. |
 | 5 | Untriaged sibling | Create a sibling 30 min ago that's still in enrichment | Comment shows "1 still untriaged" line; no crash. |
