@@ -71,8 +71,49 @@ def init_scheduler(app) -> None:
         except Exception:
             logger.exception("Failed to register nightly_backup job — scheduler still starting")
 
+    # Phase 5d (2026-06-16) — daily Confluence RAG re-sync. The Chroma vector
+    # store lives on ephemeral /tmp/rag (SQLite + SMB don't mix), so it is
+    # wiped on every container restart. A daily cron keeps customer Confluence
+    # content fresh; an immediate-on-startup sync (below, after start())
+    # repopulates /tmp/rag before any webhook traffic arrives. Killswitch
+    # RAG_AUTO_SYNC_ENABLED defaults true — sync is maintenance work that
+    # should just run.
+    _rag_auto_sync_enabled = os.environ.get("RAG_AUTO_SYNC_ENABLED", "true").lower() == "true"
+    if _rag_auto_sync_enabled:
+        try:
+            from tools.rag_auto_sync import sync_all_customers
+            rag_sync_hour = int(os.environ.get("RAG_AUTO_SYNC_HOUR", "3"))
+            _scheduler.add_job(
+                lambda: sync_all_customers(reason="cron"),
+                trigger="cron",
+                hour=rag_sync_hour,
+                minute=0,
+                timezone="Asia/Singapore",
+                id="rag_auto_sync",
+                replace_existing=True,
+                misfire_grace_time=3600,
+            )
+            logger.info("RAG auto-sync job registered for %02d:00 SGT.", rag_sync_hour)
+        except Exception:
+            logger.exception("Failed to register rag_auto_sync job — scheduler still starting")
+    else:
+        logger.info("RAG auto-sync disabled via RAG_AUTO_SYNC_ENABLED env var.")
+
     _scheduler.start()
     logger.info("Scheduler started — checking every 5 minutes for due reports.")
+
+    # Phase 5d — immediate-on-startup RAG sync. Container restart wipes
+    # /tmp/rag, so the Chroma store is empty until the first sync. Fired in a
+    # background thread so app startup isn't blocked.
+    if _rag_auto_sync_enabled and os.environ.get("RAG_AUTO_SYNC_ON_STARTUP", "true").lower() == "true":
+        def _initial_rag_sync():
+            try:
+                from tools.rag_auto_sync import sync_all_customers
+                logger.info("RAG auto-sync: firing initial sync on startup")
+                sync_all_customers(reason="startup")
+            except Exception:
+                logger.exception("Initial RAG sync failed at startup")
+        threading.Thread(target=_initial_rag_sync, daemon=True).start()
 
 
 def _check_due_schedules(app) -> None:

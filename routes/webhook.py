@@ -411,9 +411,107 @@ def _apply_dedup_if_strict_match(ticket_key: str, fields: dict) -> dict | None:
     }
 
 
+def _handle_issue_updated(payload: dict):
+    """Phase 7 (2026-06-16) — capture L2 decisions from label changes.
+
+    When the analyst adds a 'True-Positive' / 'False-Positive' / 'Unknown'
+    label to a ticket, we log an immutable decision row to data/
+    triage_decisions.jsonl. Used by future few-shot triage prompts and
+    auto-close FP (sub-features 2 + 3, deferred). Failure-isolated:
+    bad payloads / disabled killswitch → 200 ignored, never raises.
+    """
+    if os.environ.get("DECISION_CAPTURE_ENABLED", "false").lower() != "true":
+        return jsonify({"status": "ignored", "reason": "decision capture disabled"}), 200
+
+    issue = payload.get("issue", {}) or {}
+    ticket_key = issue.get("key", "")
+    if not ticket_key:
+        return jsonify({"status": "ignored", "reason": "no issue key"}), 200
+
+    changelog = payload.get("changelog", {}) or {}
+    items = changelog.get("items", []) or []
+    label_changes = [i for i in items if (i.get("field") or "").lower() == "labels"]
+    if not label_changes:
+        return jsonify({"status": "ignored", "reason": "no label change"}), 200
+
+    # Determine which triage label was newly added.
+    _ML  = os.environ.get("JIRA_TRIAGE_MALICIOUS_LABEL", "True-Positive")
+    _CL  = os.environ.get("JIRA_TRIAGE_CLEAN_LABEL",     "False-Positive")
+    _UL  = os.environ.get("JIRA_TRIAGE_UNKNOWN_LABEL",   "Unknown")
+    triage_labels = {_ML, _CL, _UL}
+
+    added_triage_label = None
+    platform_verdict = "unknown"
+    for chg in label_changes:
+        # Jira sends `toString` and `fromString` as space-separated label lists.
+        before = set((chg.get("fromString") or "").split())
+        after  = set((chg.get("toString")   or "").split())
+        new_labels = after - before
+        for lbl in new_labels:
+            if lbl in triage_labels:
+                added_triage_label = lbl
+                break
+        # Detect what the platform had labelled before (so we know what the
+        # platform's original verdict was for the few-shot loop).
+        for lbl in before & triage_labels:
+            if   lbl == _ML: platform_verdict = "malicious"
+            elif lbl == _CL: platform_verdict = "benign"
+            elif lbl == _UL: platform_verdict = "unknown"
+        if added_triage_label:
+            break
+
+    if not added_triage_label:
+        return jsonify({"status": "ignored", "reason": "no triage-label addition"}), 200
+
+    # The L2 decision is the newly-added triage label.
+    fields = issue.get("fields", {}) or {}
+    summary = fields.get("summary") or ""
+    # Re-use Phase 3's rule-prefix derivation so this decision is keyed
+    # the same way historical_alerts groups similar tickets.
+    rule_prefix = summary[: int(os.environ.get("HISTORICAL_LOOKUP_SUMMARY_PREFIX_LEN", "60"))]
+
+    project_key = (issue.get("fields", {}).get("project", {}) or {}).get("key", "") \
+                  or ticket_key.split("-")[0]
+
+    # Customer resolution (best-effort, never blocks the record write).
+    customer_id = ""
+    try:
+        from tools.customers import find_customer_by_jira_project
+        cust = find_customer_by_jira_project(project_key)
+        customer_id = (cust or {}).get("id", "")
+    except Exception:
+        pass
+
+    try:
+        from tools.decisions import record_decision
+        record_decision(
+            ticket_key=ticket_key,
+            project_key=project_key,
+            customer_id=customer_id,
+            rule_prefix=rule_prefix,
+            l2_label=added_triage_label,
+            platform_verdict=platform_verdict,
+        )
+    except Exception:
+        logger.exception("Phase 7 record_decision dispatch failed for %s", ticket_key)
+        return jsonify({"status": "error", "reason": "record_decision failed"}), 200
+
+    return jsonify({
+        "status": "recorded",
+        "ticket": ticket_key,
+        "l2_label": added_triage_label,
+        "platform_verdict": platform_verdict,
+    }), 200
+
+
 @webhook_bp.route("/jira", methods=["POST"])
 def jira_webhook():
-    """Receive a Jira issue_created webhook and queue IOC enrichment."""
+    """Receive a Jira issue_created webhook and queue IOC enrichment.
+
+    Phase 7 (2026-06-16) — also accepts issue_updated events and dispatches
+    them to _handle_issue_updated() for decision capture. Same URL keeps
+    Jira webhook config simple.
+    """
     webhook_secret = os.environ.get("JIRA_WEBHOOK_SECRET", "")
     if webhook_secret:
         provided = request.args.get("secret", "")
@@ -423,6 +521,12 @@ def jira_webhook():
 
     payload = request.get_json(silent=True) or {}
     event = payload.get("webhookEvent", "")
+
+    # Phase 7 (2026-06-16) — handle issue_updated events for L2 decision
+    # capture. Same endpoint as issue_created to keep the Jira webhook config
+    # simple (one URL handles everything).
+    if event == "jira:issue_updated":
+        return _handle_issue_updated(payload)
 
     if event and event != "jira:issue_created":
         return jsonify({"status": "ignored", "reason": f"event '{event}' not processed"}), 200

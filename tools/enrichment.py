@@ -743,8 +743,15 @@ def _adf_ioc_block(ioc_results: list[dict], ticket_key: str) -> list[dict]:
 
     for i, result in enumerate(ioc_results, 1):
         ioc = result["ioc"]
-        out.append(adf.heading(4, adf.text(f"[{i}] ", italic=True),
-                                    adf.text(ioc["value"], code=True),
+        # 2026-06-16: bumped from h4 → h3 + bold mark on the IOC value so the
+        # IP/domain/hash is the visual centre of each per-IOC block. We do
+        # NOT also apply the `code` (monospace) mark because Jira ADF rejects
+        # the strong+code mark combination on text inside a heading with
+        # INVALID_INPUT (HTTP 400). Bold + larger heading already gives
+        # plenty of visual weight; the monospace look is nice-to-have rather
+        # than essential here.
+        out.append(adf.heading(3, adf.text(f"[{i}] ", italic=True),
+                                    adf.text(ioc["value"], bold=True),
                                     adf.text(f" ({ioc['type'].upper()})")))
 
         vt = result.get("virustotal")
