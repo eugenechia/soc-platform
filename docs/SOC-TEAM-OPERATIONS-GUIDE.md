@@ -56,11 +56,11 @@ Pick any 2–3 tickets created in the last 24 hours and confirm they have:
 
 If tickets are missing comments or labels, flag to the platform administrator — do not triage manually until confirmed.
 
-### 3. Confirm False Positives (5 min)
+### 3. Confirm Benign Positives (5 min)
 
 Tickets labelled `Benign-Positive` by the platform still require a brief analyst confirmation before closing:
 - Glance at the IOC block and the MITRE mapping
-- If you agree it's benign, close the ticket using the standard close workflow (Resolution Category: False Positive)
+- If you agree it's benign, close the ticket using the standard close workflow (Resolution Category: Benign Positive)
 - If you disagree, re-label manually and escalate
 
 ---
@@ -156,7 +156,7 @@ Flag to platform administrator. The portal going down does not affect L1 Triage 
 | Label | Meaning | What to do |
 |---|---|---|
 | `True-Positive` | AI confirmed malicious IOC | Review MITRE mapping, escalate if warranted, close after investigation |
-| `Benign-Positive` | All IOCs checked and clean | Confirm briefly, close as False Positive |
+| `Benign-Positive` | All IOCs checked and clean | Confirm briefly, close as Benign Positive |
 | `Unknown` | No IOCs found or intel sources returned no data | Manual IOC review required |
 | `[DUPLICATE]` in summary | Automatically detected duplicate of an existing ticket | Already auto-closed; no action needed |
 | `auto-suppressed-tuning` | Suppressed by the L2 suppression list | Confirm suppression is still correct; no action otherwise |
