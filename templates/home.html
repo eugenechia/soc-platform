@@ -211,6 +211,59 @@
       color: var(--text-muted);
       line-height: 1.5;
     }
+    .cust-summary {
+      font-size: 0.78rem;
+      color: var(--text-muted);
+      margin-top: 6px;
+      min-height: 1em;
+    }
+    .cust-list {
+      margin-top: 10px;
+      padding-top: 10px;
+      border-top: 1px solid var(--border);
+      width: 100%;
+      max-height: 168px;
+      overflow-y: auto;
+      display: flex;
+      flex-direction: column;
+      gap: 7px;
+    }
+    .cust-list:empty { display: none; }
+    .cust-row {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      font-size: 0.83rem;
+    }
+    .cust-dot {
+      width: 8px;
+      height: 8px;
+      border-radius: 50%;
+      flex-shrink: 0;
+    }
+    .cust-name {
+      flex: 1;
+      min-width: 0;
+      font-weight: 600;
+      color: var(--text-primary);
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+    .cust-tier {
+      flex-shrink: 0;
+      font-size: 0.7rem;
+      font-weight: 700;
+      text-transform: uppercase;
+      letter-spacing: 0.03em;
+    }
+    .cust-empty { font-size: 0.8rem; color: var(--text-muted); }
+    .cust-dot.tier-active    { background: #16A34A; }
+    .cust-dot.tier-limited   { background: #F59E0B; }
+    .cust-dot.tier-inactive  { background: #94A3B8; }
+    .cust-tier.tier-active   { color: #16A34A; }
+    .cust-tier.tier-limited  { color: #F59E0B; }
+    .cust-tier.tier-inactive { color: #94A3B8; }
   </style>
 </head>
 <body>
@@ -251,13 +304,15 @@
         </div>
         <div class="card-title">L1 Triage</div>
         <div class="card-desc">
-          Automated triage of incoming Jira tickets — IOC enrichment, verdict, MITRE mapping, and AI recommendations. Runs in the background on every webhook-fired ticket.
+          Automated Jira ticket triage — IOC enrichment, verdict, MITRE mapping, AI recommendations. Per-customer coverage below.
         </div>
         <div class="status-row">
           <span class="status-dot" id="triage-dot"></span>
           <span class="status-label" id="triage-label">Checking…</span>
         </div>
         <div class="status-sub" id="triage-sub">Jira API · AI model</div>
+        <div class="cust-summary" id="triage-cust-summary"></div>
+        <div class="cust-list" id="triage-customers"></div>
       </div>
     </div>
 
@@ -281,6 +336,8 @@
         down:        { color: '#DC2626', text: 'Down' },
         unknown:     { color: '#94A3B8', text: 'Unknown' }
       };
+      var summaryEl = document.getElementById('triage-cust-summary');
+      var listEl = document.getElementById('triage-customers');
       function paint(state, checks) {
         var m = MAP[state] || MAP.unknown;
         dot.style.background = m.color;
@@ -293,10 +350,40 @@
           sub.textContent = 'Jira API: ' + j + ' · AI model: ' + l;
         }
       }
+      function cap(s) { return s.charAt(0).toUpperCase() + s.slice(1); }
+      function renderCustomers(d) {
+        var cs = d.customers || [];
+        var s = d.summary || {};
+        listEl.innerHTML = '';
+        if (!cs.length) {
+          summaryEl.innerHTML = '<span class="cust-empty">No customers onboarded yet.</span>';
+          return;
+        }
+        summaryEl.textContent =
+          (s.active || 0) + ' active · ' + (s.limited || 0) + ' limited · ' + (s.inactive || 0) + ' inactive';
+        cs.forEach(function (c) {
+          var row = document.createElement('div');
+          row.className = 'cust-row';
+          var cdot = document.createElement('span');
+          cdot.className = 'cust-dot tier-' + c.tier;
+          var name = document.createElement('span');
+          name.className = 'cust-name';
+          name.textContent = c.name;
+          name.title = (c.projects && c.projects.length) ? c.projects.join(', ') : '';
+          var tier = document.createElement('span');
+          tier.className = 'cust-tier tier-' + c.tier;
+          tier.textContent = cap(c.tier);
+          tier.title = c.detail || '';
+          row.appendChild(cdot);
+          row.appendChild(name);
+          row.appendChild(tier);
+          listEl.appendChild(row);
+        });
+      }
       fetch('/status/triage-health', { headers: { 'Accept': 'application/json' } })
         .then(function (r) { if (!r.ok) throw new Error(r.status); return r.json(); })
-        .then(function (d) { paint(d.status, d.checks); })
-        .catch(function () { paint('unknown', null); });
+        .then(function (d) { paint(d.status, d.checks); renderCustomers(d); })
+        .catch(function () { paint('unknown', null); summaryEl.textContent = ''; });
     })();
   </script>
 </body>

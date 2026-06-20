@@ -82,6 +82,69 @@ def _check_llm() -> tuple[bool, str]:
         return False, type(e).__name__
 
 
+def _customer_readiness() -> tuple[list[dict], dict]:
+    """Per-customer L1 Triage readiness (config-only, no live calls).
+
+    Tier per onboarded customer:
+      * inactive — no Jira project key, or none of its keys is in the
+                   JIRA_ENRICHMENT_PROJECT allowlist → L1 Triage will NOT
+                   process this customer's tickets.
+      * limited  — triage-enabled but missing an enrichment layer
+                   (Sentinel KQL and/or Confluence RAG). Core triage runs;
+                   the AI just has less context.
+      * active   — triage-enabled with BOTH Sentinel + RAG configured.
+    """
+    try:
+        from tools.customers import load_customers
+        customers = load_customers()
+    except Exception as e:  # noqa: BLE001 — health check must never raise
+        logger.warning("triage_health customer scan failed: %s", e)
+        return [], {"active": 0, "limited": 0, "inactive": 0, "total": 0}
+
+    allow_raw = os.environ.get("JIRA_ENRICHMENT_PROJECT", "")
+    allow = {p.strip().upper() for p in allow_raw.split(",") if p.strip()}
+
+    rows: list[dict] = []
+    counts = {"active": 0, "limited": 0, "inactive": 0}
+    for c in customers:
+        keys = [
+            (jp.get("project_key") or "").strip().upper()
+            for jp in (c.get("jira_projects") or [])
+            if (jp.get("project_key") or "").strip()
+        ]
+        # allow empty allowlist == every project is in scope
+        triaged = bool(keys) and (not allow or any(k in allow for k in keys))
+        sentinel = len(c.get("sentinel_workspaces") or []) > 0
+        rag = len(c.get("confluence_pages") or []) > 0
+
+        if not triaged:
+            tier = "inactive"
+            detail = "no Jira project key" if not keys else "project not in triage scope"
+        elif sentinel and rag:
+            tier = "active"
+            detail = "Sentinel + RAG"
+        else:
+            tier = "limited"
+            missing = []
+            if not sentinel:
+                missing.append("Sentinel")
+            if not rag:
+                missing.append("RAG")
+            detail = "no " + " / ".join(missing)
+
+        counts[tier] += 1
+        rows.append({
+            "name": c.get("name") or c.get("id") or "(unnamed)",
+            "tier": tier,
+            "detail": detail,
+            "projects": keys,
+        })
+
+    _order = {"active": 0, "limited": 1, "inactive": 2}
+    rows.sort(key=lambda r: (_order[r["tier"]], r["name"].lower()))
+    return rows, {**counts, "total": len(customers)}
+
+
 def triage_health(force: bool = False) -> dict:
     """Return the cached (or freshly computed) L1 Triage health snapshot.
 
@@ -92,9 +155,19 @@ def triage_health(force: bool = False) -> dict:
              "jira": {"ok": bool, "detail": str},
              "llm":  {"ok": bool, "detail": str},
           },
+          "customers": [
+             {"name": str, "tier": "active"|"limited"|"inactive",
+              "detail": str, "projects": [str]},
+             ...
+          ],
+          "summary": {"active": int, "limited": int, "inactive": int, "total": int},
           "checked_at": <epoch seconds>,
           "cached": bool,
         }
+
+    The top-level "status"/"checks" are GLOBAL live health (Jira API + LLM) —
+    if those are down, triage fails for every customer regardless of tier.
+    The per-customer "customers" list is config-only readiness.
     """
     now = time.time()
     with _lock:
@@ -112,12 +185,16 @@ def triage_health(force: bool = False) -> dict:
     else:
         status = "down"
 
+    customers, summary = _customer_readiness()
+
     result = {
         "status": status,
         "checks": {
             "jira": {"ok": jira_ok, "detail": jira_detail},
             "llm": {"ok": llm_ok, "detail": llm_detail},
         },
+        "customers": customers,
+        "summary": summary,
         "checked_at": now,
         "cached": False,
     }
