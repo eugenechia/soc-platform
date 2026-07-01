@@ -538,12 +538,22 @@ def jira_webhook():
         logger.warning("Jira webhook: missing issue key in payload")
         return jsonify({"status": "ignored", "reason": "no issue key"}), 200
 
-    enrichment_projects_raw = os.environ.get("JIRA_ENRICHMENT_PROJECT", "")
-    if enrichment_projects_raw:
-        allowed = {p.strip().upper() for p in enrichment_projects_raw.split(",") if p.strip()}
-        project_key = ticket_key.split("-")[0].upper()
-        if project_key not in allowed:
-            return jsonify({"status": "ignored", "reason": "project not monitored"}), 200
+    # Fail-closed allowlist: only projects explicitly listed in
+    # JIRA_ENRICHMENT_PROJECT are enriched. An empty/unset allowlist denies ALL
+    # tickets (rather than the old fail-open behaviour of processing everything),
+    # so a blank or dropped env var can never silently open enrichment to every
+    # customer project.
+    allowed = {p.strip().upper()
+               for p in os.environ.get("JIRA_ENRICHMENT_PROJECT", "").split(",")
+               if p.strip()}
+    project_key = ticket_key.split("-")[0].upper()
+    if not allowed:
+        logger.warning(
+            "JIRA_ENRICHMENT_PROJECT is empty — denying enrichment for %s "
+            "(fail-closed). Set the allowlist to enable processing.", ticket_key)
+        return jsonify({"status": "ignored", "reason": "no project allowlist configured"}), 200
+    if project_key not in allowed:
+        return jsonify({"status": "ignored", "reason": "project not monitored"}), 200
 
     # Note: dedup runs INSIDE _run_enrichment after polling completes, not here.
     # Running synchronously off the webhook payload was racy because the Sentinel
