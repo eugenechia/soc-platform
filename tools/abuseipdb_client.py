@@ -24,6 +24,11 @@ def _headers() -> dict | None:
     return {"Key": key, "Accept": "application/json"}
 
 
+def is_configured() -> bool:
+    """True if an AbuseIPDB API key is available (env or Key Vault)."""
+    return _headers() is not None
+
+
 def check_ip(ip: str) -> dict | None:
     """Look up IP reputation from AbuseIPDB.
 

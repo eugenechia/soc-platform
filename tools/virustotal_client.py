@@ -24,6 +24,11 @@ def _headers() -> dict | None:
     return {"x-apikey": key, "Accept": "application/json"}
 
 
+def is_configured() -> bool:
+    """True if a VirusTotal API key is available (env or Key Vault)."""
+    return _headers() is not None
+
+
 def check_ioc(value: str, ioc_type: str) -> dict | None:
     """Look up IOC reputation from VirusTotal.
 

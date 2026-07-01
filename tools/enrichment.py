@@ -11,6 +11,7 @@ Flow:
   7. enrich_ticket()     — orchestrates all steps end-to-end
 """
 import ipaddress
+import json
 import logging
 import os
 import re
@@ -99,11 +100,20 @@ _DOMAIN_ALLOWLIST = {
 
 
 def _is_private_ip(ip_str: str) -> bool:
+    """True for any non-globally-routable address (skip from reputation checks).
+
+    Handles IPv4 and IPv6, including IPv4-mapped IPv6 (``::ffff:a.b.c.d``) and
+    link-local (``fe80::/10``). Reputation engines only make sense for public
+    addresses, so private/loopback/link-local/reserved/multicast are all skipped."""
     try:
         addr = ipaddress.ip_address(ip_str)
-        return any(addr in net for net in _PRIVATE_NETS)
     except ValueError:
         return True
+    mapped = getattr(addr, "ipv4_mapped", None)
+    if mapped is not None:
+        addr = mapped
+    return (addr.is_private or addr.is_loopback or addr.is_link_local
+            or addr.is_reserved or addr.is_multicast or addr.is_unspecified)
 
 
 def _is_allowlisted_domain(domain: str) -> bool:
@@ -183,13 +193,79 @@ def extract_iocs(text: str) -> list[dict]:
 
 # ─── Structured Entity Field Extraction ───────────────────────────────────────
 
-def _split_entity_values(adf_field) -> list[str]:
-    """Flatten an ADF custom field and split into individual entity values.
-    Sentinel-populated entity fields can contain multiple values separated by
-    whitespace, newlines, or commas."""
+def _entity_json_objects(text: str) -> list[dict] | None:
+    """Sentinel/Defender exports store entity fields as one or more
+    whitespace-separated JSON objects, e.g. ``{"address":"1.2.3.4","Type":"ip"}``
+    or ``{"hashValue":"ab..","algorithm":"SHA1"}``. Parse them with a raw_decode
+    loop so nested/escaped JSON (Host entity ``additionalData``) is handled.
+
+    Returns the parsed objects, or None if the text is not JSON — in which case
+    the caller falls back to legacy plain-value splitting. If the text starts as
+    JSON but is malformed, also returns None (fall back rather than raise)."""
+    s = text.strip()
+    if not s.startswith("{"):
+        return None
+    objs: list[dict] = []
+    dec = json.JSONDecoder()
+    i, n = 0, len(s)
+    while i < n:
+        while i < n and s[i] in " \t\r\n,;":
+            i += 1
+        if i >= n:
+            break
+        try:
+            obj, end = dec.raw_decode(s, i)
+        except json.JSONDecodeError:
+            return None
+        if isinstance(obj, dict):
+            objs.append(obj)
+        i = end
+    return objs or None
+
+
+def _values_from_entity_objects(objs: list[dict], kind: str) -> list[str]:
+    """Pull the canonical IOC value(s) from parsed entity objects, per field kind.
+    Bare host names are intentionally skipped (asset context, not a domain to
+    check); only dotted domains / FQDNs are emitted for host/dns fields."""
+    out: list[str] = []
+    for o in objs:
+        if kind == "ip":
+            v = o.get("address") or o.get("Address")
+            if v:
+                out.append(str(v))
+        elif kind == "hash":
+            v = o.get("hashValue") or o.get("Value") or o.get("value")
+            if v:
+                out.append(str(v))
+        elif kind == "url":
+            v = o.get("url") or o.get("Url") or o.get("address") or o.get("Address")
+            if v:
+                out.append(str(v))
+        else:  # host / dns → dotted domains + FQDN only
+            for key in ("dnsDomain", "domainName"):
+                v = o.get(key)
+                if v:
+                    out.append(str(v))
+            ad = o.get("additionalData")
+            if isinstance(ad, dict) and ad.get("FQDN"):
+                out.append(str(ad["FQDN"]))
+    return out
+
+
+def _split_entity_values(adf_field, kind: str = "generic") -> list[str]:
+    """Flatten an ADF entity custom field into individual values.
+
+    Handles two formats:
+      * Sentinel/Defender JSON objects (what SCDM/Defender tickets actually
+        export) — parsed, with the canonical value pulled per ``kind``.
+      * Legacy plain values separated by whitespace / comma / semicolon — split.
+    """
     text = _extract_adf_text(adf_field)
     if not text:
         return []
+    objs = _entity_json_objects(text)
+    if objs is not None:
+        return _values_from_entity_objects(objs, kind)
     parts = re.split(r"[\s,;]+", text)
     return [p.strip() for p in parts if p.strip()]
 
@@ -206,20 +282,20 @@ def extract_iocs_from_entity_fields(fields: dict) -> list[dict]:
     iocs: list[dict] = []
 
     # IP Address Entities
-    for val in _split_entity_values(fields.get(_FIELD_IP_ENTITIES)):
+    for val in _split_entity_values(fields.get(_FIELD_IP_ENTITIES), "ip"):
         v = val.lower()
         if v in seen or _is_private_ip(val):
             continue
         try:
-            ipaddress.ip_address(val)
+            _ip = ipaddress.ip_address(val)
         except ValueError:
             continue
         seen.add(v)
-        iocs.append({"type": "ip", "subtype": "ipv4", "value": val})
+        iocs.append({"type": "ip", "subtype": "ipv6" if _ip.version == 6 else "ipv4", "value": val})
 
     # Host Entities and DNS Entities → both treated as domains
-    for field_id in (_FIELD_HOST_ENTITIES, _FIELD_DNS_ENTITIES):
-        for val in _split_entity_values(fields.get(field_id)):
+    for field_id, _kind in ((_FIELD_HOST_ENTITIES, "host"), (_FIELD_DNS_ENTITIES, "dns")):
+        for val in _split_entity_values(fields.get(field_id), _kind):
             v = val.lower()
             if v in seen or _is_allowlisted_domain(v):
                 continue
@@ -230,7 +306,7 @@ def extract_iocs_from_entity_fields(fields: dict) -> list[dict]:
             iocs.append({"type": "domain", "subtype": "fqdn", "value": v})
 
     # URL Entities → extract host
-    for val in _split_entity_values(fields.get(_FIELD_URL_ENTITIES)):
+    for val in _split_entity_values(fields.get(_FIELD_URL_ENTITIES), "url"):
         try:
             host = urlparse(val if "://" in val else f"http://{val}").hostname
         except Exception:
@@ -244,7 +320,7 @@ def extract_iocs_from_entity_fields(fields: dict) -> list[dict]:
         iocs.append({"type": "domain", "subtype": "fqdn", "value": h})
 
     # FileHash Entities → classify by length
-    for val in _split_entity_values(fields.get(_FIELD_HASH_ENTITIES)):
+    for val in _split_entity_values(fields.get(_FIELD_HASH_ENTITIES), "hash"):
         v = val.lower()
         if v in seen:
             continue
@@ -327,6 +403,23 @@ def determine_verdict(results: list[dict]) -> str:
     if all(r["verdict"] == "unknown" for r in results):
         return "unknown"
     return "clean"
+
+
+def _rep_empty_label(source: str) -> str:
+    """Label for a reputation source that returned no result. Distinguishes a
+    genuinely-absent API key ("Not configured") from a key that IS present but
+    whose lookup returned nothing or errored ("No data") — so a working engine
+    fed an invalid/clean IOC no longer reads as unconfigured."""
+    from tools import virustotal_client, abuseipdb_client, socradar_rest
+    checker = {
+        "virustotal": virustotal_client.is_configured,
+        "abuseipdb": abuseipdb_client.is_configured,
+        "socradar": socradar_rest.is_configured,
+    }.get(source)
+    try:
+        return "No data" if (checker and checker()) else "Not configured"
+    except Exception:
+        return "Not configured"
 
 
 # ─── Comment Builder ──────────────────────────────────────────────────────────
@@ -638,13 +731,13 @@ def _build_comment(ioc_results: list[dict], overall_verdict: str, action_taken: 
             else:
                 lines.append(f"  VirusTotal: {mal}/{tot} detections (Reputation {rep})")
         else:
-            lines.append("  VirusTotal: Not configured")
+            lines.append(f"  VirusTotal: {_rep_empty_label('virustotal')}")
 
         if ioc["type"] == "ip":
             if ab:
                 lines.append(f"  AbuseIPDB: Confidence {ab.get('confidence_score', 0)}%")
             else:
-                lines.append("  AbuseIPDB: Not configured")
+                lines.append(f"  AbuseIPDB: {_rep_empty_label('abuseipdb')}")
         else:
             lines.append("  AbuseIPDB: N/A (IP only)")
 
@@ -662,7 +755,7 @@ def _build_comment(ioc_results: list[dict], overall_verdict: str, action_taken: 
                 last = _format_sgt(f.get("last_seen") or "")
                 lines.append(f"    · {src} — {cat} (reliability {rel}, last seen {last})")
         else:
-            lines.append("  SOCRadar:  Not configured")
+            lines.append(f"  SOCRadar:  {_rep_empty_label('socradar')}")
 
         # Phase 5b (2026-06-15): per-IOC historical Jira appearances for any
         # IOC the reputation engines flagged as malicious. Killswitch-gated;
@@ -773,14 +866,14 @@ def _adf_ioc_block(ioc_results: list[dict], ticket_key: str) -> list[dict]:
             notes = f"Reputation {rep}"
             rep_rows.append(["VirusTotal", det, conf, notes])
         else:
-            rep_rows.append(["VirusTotal", "Not configured", "—", "—"])
+            rep_rows.append(["VirusTotal", _rep_empty_label('virustotal'), "—", "—"])
 
         # AbuseIPDB row
         if ioc["type"] == "ip":
             if ab:
                 rep_rows.append(["AbuseIPDB", "—", f"{ab.get('confidence_score', 0)}%", "—"])
             else:
-                rep_rows.append(["AbuseIPDB", "Not configured", "—", "—"])
+                rep_rows.append(["AbuseIPDB", _rep_empty_label('abuseipdb'), "—", "—"])
         else:
             rep_rows.append(["AbuseIPDB", "N/A (IP only)", "—", "—"])
 
@@ -804,7 +897,7 @@ def _adf_ioc_block(ioc_results: list[dict], ticket_key: str) -> list[dict]:
                     f"{cat} · last seen {last}",
                 ])
         else:
-            rep_rows.append(["SOCRadar", "Not configured", "—", "—"])
+            rep_rows.append(["SOCRadar", _rep_empty_label('socradar'), "—", "—"])
 
         out.append(adf.table(["Engine", "Detections", "Confidence", "Notes"], rep_rows))
 

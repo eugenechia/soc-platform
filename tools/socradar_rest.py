@@ -94,6 +94,11 @@ def _api_key_threat_analysis() -> str:
             or os.environ.get("SOCRADAR_THREAT_ANALYSIS_KEY", ""))
 
 
+def is_configured() -> bool:
+    """True if the SOCRadar Threat Analysis key (L1 IOC reputation) is available."""
+    return bool(_api_key_threat_analysis())
+
+
 def _api_key_company() -> str:
     """Key for /company/{id}/incidents/v4 (company alarms).
     SOCRadar product: 'Company API'. The legacy env name was
