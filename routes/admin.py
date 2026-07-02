@@ -298,6 +298,104 @@ def api_customer_confluence_sync(cid: str):
         return jsonify({"status": "error", "error": f"{type(e).__name__}: {e}"}), 500
 
 
+# ── L1 Triage onboarding aids (schema discovery + dry-run validation) ────────────
+
+def _ticket_key_from_request() -> str:
+    return (request.args.get("ticket")
+            or (request.get_json(silent=True) or {}).get("ticket") or "").strip()
+
+
+@admin_bp.route("/api/customers/<cid>/discover-schema", methods=["POST"])
+@require_login
+def api_customer_discover_schema(cid: str):
+    """Introspect a sample ticket and SUGGEST a Jira field mapping for this
+    customer (entity field IDs + severity field + SIEM source). Read-only — the
+    operator confirms the suggestion into the customer's schema block. Removes
+    the guesswork that made PAPAC-style onboarding a debugging exercise.
+
+    Ticket key via ?ticket=KEY or JSON {"ticket": "KEY"}."""
+    from tools.customers import get_customer
+    from tools.jira_client import fetch_issue_by_key
+    from tools.jira_schema import resolve_jira_schema, discover_schema
+    customer = get_customer(cid)
+    if not customer:
+        return jsonify({"status": "error", "error": "customer not found"}), 404
+    ticket = _ticket_key_from_request()
+    if not ticket:
+        return jsonify({"status": "error", "error": "ticket key is required"}), 400
+    try:
+        issue = fetch_issue_by_key(ticket)
+        if not issue or "fields" not in issue:
+            return jsonify({"status": "error", "error": f"could not fetch ticket {ticket}"}), 404
+        current = resolve_jira_schema(customer, ticket.split("-")[0])
+        return jsonify({
+            "status": "ok",
+            "ticket": ticket,
+            "current": {
+                "source": current.source,
+                "entity_fields": current.entity_fields,
+                "severity_field": current.severity_field,
+            },
+            "discovery": discover_schema(issue["fields"]),
+        })
+    except Exception as e:
+        log.exception("discover-schema customer=%s ticket=%s failed: %s", cid, ticket, e)
+        return jsonify({"status": "error", "error": f"{type(e).__name__}: {e}"}), 500
+
+
+@admin_bp.route("/api/customers/<cid>/validate", methods=["POST"])
+@require_login
+def api_customer_validate(cid: str):
+    """Dry-run the L1 triage extraction on a sample ticket WITHOUT posting a
+    comment or modifying the ticket. Confirms this customer's schema mapping
+    parses IOCs + severity correctly BEFORE go-live — the acceptance gate that
+    'triage works as smoothly as SCDM' for that customer.
+
+    No reputation lookups (no paid API spend), no Jira mutation. Ticket via
+    ?ticket=KEY."""
+    from tools.customers import get_customer
+    from tools.jira_client import fetch_issue_by_key
+    from tools.jira_schema import resolve_jira_schema, detect_schema_mismatch
+    from tools.enrichment import extract_iocs_from_entity_fields, extract_iocs, _extract_adf_text
+    customer = get_customer(cid)
+    if not customer:
+        return jsonify({"status": "error", "error": "customer not found"}), 404
+    ticket = _ticket_key_from_request()
+    if not ticket:
+        return jsonify({"status": "error", "error": "ticket key is required"}), 400
+    try:
+        issue = fetch_issue_by_key(ticket)
+        if not issue or "fields" not in issue:
+            return jsonify({"status": "error", "error": f"could not fetch ticket {ticket}"}), 404
+        fields = issue["fields"]
+        schema = resolve_jira_schema(customer, ticket.split("-")[0])
+
+        entity_iocs = extract_iocs_from_entity_fields(fields, schema)
+        summary = fields.get("summary") or ""
+        desc = _extract_adf_text(fields.get("description"))
+        regex_iocs = extract_iocs(f"{summary}\n{desc}")
+        seen = {i["value"] for i in entity_iocs}
+        iocs = list(entity_iocs) + [i for i in regex_iocs if i["value"] not in seen]
+
+        raw = fields.get(schema.severity_field) or {}
+        severity = (raw.get("value", "") if isinstance(raw, dict) else str(raw or "")).strip()
+
+        return jsonify({
+            "status": "ok",
+            "ticket": ticket,
+            "schema_source": schema.source,
+            "ioc_count": len(iocs),
+            "iocs": iocs,
+            "severity": {"field": schema.severity_field, "value": severity,
+                         "mapped_priority": schema.severity_to_priority(severity)},
+            "schema_mismatch": detect_schema_mismatch(fields, schema, iocs),
+            "note": "dry-run: no reputation lookups, no comment posted, ticket unchanged",
+        })
+    except Exception as e:
+        log.exception("validate customer=%s ticket=%s failed: %s", cid, ticket, e)
+        return jsonify({"status": "error", "error": f"{type(e).__name__}: {e}"}), 500
+
+
 # ── Logo serving ───────────────────────────────────────────────────────────────
 
 @admin_bp.route("/data/logos/<filename>")
