@@ -136,6 +136,13 @@ def _normalize_customer(record: dict) -> dict:
         else:
             out["jira_projects"] = []
 
+    # Per-project L1-triage schema override (entity field IDs / severity). Absent =
+    # global defaults (resolved in tools/jira_schema.py). Keep None so an unset
+    # override stays distinguishable from an empty one.
+    for _proj in out["jira_projects"]:
+        if isinstance(_proj, dict) and "schema" not in _proj:
+            _proj["schema"] = None
+
     # Phase 4b-rev (2026-06-15): per-customer Confluence pages. Each entry has
     # {url, page_id, title, space_key, last_synced_at, chunk_count, last_error}.
     # Empty list when the customer hasn't been configured for RAG yet.

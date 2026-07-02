@@ -36,6 +36,7 @@ import uuid
 
 from flask import Blueprint, jsonify, request
 
+from tools.jira_schema import resolve_jira_schema, default_schema
 from tools.dedup_jira import (
     append_occurrence,
     find_strict_duplicate,
@@ -61,6 +62,19 @@ def _run_enrichment(job_id: str, ticket_key: str) -> None:
     """Background worker. Polls the Jira API until entity fields are populated
     (or the max wait expires), then runs the enrichment pipeline once."""
     try:
+        # Resolve the customer + per-customer Jira schema ONCE, up front. Entity
+        # field IDs and severity mapping vary per customer; a project with no
+        # customer record (or no schema override) resolves to the global defaults
+        # (SCDM behaviour). project_key needs no Jira fetch.
+        project_key = ticket_key.split("-")[0]
+        try:
+            customer = find_customer_by_jira_project(project_key)
+        except Exception as _cust_err:
+            logger.warning("Enrichment %s: customer lookup raised (%s); using default schema: %s",
+                           job_id, type(_cust_err).__name__, _cust_err)
+            customer = None
+        schema = resolve_jira_schema(customer, project_key)
+
         poll_interval = int(os.environ.get("WEBHOOK_FETCH_DELAY_SECONDS", "5"))
         max_wait = int(os.environ.get("WEBHOOK_FETCH_MAX_WAIT_SECONDS", "60"))
         stabilization = int(os.environ.get("WEBHOOK_FETCH_STABILIZATION_SECONDS", "30"))
@@ -80,7 +94,7 @@ def _run_enrichment(job_id: str, ticket_key: str) -> None:
                 continue
 
             last_issue = issue
-            if has_entity_data(issue["fields"]):
+            if has_entity_data(issue["fields"], schema):
                 logger.info(
                     "Enrichment %s: entity fields detected after %ds — sleeping %ds for stabilization",
                     job_id, elapsed, stabilization,
@@ -234,7 +248,7 @@ def _run_enrichment(job_id: str, ticket_key: str) -> None:
                            job_id, type(e).__name__, e)
             chunks_for_prompt = []
 
-        _run_triage_foundation(job_id, ticket_key, last_issue["fields"], historical, chunks_for_prompt)
+        _run_triage_foundation(job_id, ticket_key, last_issue["fields"], historical, chunks_for_prompt, schema)
 
         # ── Phase 5: AI-driven KQL expansion ─────────────────────────────────
         # Runs AFTER Phase 1 (so the triage call doesn't pay for KQL latency,
@@ -258,7 +272,7 @@ def _run_enrichment(job_id: str, ticket_key: str) -> None:
             iocs_for_kql: list[dict] = []
             try:
                 from tools.enrichment import extract_iocs_from_entity_fields
-                iocs_for_kql = list(extract_iocs_from_entity_fields(last_issue["fields"]) or [])
+                iocs_for_kql = list(extract_iocs_from_entity_fields(last_issue["fields"], schema) or [])
             except Exception as _ioc_err:
                 logger.warning("Enrichment %s: IOC extraction for KQL failed (%s); continuing with empty IOC list",
                                job_id, _ioc_err)
@@ -274,7 +288,7 @@ def _run_enrichment(job_id: str, ticket_key: str) -> None:
                            job_id, type(e).__name__, e)
             kql_evidence = None
 
-        result = enrich_ticket(ticket_key, last_issue["fields"], historical, rag_info, kql_evidence)
+        result = enrich_ticket(ticket_key, last_issue["fields"], historical, rag_info, kql_evidence, schema)
         _jobs[job_id].update({"status": "done", "result": result})
         logger.info("Enrichment %s complete: ticket=%s verdict=%s",
                     job_id, ticket_key, result.get("verdict"))
@@ -285,7 +299,8 @@ def _run_enrichment(job_id: str, ticket_key: str) -> None:
 
 def _run_triage_foundation(job_id: str, ticket_key: str, fields: dict,
                            historical: dict | None = None,
-                           rag_chunks_for_prompt: list[dict] | None = None) -> None:
+                           rag_chunks_for_prompt: list[dict] | None = None,
+                           schema=None) -> None:
     """Phase 1 pre-enrichment steps. Each step logs and continues on failure
     so the downstream enrichment pipeline always runs.
 
@@ -309,10 +324,11 @@ def _run_triage_foundation(job_id: str, ticket_key: str, fields: dict,
     suppresses the block entirely (no behavioural change from Phase 4b).
     """
     # ── 1. Severity sync ────────────────────────────────────────────────
-    severity_field_id = os.environ.get("JIRA_FIELD_SEVERITY", "customfield_10038")
+    sch = schema or default_schema()
+    severity_field_id = sch.severity_field
     raw = fields.get(severity_field_id) or {}
     severity = (raw.get("value", "") if isinstance(raw, dict) else str(raw or "")).strip()
-    baseline_priority = severity_to_priority(severity)
+    baseline_priority = sch.severity_to_priority(severity)
     if baseline_priority:
         set_priority(ticket_key, baseline_priority)
         logger.info("Triage %s: severity sync — '%s' → priority '%s' for %s",

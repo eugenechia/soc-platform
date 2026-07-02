@@ -35,6 +35,38 @@ _CACHE_TTL_SECONDS = 60
 _cache: dict = {"ts": 0.0, "result": None}
 _lock = threading.Lock()
 
+# Fail-loud schema-mismatch signal (recorded by enrichment.enrich_ticket when a
+# public IP / file hash is present but 0 IOCs were extracted — i.e. a customer's
+# entity field mapping is likely wrong). Ephemeral + in-memory + bounded, mirroring
+# the cache design. Keyed by project so ops can spot broken mappings per customer.
+_MAX_MISMATCH_PROJECTS = 50
+_schema_mismatches: dict = {}   # project_key -> {"detail": str, "count": int, "last_ts": float}
+_mismatch_lock = threading.Lock()
+
+
+def record_schema_mismatch(project_key: str, detail: str) -> None:
+    """Record a schema-mismatch event. Never raises (best-effort telemetry)."""
+    pk = (project_key or "?").strip().upper()
+    try:
+        with _mismatch_lock:
+            rec = _schema_mismatches.get(pk) or {"count": 0}
+            rec["detail"] = detail
+            rec["count"] = rec.get("count", 0) + 1
+            rec["last_ts"] = time.time()
+            _schema_mismatches[pk] = rec
+            if len(_schema_mismatches) > _MAX_MISMATCH_PROJECTS:
+                oldest = min(_schema_mismatches, key=lambda k: _schema_mismatches[k]["last_ts"])
+                _schema_mismatches.pop(oldest, None)
+    except Exception:  # noqa: BLE001 — telemetry must never break enrichment
+        pass
+
+
+def schema_mismatches() -> list[dict]:
+    """Recent schema-mismatch flags, most-recent first."""
+    with _mismatch_lock:
+        return [{"project": pk, **rec} for pk, rec in
+                sorted(_schema_mismatches.items(), key=lambda kv: kv[1]["last_ts"], reverse=True)]
+
 
 def _check_jira() -> tuple[bool, str]:
     """Authenticated reachability of the Jira API via GET /myself."""
@@ -195,6 +227,7 @@ def triage_health(force: bool = False) -> dict:
         },
         "customers": customers,
         "summary": summary,
+        "schema_mismatches": schema_mismatches(),
         "checked_at": now,
         "cached": False,
     }

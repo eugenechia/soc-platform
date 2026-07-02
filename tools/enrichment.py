@@ -19,6 +19,8 @@ from urllib.parse import urlparse
 
 import httpx
 
+from tools.jira_schema import default_schema
+
 logger = logging.getLogger(__name__)
 
 JIRA_URL = os.environ.get("JIRA_URL", "").rstrip("/")
@@ -49,7 +51,7 @@ ENTITY_FIELD_IDS = (
 )
 
 
-def has_entity_data(fields: dict) -> bool:
+def has_entity_data(fields: dict, schema=None) -> bool:
     """Return True if any Sentinel-style entity custom field is non-empty.
 
     Used by the webhook poller to detect when a Service Desk request form has
@@ -57,7 +59,7 @@ def has_entity_data(fields: dict) -> bool:
     seconds after the issue_created event fires)."""
     if not fields:
         return False
-    for fid in ENTITY_FIELD_IDS:
+    for fid in (schema or default_schema()).entity_field_ids():
         val = fields.get(fid)
         if val is None:
             continue
@@ -270,19 +272,21 @@ def _split_entity_values(adf_field, kind: str = "generic") -> list[str]:
     return [p.strip() for p in parts if p.strip()]
 
 
-def extract_iocs_from_entity_fields(fields: dict) -> list[dict]:
+def extract_iocs_from_entity_fields(fields: dict, schema=None) -> list[dict]:
     """Read Sentinel-style structured entity custom fields and produce typed IOCs.
 
     Returns the same shape as extract_iocs(): a list of
     {"type": "ip"|"domain"|"hash", "subtype": str, "value": str}.
 
-    Field IDs are env-configurable via JIRA_FIELD_*_ENTITIES.
+    Entity field IDs come from the resolved per-customer `schema`; when None the
+    global defaults (SCDM) are used, so existing callers behave identically.
     """
+    sch = schema or default_schema()
     seen: set[str] = set()
     iocs: list[dict] = []
 
     # IP Address Entities
-    for val in _split_entity_values(fields.get(_FIELD_IP_ENTITIES), "ip"):
+    for val in _split_entity_values(fields.get(sch.entity_fields["ip"]), "ip"):
         v = val.lower()
         if v in seen or _is_private_ip(val):
             continue
@@ -294,7 +298,7 @@ def extract_iocs_from_entity_fields(fields: dict) -> list[dict]:
         iocs.append({"type": "ip", "subtype": "ipv6" if _ip.version == 6 else "ipv4", "value": val})
 
     # Host Entities and DNS Entities → both treated as domains
-    for field_id, _kind in ((_FIELD_HOST_ENTITIES, "host"), (_FIELD_DNS_ENTITIES, "dns")):
+    for field_id, _kind in ((sch.entity_fields["host"], "host"), (sch.entity_fields["dns"], "dns")):
         for val in _split_entity_values(fields.get(field_id), _kind):
             v = val.lower()
             if v in seen or _is_allowlisted_domain(v):
@@ -306,7 +310,7 @@ def extract_iocs_from_entity_fields(fields: dict) -> list[dict]:
             iocs.append({"type": "domain", "subtype": "fqdn", "value": v})
 
     # URL Entities → extract host
-    for val in _split_entity_values(fields.get(_FIELD_URL_ENTITIES), "url"):
+    for val in _split_entity_values(fields.get(sch.entity_fields["url"]), "url"):
         try:
             host = urlparse(val if "://" in val else f"http://{val}").hostname
         except Exception:
@@ -320,7 +324,7 @@ def extract_iocs_from_entity_fields(fields: dict) -> list[dict]:
         iocs.append({"type": "domain", "subtype": "fqdn", "value": h})
 
     # FileHash Entities → classify by length
-    for val in _split_entity_values(fields.get(_FIELD_HASH_ENTITIES), "hash"):
+    for val in _split_entity_values(fields.get(sch.entity_fields["hash"]), "hash"):
         v = val.lower()
         if v in seen:
             continue
@@ -1317,7 +1321,8 @@ def remove_jira_label(ticket_key: str, label: str) -> bool:
 def enrich_ticket(ticket_key: str, fields: dict,
                   historical: dict | None = None,
                   rag_info: dict | None = None,
-                  kql_evidence: dict | None = None) -> dict:
+                  kql_evidence: dict | None = None,
+                  schema=None) -> dict:
     """Full enrichment pipeline for one Jira ticket.
 
     Reads typed Sentinel-style entity fields first (the canonical IOC source),
@@ -1342,12 +1347,14 @@ def enrich_ticket(ticket_key: str, fields: dict,
     failure where bad retrievals confused the model).
     """
     from tools.secrets import get_secret
+    from tools.jira_schema import detect_schema_mismatch
 
+    sch = schema or default_schema()
     summary = fields.get("summary") or ""
     desc_text = _extract_adf_text(fields.get("description"))
 
     # Primary source: typed entity fields (canonical, populated by Sentinel)
-    entity_iocs = extract_iocs_from_entity_fields(fields)
+    entity_iocs = extract_iocs_from_entity_fields(fields, sch)
 
     # Fallback source: regex over free text (catches analyst-pasted IOCs)
     regex_iocs = extract_iocs(f"{summary}\n{desc_text}")
@@ -1364,6 +1371,19 @@ def enrich_ticket(ticket_key: str, fields: dict,
         "enrich_ticket(%s): %d IOCs total (entity=%d, regex-fallback=%d)",
         ticket_key, len(iocs), len(entity_iocs), len(regex_iocs),
     )
+
+    # Fail-LOUD: a public IP or file hash present in the ticket but 0 IOCs
+    # extracted almost always means this customer's entity field mapping is
+    # wrong. Surface it (log + health signal) instead of silently triaging blind.
+    schema_warning = detect_schema_mismatch(fields, sch, iocs)
+    if schema_warning:
+        logger.warning("enrich_ticket(%s): SCHEMA MISMATCH — %s (suspect fields: %s)",
+                       ticket_key, schema_warning["detail"], schema_warning.get("suspect_fields"))
+        try:
+            from tools.triage_health import record_schema_mismatch
+            record_schema_mismatch(ticket_key.split("-")[0], schema_warning["detail"])
+        except Exception:
+            pass
 
     # Cap SOCRadar lookups per ticket (default 5). The API has a 100/day budget
     # and a 5-per-minute rate limit; calling it on every IOC of a 16-IOC ticket

@@ -192,18 +192,11 @@ def _normalize_severity(severity: str) -> str:
 # LLM Triage call in routes/webhook.py may override this baseline if its
 # confidence threshold is met. Returns None for unknown inputs so the caller
 # can skip the priority update rather than guess.
-_SEVERITY_TO_PRIORITY = {
-    "critical":      "Highest",
-    "high":          "High",
-    "medium":        "Medium",
-    "low":           "Low",
-    "informational": "Lowest",
-    "lowest":        "Lowest",
-    "sev-0":         "Highest",
-    "sev-1":         "High",
-    "sev-2":         "Medium",
-    "sev-3":         "Low",
-}
+# Canonical severity->priority map lives in tools/jira_schema.py (single source
+# of truth, also used by per-customer schema resolution). Imported here so
+# jira_client.severity_to_priority stays available for non-webhook callers
+# without a second copy that can drift.
+from tools.jira_schema import _DEFAULT_SEVERITY_MAP as _SEVERITY_TO_PRIORITY
 
 
 def severity_to_priority(severity: str) -> str | None:
