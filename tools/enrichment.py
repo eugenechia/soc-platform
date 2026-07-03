@@ -509,6 +509,22 @@ def _ip_origin_lines(vt: dict | None, ab: dict | None) -> list[str]:
     return out
 
 
+def _append_insights_section(lines: list[str], ioc_results: list[dict] | None) -> None:
+    """Improvement #2 (2026-07-03): inject the AI web-research 'Additional Insights'
+    section for malicious IOCs. No-op unless a malicious IOC carries an ``insights``
+    note (only populated when IOC_INSIGHTS_ENABLED is on)."""
+    items = [((r.get("ioc") or {}).get("value", ""), r.get("insights"))
+             for r in (ioc_results or [])
+             if r.get("verdict") == "malicious" and r.get("insights")]
+    if not items:
+        return
+    lines.append("Additional Insights (Open-Source Web Research):")
+    for value, text in items:
+        lines.append(f"  [{value}]")
+        lines.append(f"    {text}")
+    lines.append("")
+
+
 def _append_mitre_section(lines: list[str], mitre_result: dict | None) -> None:
     """Inject MITRE ATT&CK section into lines in-place. No-op if result is absent."""
     if not mitre_result:
@@ -785,6 +801,7 @@ def _build_comment(ioc_results: list[dict], overall_verdict: str, action_taken: 
     _append_customer_knowledge_section(lines, rag_info)
     _append_sentinel_evidence_section(lines, kql_evidence)
     _append_historical_section(lines, historical)
+    _append_insights_section(lines, ioc_results)
     _append_mitre_section(lines, mitre_result)
     lines.append(f"VERDICT: {verdict_display}")
     lines.append(f"AUTO-TRIAGE: {action_taken}")
@@ -956,6 +973,21 @@ def _adf_origin_rows(vt: dict | None, ab: dict | None) -> list[list]:
         rows.append(["Reverse DNS", f"{first}{suffix}"])
 
     return rows
+
+
+def _adf_insights_block(ioc_results: list[dict] | None) -> list[dict]:
+    """Improvement #2 (2026-07-03): ADF 'Additional Insights' section for malicious
+    IOCs. Returns [] unless a malicious IOC carries an ``insights`` note."""
+    from tools import adf
+    items = [((r.get("ioc") or {}).get("value", ""), r.get("insights"))
+             for r in (ioc_results or [])
+             if r.get("verdict") == "malicious" and r.get("insights")]
+    if not items:
+        return []
+    blocks = [adf.heading(3, "Additional Insights (Open-Source Web Research)")]
+    for value, text in items:
+        blocks.append(adf.paragraph(adf.text(f"{value} — ", bold=True), adf.text(text)))
+    return blocks
 
 
 def _adf_mitre_block(mitre_result: dict | None) -> list[dict]:
@@ -1137,6 +1169,7 @@ def _build_comment_adf(ioc_results: list[dict], overall_verdict: str, action_tak
     blocks.extend(_adf_customer_knowledge_block(rag_info))
     blocks.extend(_adf_sentinel_block(kql_evidence))
     blocks.extend(_adf_historical_block(historical))
+    blocks.extend(_adf_insights_block(ioc_results))
     blocks.extend(_adf_mitre_block(mitre_result))
 
     return adf.doc(*blocks)
@@ -1415,6 +1448,23 @@ def enrich_ticket(ticket_key: str, fields: dict,
         except Exception as _e:
             logger.warning("enrich_ticket(%s): MITRE mapping failed (%s) — skipping",
                            ticket_key, _e)
+
+    # Improvement #2 (2026-07-03): AI web-research insights for MALICIOUS IOCs.
+    # For each IOC the vendors confirmed malicious, search the open web + have the
+    # LLM write a short GROUNDED note, attached as ioc_result["insights"] and
+    # rendered in an "Additional Insights" section. Killswitch IOC_INSIGHTS_ENABLED
+    # (default off); capped per ticket; failure-isolated (never breaks the comment).
+    if os.environ.get("IOC_INSIGHTS_ENABLED", "false").lower() == "true":
+        try:
+            from tools.ioc_insights import fetch_insights_for_malicious
+            insights_map = fetch_insights_for_malicious(ioc_results)
+            for r in ioc_results:
+                val = (r.get("ioc") or {}).get("value")
+                if r.get("verdict") == "malicious" and val in insights_map:
+                    r["insights"] = insights_map[val]
+        except Exception:
+            logger.exception("enrich_ticket(%s): IOC insights synthesis failed — skipping",
+                             ticket_key)
 
     l1_id = get_secret("JIRA_L1_ACCOUNT_ID")
     l2_id = get_secret("JIRA_L2_ACCOUNT_ID")
