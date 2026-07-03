@@ -409,6 +409,38 @@ def determine_verdict(results: list[dict]) -> str:
     return "clean"
 
 
+def decide_whitelist_override(overall_verdict: str, ioc_results: list[dict],
+                              whitelist_matches: list[dict]) -> tuple[str, bool, list[dict]]:
+    """Improvement #3 (2026-07-03) — pure decision for the Confluence-whitelist
+    benign override. Returns ``(new_verdict, override_applied, conflict_matches)``.
+
+    Rules (caller gates on WHITELIST_VERDICT_OVERRIDE_ENABLED):
+    - Only whitelist matches with ``whitelist_context`` True count (precision guard).
+    - **Reputation wins on conflict:** a 'malicious' verdict is NEVER overridden;
+      instead we return the whitelisted-but-malicious matches as `conflict_matches`.
+    - Otherwise force 'clean' ONLY when EVERY non-clean IOC is whitelist-approved,
+      so an unexplained unknown/suspicious IOC can't be silently suppressed.
+    """
+    approved = {str(m.get("ioc", "")).lower() for m in (whitelist_matches or [])
+                if m.get("whitelist_context")}
+    if not approved:
+        return overall_verdict, False, []
+
+    def _val(r):
+        return str((r.get("ioc") or {}).get("value", "")).lower()
+
+    if overall_verdict == "malicious":
+        conflict = [m for m in whitelist_matches if m.get("whitelist_context")
+                    and any(_val(r) == str(m.get("ioc", "")).lower()
+                            and r.get("verdict") == "malicious" for r in ioc_results)]
+        return overall_verdict, False, conflict
+
+    unresolved = [r for r in ioc_results if r.get("verdict") != "clean"]
+    if all(_val(r) in approved for r in unresolved):
+        return "clean", True, []
+    return overall_verdict, False, []
+
+
 def _rep_empty_label(source: str) -> str:
     """Label for a reputation source that returned no result. Distinguishes a
     genuinely-absent API key ("Not configured") from a key that IS present but
@@ -671,6 +703,83 @@ def _append_whitelist_match_section(lines: list[str], matches: list[dict] | None
     lines.append("")
 
 
+# ─── Improvement #3 (2026-07-03) — known-activity advisory + whitelist conflict ──
+
+def _known_activity_top_chunk(rag_info: dict | None):
+    """Return (snippet, source, score) for the single strongest customer-Confluence
+    chunk when it clears KNOWN_ACTIVITY_ADVISORY_MIN_SCORE, else None. Gated by
+    KNOWN_ACTIVITY_ADVISORY_ENABLED. Used only for the advisory box — never the verdict."""
+    if os.environ.get("KNOWN_ACTIVITY_ADVISORY_ENABLED", "false").lower() != "true":
+        return None
+    if not rag_info:
+        return None
+    try:
+        min_score = float(os.environ.get("KNOWN_ACTIVITY_ADVISORY_MIN_SCORE", "0.75"))
+    except ValueError:
+        min_score = 0.75
+    best = None
+    for c in (rag_info.get("chunks") or []):
+        try:
+            sc = float(c.get("score") or 0.0)
+        except (TypeError, ValueError):
+            continue
+        if sc >= min_score and (best is None or sc > best[2]):
+            text = " ".join((c.get("text") or "").split())
+            if len(text) > 240:
+                text = text[:237] + "..."
+            best = (text, c.get("source") or "Confluence", sc)
+    return best
+
+
+def _append_known_activity_advisory(lines: list[str], rag_info: dict | None) -> None:
+    top = _known_activity_top_chunk(rag_info)
+    if not top:
+        return
+    snippet, source, score = top
+    lines.append("KNOWN ACTIVITY (Customer Confluence) — this alert pattern is documented as known/expected:")
+    lines.append(f"  ► [{source}] {snippet} (score {score:.2f})")
+    lines.append("")
+
+
+def _append_whitelist_conflict(lines: list[str], whitelist_conflict: list[dict] | None) -> None:
+    if not whitelist_conflict:
+        return
+    for m in whitelist_conflict:
+        lines.append(f"WHITELIST CONFLICT: {m.get('ioc', '')} is whitelisted in Confluence but "
+                     f"flagged malicious by threat intel — treated as True-Positive (possible "
+                     f"stale whitelist or compromised asset); verify.")
+    lines.append("")
+
+
+def _adf_known_activity_block(rag_info: dict | None) -> list[dict]:
+    top = _known_activity_top_chunk(rag_info)
+    if not top:
+        return []
+    from tools import adf
+    snippet, source, score = top
+    return [adf.panel(
+        "info",
+        adf.paragraph(adf.text("Known Activity (Customer Confluence) — this alert pattern is "
+                               "documented as known/expected.", bold=True)),
+        adf.paragraph(adf.text(f"[{source}] ", bold=True), adf.text(f"{snippet} (score {score:.2f})")),
+    )]
+
+
+def _adf_whitelist_conflict_block(whitelist_conflict: list[dict] | None) -> list[dict]:
+    if not whitelist_conflict:
+        return []
+    from tools import adf
+    paras = []
+    for m in whitelist_conflict:
+        paras.append(adf.paragraph(
+            adf.text("WHITELIST CONFLICT: ", bold=True),
+            adf.text(f"{m.get('ioc', '')} is whitelisted in Confluence but flagged malicious by "
+                     f"threat intel — treated as True-Positive (possible stale whitelist or "
+                     f"compromised asset); verify."),
+        ))
+    return [adf.panel("warning", *paras)]
+
+
 def _build_comment(ioc_results: list[dict], overall_verdict: str, action_taken: str,
                    mitre_result: dict | None = None,
                    historical: dict | None = None,
@@ -678,8 +787,11 @@ def _build_comment(ioc_results: list[dict], overall_verdict: str, action_taken: 
                    kql_evidence: dict | None = None,
                    recommendation: str | None = None,
                    whitelist_matches: list[dict] | None = None,
+                   whitelist_conflict: list[dict] | None = None,
                    ticket_key: str = "") -> str:
-    lines = ["=== L1 Triage Report (Automated) ===", ""]
+    lines: list[str] = []
+    _append_known_activity_advisory(lines, rag_info)   # Improvement #3: top advisory box
+    lines += ["=== L1 Triage Report (Automated) ===", ""]
     verdict_display = _VERDICT_LABEL.get(overall_verdict, overall_verdict.upper())
 
     if not ioc_results:
@@ -699,6 +811,7 @@ def _build_comment(ioc_results: list[dict], overall_verdict: str, action_taken: 
         _append_sentinel_evidence_section(lines, kql_evidence)
         _append_historical_section(lines, historical)
         _append_mitre_section(lines, mitre_result)
+        _append_whitelist_conflict(lines, whitelist_conflict)
         lines += [
             f"VERDICT: {verdict_display}",
             f"AUTO-TRIAGE: {action_taken}",
@@ -803,6 +916,7 @@ def _build_comment(ioc_results: list[dict], overall_verdict: str, action_taken: 
     _append_historical_section(lines, historical)
     _append_insights_section(lines, ioc_results)
     _append_mitre_section(lines, mitre_result)
+    _append_whitelist_conflict(lines, whitelist_conflict)
     lines.append(f"VERDICT: {verdict_display}")
     lines.append(f"AUTO-TRIAGE: {action_taken}")
     if recommendation:
@@ -1139,6 +1253,7 @@ def _build_comment_adf(ioc_results: list[dict], overall_verdict: str, action_tak
                       kql_evidence: dict | None = None,
                       recommendation: str | None = None,
                       whitelist_matches: list[dict] | None = None,
+                      whitelist_conflict: list[dict] | None = None,
                       ticket_key: str = "") -> dict:
     """Return a full ADF document for the enrichment comment. Same input
     signature as _build_comment() so callers don't change."""
@@ -1159,10 +1274,13 @@ def _build_comment_adf(ioc_results: list[dict], overall_verdict: str, action_tak
             adf.paragraph(adf.text("RECOMMENDED ACTION: ", bold=True), adf.text(recommendation))
         )
 
-    blocks: list[dict] = [
-        adf.panel(panel_type, *verdict_paras),
-        adf.heading(2, "L1 Triage Report (Automated)"),
-    ]
+    # Improvement #3: known-activity advisory as the FIRST block (top of comment),
+    # verdict panel next, then the whitelist/threat-intel conflict warning (if any).
+    blocks: list[dict] = []
+    blocks.extend(_adf_known_activity_block(rag_info))
+    blocks.append(adf.panel(panel_type, *verdict_paras))
+    blocks.extend(_adf_whitelist_conflict_block(whitelist_conflict))
+    blocks.append(adf.heading(2, "L1 Triage Report (Automated)"))
 
     blocks.extend(_adf_ioc_block(ioc_results, ticket_key))
     blocks.extend(_adf_whitelist_match_block(whitelist_matches))
@@ -1437,6 +1555,44 @@ def enrich_ticket(ticket_key: str, fields: dict,
                     ticket_key, socradar_used, len(iocs))
     overall_verdict = determine_verdict(ioc_results)
 
+    # Phase 5e (2026-06-16) — literal-substring IOC lookup in the customer's
+    # Confluence chunks. Hoisted here (Improvement #3, 2026-07-03) so it can DRIVE
+    # the verdict, not just render in the comment. Killswitch-gated; [] on failure.
+    whitelist_matches: list[dict] = []
+    cid = ""
+    try:
+        from tools.whitelist_match import find_direct_matches
+        from tools.customers import find_customer_by_jira_project
+        project_key = ticket_key.split("-")[0] if ticket_key else ""
+        cust = find_customer_by_jira_project(project_key) if project_key else None
+        cid = (cust or {}).get("id", "")
+        ioc_list = [r["ioc"] for r in ioc_results if isinstance(r, dict) and r.get("ioc")]
+        whitelist_matches = find_direct_matches(customer_id=cid, iocs=ioc_list)
+    except Exception:
+        logger.exception("whitelist_match dispatch failed for %s", ticket_key)
+        whitelist_matches = []
+
+    # Improvement #3 (2026-07-03): a Confluence WHITELIST entry drives the verdict.
+    # Benign-override only — an explicit, precision-guarded (whitelist_context)
+    # whitelist entry forces Benign-Positive. Reputation WINS on conflict: a
+    # vendor-malicious entity stays True-Positive; we surface the conflict instead.
+    # Killswitch WHITELIST_VERDICT_OVERRIDE_ENABLED (default off); failure-isolated.
+    whitelist_conflict: list[dict] = []
+    whitelist_override_applied = False
+    if os.environ.get("WHITELIST_VERDICT_OVERRIDE_ENABLED", "false").lower() == "true":
+        try:
+            overall_verdict, whitelist_override_applied, whitelist_conflict = \
+                decide_whitelist_override(overall_verdict, ioc_results, whitelist_matches)
+            if whitelist_override_applied:
+                logger.info("enrich_ticket(%s): verdict overridden to benign — "
+                            "entity whitelisted in customer Confluence", ticket_key)
+            elif whitelist_conflict:
+                logger.info("enrich_ticket(%s): whitelist/threat-intel conflict on %d entit(y/ies) "
+                            "— kept True-Positive (reputation wins)", ticket_key, len(whitelist_conflict))
+        except Exception:
+            logger.exception("enrich_ticket(%s): whitelist verdict override failed — "
+                             "keeping reputation verdict", ticket_key)
+
     # Phase 2 (2026-06-10): MITRE ATT&CK mapping — runs after full reputation
     # picture is available so SOCRadar categories can seed the LLM prompt.
     # Wrapped in try/except: any failure is logged and silently skipped.
@@ -1504,21 +1660,12 @@ def enrich_ticket(ticket_key: str, fields: dict,
             action_taken += " (JIRA_L2_ACCOUNT_ID not configured — assignment skipped)"
             logger.warning("JIRA_L2_ACCOUNT_ID not set — cannot assign %s to L2", ticket_key)
 
-    # Phase 5e (2026-06-16) — literal-substring IOC lookup in the customer's
-    # Confluence chunks. Sidesteps vector-RAG's weakness on tabular whitelist
-    # data. Killswitch-gated; returns [] silently on any failure.
-    whitelist_matches: list[dict] = []
-    try:
-        from tools.whitelist_match import find_direct_matches
-        from tools.customers import find_customer_by_jira_project
-        project_key = ticket_key.split("-")[0] if ticket_key else ""
-        cust = find_customer_by_jira_project(project_key) if project_key else None
-        cid = (cust or {}).get("id", "")
-        ioc_list = [r["ioc"] for r in ioc_results if isinstance(r, dict) and r.get("ioc")]
-        whitelist_matches = find_direct_matches(customer_id=cid, iocs=ioc_list)
-    except Exception:
-        logger.exception("whitelist_match dispatch failed for %s", ticket_key)
-        whitelist_matches = []
+    # Improvement #3: make the whitelist-driven benign decision explicit to the analyst.
+    if whitelist_override_applied:
+        action_taken += (" Benign because the entity is whitelisted in the customer's "
+                         "Confluence knowledge base.")
+
+    # (whitelist_matches computed earlier — hoisted so it can drive the verdict.)
 
     # Phase 6 (2026-06-19) — synthesise a recommended next-action from ALL the
     # evidence assembled above and render it as a 'RECOMMENDED ACTION' line
@@ -1584,6 +1731,7 @@ def enrich_ticket(ticket_key: str, fields: dict,
                                           mitre_result, historical, rag_info, kql_evidence,
                                           recommendation=recommendation,
                                           whitelist_matches=whitelist_matches,
+                                          whitelist_conflict=whitelist_conflict,
                                           ticket_key=ticket_key)
             posted = post_jira_comment_adf(ticket_key, adf_doc)
         except Exception as e:
@@ -1594,6 +1742,7 @@ def enrich_ticket(ticket_key: str, fields: dict,
                                        mitre_result, historical, rag_info, kql_evidence,
                                        recommendation=recommendation,
                                        whitelist_matches=whitelist_matches,
+                                       whitelist_conflict=whitelist_conflict,
                                        ticket_key=ticket_key)
         post_jira_comment(ticket_key, comment_text)
 

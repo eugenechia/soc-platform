@@ -29,11 +29,30 @@ logger = logging.getLogger(__name__)
 # "ip", "test") would generate noise without value.
 MIN_VALUE_LEN = int(os.environ.get("WHITELIST_MATCH_MIN_VALUE_LEN", "5"))
 
+# Approval keywords used to tell "this IOC is on an APPROVED/whitelist page" from
+# "this IOC is merely mentioned (e.g. in a past incident write-up)". Only strong,
+# unambiguous approval terms — deliberately NOT generic words like "benign" or
+# "expected" that show up in incident narratives. Improvement #3 (2026-07-03):
+# `whitelist_context` gates whether a match may DRIVE the verdict to benign.
+_APPROVAL_KEYWORDS = (
+    "whitelist", "white list", "allowlist", "allow-list", "allow list",
+    "allowlisted", "allow-listed", "approved", "known good", "known-good",
+    "permitted", "sanctioned",
+)
+
+
+def _has_approval_keyword(text: str) -> bool:
+    low = (text or "").lower()
+    return any(k in low for k in _APPROVAL_KEYWORDS)
+
 
 def find_direct_matches(customer_id: str, iocs: list[dict]) -> list[dict]:
     """Substring-search the customer's Confluence chunks for each IOC value.
 
-    Returns list of matches: ``[{ioc, ioc_type, source, page_id, snippet}]``.
+    Returns list of matches: ``[{ioc, ioc_type, source, page_id, snippet,
+    whitelist_context}]`` where ``whitelist_context`` is True when the matched
+    chunk contains an approval keyword (whitelist / approved / allow-listed / …) —
+    i.e. the IOC is on an actual approved list, not merely mentioned.
     Empty list when:
       - killswitch off
       - no customer_id
@@ -97,6 +116,9 @@ def find_direct_matches(customer_id: str, iocs: list[dict]) -> list[dict]:
                 "source": source,
                 "page_id": page_id,
                 "snippet": snippet,
+                # Precision guard: does the FULL matched chunk read like an approval
+                # list, or just a mention? Only True lets this drive the verdict.
+                "whitelist_context": _has_approval_keyword(doc_text),
             })
             seen.add(key)
             break  # one match per IOC value
