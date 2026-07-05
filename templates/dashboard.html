@@ -189,10 +189,10 @@
       grid-template-columns: minmax(0, 2.2fr) minmax(340px, 1fr);
       grid-template-rows: auto minmax(0, 1fr) minmax(180px, 27%);
     }
-    .metric-row { grid-column: 1 / -1; }
+    .metric-row   { grid-column: 1; grid-row: 1; }
     .feed-panel   { grid-column: 1; grid-row: 2; }
     .volume-panel { grid-column: 1; grid-row: 3; }
-    .chat-panel   { grid-column: 2; grid-row: 2 / span 2; }
+    .chat-panel   { grid-column: 2; grid-row: 1 / -1; }
 
     @media (max-width: 1099px) {
       body { overflow: auto; height: auto; }
@@ -205,7 +205,7 @@
     }
 
     /* ── Metric cards ────────────────────────────────────── */
-    .metric-row { display: grid; grid-template-columns: repeat(auto-fit, minmax(190px, 1fr)); gap: 14px; }
+    .metric-row { display: grid; grid-template-columns: repeat(auto-fit, minmax(160px, 1fr)); gap: 14px; }
     .metric-card {
       background: var(--bg-panel); border: 1px solid var(--border);
       border-radius: var(--radius); padding: 15px 17px; box-shadow: var(--shadow);
