@@ -50,6 +50,7 @@
       height: 100vh;
       position: sticky;
       top: 0;
+      overflow-y: auto;
     }
     .sidebar .brand {
       display: flex;
@@ -101,20 +102,21 @@
       margin-bottom: 7px;
     }
     .integration-row {
-      display: flex;
-      align-items: center;
-      gap: 8px;
-      font-size: 0.8rem;
-      padding: 3px 0;
-      color: var(--text-primary);
+      display: grid;
+      grid-template-columns: 9px 1fr;
+      column-gap: 10px;
+      align-items: start;
+      padding: 8px 0;
     }
+    .integration-row + .integration-row { border-top: 1px solid var(--border); }
     .integration-row .dot {
-      width: 8px; height: 8px; border-radius: 50%;
+      width: 9px; height: 9px; border-radius: 50%; margin-top: 4px;
       background: var(--text-muted); flex-shrink: 0;
     }
     .integration-row .dot.ok { background: var(--green); box-shadow: 0 0 6px rgba(34,197,94,0.55); }
     .integration-row .dot.bad { background: var(--red); box-shadow: 0 0 6px rgba(239,68,68,0.55); }
-    .integration-row .st { margin-left: auto; font-size: 0.7rem; color: var(--text-muted); }
+    .integration-row .name { font-size: 0.82rem; font-weight: 500; color: var(--text-primary); line-height: 1.25; }
+    .integration-row .st { font-size: 0.69rem; color: var(--text-muted); line-height: 1.25; margin-top: 1px; }
     .sys-health {
       display: flex; align-items: center; gap: 9px;
       font-size: 0.8rem; padding: 9px 11px;
@@ -429,7 +431,7 @@
     <div>
       <div class="side-section-title">Integration Status</div>
       <div id="integrationList">
-        <div class="integration-row"><span class="dot"></span>Loading…</div>
+        <div class="integration-row"><span class="dot"></span><div><div class="name">Loading…</div></div></div>
       </div>
     </div>
     <div>
@@ -743,8 +745,11 @@
       document.getElementById('integrationList').innerHTML =
         (s.integrations || []).map(i => `
           <div class="integration-row">
-            <span class="dot ${i.ok ? 'ok' : 'bad'}"></span>${esc(i.name)}
-            <span class="st">${esc(i.ok ? (i.detail || 'Connected') : (i.detail || 'Down'))}</span>
+            <span class="dot ${i.ok ? 'ok' : 'bad'}"></span>
+            <div>
+              <div class="name">${esc(i.name)}</div>
+              <div class="st">${esc(i.ok ? (i.detail || 'Connected') : (i.detail || 'Down'))}</div>
+            </div>
           </div>`).join('');
       const health = document.getElementById('sysHealth');
       health.classList.toggle('bad', !s.health.ok);
