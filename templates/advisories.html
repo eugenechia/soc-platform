@@ -1,5 +1,5 @@
 <!DOCTYPE html>
-<html lang="en">
+<html lang="en" data-theme="dark">
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
@@ -19,12 +19,12 @@
       --radius: 8px; --radius-sm: 6px;
     }
     [data-theme="dark"] {
-      --bg-base: #1A1A2E; --bg-surface: #25253E; --bg-raised: #32324E;
-      --border: #3A3A5C; --text-primary: #E8E8F0; --text-muted: #9CA3C2;
-      --accent: #7C3AED; --accent-hover: #6D28D9; --accent-light: #2D2050;
-      --success: #34D399; --success-light: #1A3A2A;
-      --danger: #F87171; --danger-light: #3A1A1A;
-      --warning: #FBBF24; --warning-light: #3A2A0A;
+      --bg-base: #0E1320; --bg-surface: #161C2C; --bg-raised: #1E2638;
+      --border: #3A4A73; --text-primary: #E6EAF2; --text-muted: #8A94AD;
+      --accent: #3B82F6; --accent-hover: #2563EB; --accent-light: #16233F;
+      --success: #22C55E; --success-light: #142A1E;
+      --danger: #EF4444; --danger-light: #2A1520;
+      --warning: #F59E0B; --warning-light: #2A2210;
       --shadow: 0 1px 3px rgba(0,0,0,0.3), 0 1px 2px rgba(0,0,0,0.2);
     }
 
@@ -254,7 +254,7 @@
         <a href="/admin/history">Report History</a>
         <a href="/admin/schedules">Schedules</a>
       </nav>
-      <div class="theme-toggle" onclick="toggleTheme()">
+      <div class="theme-toggle" onclick="toggleTheme()" style="display:none;">
         <span id="lightIcon" class="active">&#9788;</span>
         <span id="darkIcon">&#9790;</span>
       </div>
@@ -384,7 +384,7 @@
       const current = document.documentElement.getAttribute('data-theme') || 'light';
       applyTheme(current === 'light' ? 'dark' : 'light');
     }
-    applyTheme(localStorage.getItem('theme') || 'dark');
+    applyTheme('dark');
 
     // ── State ────────────────────────────────────────────────────────────────
     let selectedCustomerId = null;
