@@ -522,6 +522,14 @@
     }
     .btn-export-docx:disabled { opacity: 0.45; cursor: not-allowed; }
   </style>
+  {% if embed %}
+  <style>
+    /* Embedded in the L2 dashboard chat panel: the dashboard supplies the
+       page chrome, so hide this page's own header. Everything else
+       (SOCRadar connect status, prompts, chat) behaves identically. */
+    header { display: none; }
+  </style>
+  {% endif %}
 </head>
 <body>
 
@@ -552,7 +560,7 @@
   <!-- Auth banner — only shown when disconnected -->
   <div class="auth-banner" id="authBanner">
     <span>Not connected to SOCRadar — authentication required before querying</span>
-    <a class="btn-connect" href="/investigate/oauth/start">Connect to SOCRadar</a>
+    <a class="btn-connect" href="/investigate/oauth/start"{% if embed %} target="_top"{% endif %}>Connect to SOCRadar</a>
   </div>
 
   <!-- Organisation overview -->

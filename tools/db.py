@@ -669,18 +669,25 @@ def touch_dashboard_ticket_after_action(ticket_key: str, **changed) -> None:
         )
 
 
-def load_dashboard_metrics(customer_id: str | None = None) -> dict:
-    """The four metric-card values, over the last N days (default 7):
+# Severity values that count toward the "Critical / High" card. Covers both
+# the standard tier names and the SCDM "Sev-N" convention (sev-0=Critical,
+# sev-1=High — see tools/jira_schema._DEFAULT_SEVERITY_MAP).
+_DASHBOARD_CRITICAL_SEVERITIES = ("critical", "sev-0", "high", "sev-1")
+
+
+def load_dashboard_metrics(customer_id: str | None = None,
+                           window_days: int | None = None) -> dict:
+    """The four metric-card values, over the last ``window_days`` days:
 
     - active:               tickets whose status is not terminal
-    - critical:             active tickets with severity Critical
+    - critical:             active tickets with Critical or High severity
     - avg_response_seconds: mean (first bot enrichment comment - created);
                             None when no ticket has an enrichment time yet
     - auto_resolved_pct:    Benign-Positive share of terminal tickets;
                             None when nothing is terminal yet
     """
     where = "created_at >= NOW() - make_interval(days => %s)"
-    params: list = [_DASHBOARD_METRICS_WINDOW_DAYS]
+    params: list = [window_days or _DASHBOARD_METRICS_WINDOW_DAYS]
     if customer_id:
         where += " AND customer_id = %s"
         params.append(customer_id)
@@ -689,7 +696,7 @@ def load_dashboard_metrics(customer_id: str | None = None) -> dict:
         SELECT
           COUNT(*) FILTER (WHERE LOWER(raw_status) NOT IN %s)      AS active,
           COUNT(*) FILTER (WHERE LOWER(raw_status) NOT IN %s
-                           AND LOWER(severity) = 'critical')       AS critical,
+                           AND LOWER(severity) IN %s)              AS critical,
           AVG(EXTRACT(EPOCH FROM (first_enrichment_at - created_at)))
             FILTER (WHERE first_enrichment_at IS NOT NULL
                     AND created_at IS NOT NULL)                    AS avg_response_seconds,
@@ -701,7 +708,10 @@ def load_dashboard_metrics(customer_id: str | None = None) -> dict:
     """
     terms = _DASHBOARD_TERMINAL_STATUSES or ("closed",)
     with _conn() as con:
-        row = con.execute(sql, (terms, terms, terms, terms, *params)).fetchone() or {}
+        row = con.execute(
+            sql,
+            (terms, terms, _DASHBOARD_CRITICAL_SEVERITIES, terms, terms, *params),
+        ).fetchone() or {}
 
     terminal = row.get("terminal") or 0
     avg_resp = row.get("avg_response_seconds")

@@ -72,7 +72,10 @@ PROMPT_TEMPLATES = {
 @investigate_bp.route("/")
 @require_login
 def index():
-    return render_template("investigate.html", user=session.get("user", {}))
+    # embed=1: rendered inside the L2 dashboard's chat panel iframe — the
+    # template hides its own page header (the dashboard provides the chrome).
+    return render_template("investigate.html", user=session.get("user", {}),
+                           embed=request.args.get("embed") == "1")
 
 
 # ── Query endpoints ─────────────────────────────────────────────────────────────

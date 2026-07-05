@@ -88,10 +88,17 @@ def api_metrics():
         return gate
     from tools import db
     try:
-        metrics = db.load_dashboard_metrics(_customer_id_param())
+        window = int(request.args.get("window", "7"))
+    except ValueError:
+        window = 7
+    if window not in (1, 7, 30):
+        window = 7
+    try:
+        metrics = db.load_dashboard_metrics(_customer_id_param(), window_days=window)
     except Exception:
         log.exception("dashboard metrics query failed")
         return jsonify({"error": "metrics unavailable"}), 500
+    metrics["window_days"] = window
     return jsonify(metrics)
 
 

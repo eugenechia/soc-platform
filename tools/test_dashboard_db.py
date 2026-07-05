@@ -133,19 +133,29 @@ else:
             if enriched_min_ago is not None else None,
         })
 
-    # 2 active (1 critical), 2 closed (1 benign) -> auto-resolved 50%
+    # 2 active (1 Critical + 1 High -> both count toward Critical/High),
+    # 2 closed (1 benign) -> auto-resolved 50%
     # response times: 5 min and 15 min -> avg 600s
     row("TST-1", "Open", "Critical", "TRUE-POSITIVE", 60, 55)     # 5 min response
     row("TST-2", "In Progress", "High", "PENDING", 50)
     row("TST-3", "Closed", "Low", "BENIGN-POSITIVE", 40, 25)      # 15 min response
     row("TST-4", "Closed", "Low", "TRUE-POSITIVE", 30)
+    # older than 7d: excluded from default window, included in 30d
+    row("TST-5", "Open", "Sev-1", "PENDING", 60 * 24 * 10)        # 10 days ago
 
     m = db.load_dashboard_metrics("test-cust")
-    check("active = 2", m["active"] == 2)
-    check("critical = 1", m["critical"] == 1)
+    check("active = 2 (7d window)", m["active"] == 2)
+    check("critical counts Critical+High = 2", m["critical"] == 2)
     check("avg response = 600s", m["avg_response_seconds"] is not None
           and abs(m["avg_response_seconds"] - 600) < 2)
     check("auto-resolved = 50%", m["auto_resolved_pct"] == 50.0)
+
+    m1 = db.load_dashboard_metrics("test-cust", window_days=1)
+    check("24h window narrows (active=2 created <1d)", m1["active"] == 2
+          and m1["critical"] == 2)
+    m30 = db.load_dashboard_metrics("test-cust", window_days=30)
+    check("30d window includes 10-day-old Sev-1 row",
+          m30["active"] == 3 and m30["critical"] == 3)
 
     feed = db.load_dashboard_feed("test-cust", limit=10)
     check("feed newest-first", [r["ticket_key"] for r in feed[:2]] == ["TST-4", "TST-3"])
