@@ -283,6 +283,16 @@
       color: var(--text-muted); font-size: 0.75rem; padding: 4px 10px;
       border-radius: 999px; cursor: pointer;
     }
+    .chat-actions { margin-left: auto; display: flex; gap: 8px; }
+    .chat-action-btn {
+      display: inline-flex; align-items: center; gap: 5px;
+      border: 1px solid var(--border); background: none;
+      color: var(--text-muted); font-size: 0.74rem; font-weight: 500;
+      padding: 4px 10px; border-radius: 999px; cursor: pointer;
+      transition: background 0.15s, color 0.15s;
+    }
+    .chat-action-btn:hover { background: var(--bg-raised); color: var(--text-primary); }
+    .chat-action-btn svg { flex-shrink: 0; }
 
     .feed-scroll { overflow: auto; flex: 1; min-height: 0; }
     table.feed { width: 100%; border-collapse: collapse; font-size: 0.84rem; }
@@ -506,7 +516,18 @@
     </div>
 
     <div class="panel chat-panel">
-      <div class="panel-head">AI Copilot</div>
+      <div class="panel-head">AI Copilot
+        <div class="chat-actions">
+          <button id="chatClear" class="chat-action-btn" type="button" title="Clear the conversation">
+            <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 6h18"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/></svg>
+            Clear
+          </button>
+          <button id="chatDownload" class="chat-action-btn" type="button" title="Download the conversation as a text file">
+            <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
+            Download
+          </button>
+        </div>
+      </div>
         <div class="chat-messages" id="chatMessages">
           <div class="chat-msg assistant">Ask me about your alerts or the threats behind them — for example: "What are the critical alerts today?", "Explain SCDM-727", or "What is CVE-2026-1234 and does it affect us?"</div>
         </div>
@@ -792,6 +813,7 @@
   const chatInput = document.getElementById('chatInput');
   const chatSend = document.getElementById('chatSend');
   const chatHistory = [];
+  const CHAT_GREETING = chatBox.innerHTML;   // captured for "Clear screen" reset
 
   function addMsg(role, text, pending) {
     const div = document.createElement('div');
@@ -843,6 +865,41 @@
   chatSend.addEventListener('click', sendChat);
   chatInput.addEventListener('keydown', (e) => {
     if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); sendChat(); }
+  });
+
+  // Clear screen — reset to the opening greeting and drop the history context.
+  document.getElementById('chatClear').addEventListener('click', () => {
+    chatBox.innerHTML = CHAT_GREETING;
+    chatHistory.length = 0;
+    chatInput.focus();
+  });
+
+  // Download chat — plain-text transcript of what's on screen.
+  document.getElementById('chatDownload').addEventListener('click', () => {
+    const rows = chatBox.querySelectorAll('.chat-msg');
+    const lines = [];
+    rows.forEach((el) => {
+      if (el.classList.contains('pending')) return;
+      const who = el.classList.contains('user') ? 'You' : 'Copilot';
+      lines.push(who + ': ' + el.textContent.trim());
+    });
+    if (!lines.length) return;
+    const now = new Date();
+    const stamp = now.toISOString().slice(0, 19).replace('T', ' ');
+    const custOpt = sel.options[sel.selectedIndex];
+    const header = 'SOC Platform — AI Copilot conversation\n'
+      + 'Exported: ' + stamp + '\n'
+      + 'Customer scope: ' + (custOpt ? custOpt.text : 'All customers') + '\n'
+      + '----------------------------------------\n\n';
+    const blob = new Blob([header + lines.join('\n\n') + '\n'], { type: 'text/plain' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = 'copilot-chat-' + now.toISOString().slice(0, 10) + '.txt';
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    URL.revokeObjectURL(url);
   });
 })();
 </script>
