@@ -99,6 +99,26 @@ def init_scheduler(app) -> None:
     else:
         logger.info("RAG auto-sync disabled via RAG_AUTO_SYNC_ENABLED env var.")
 
+    # L2 dashboard read-model sync (2026-07). Killswitch DASHBOARD_ENABLED
+    # defaults FALSE — ships dark. Read-only vs Jira; writes only the
+    # dashboard_tickets table. Registration failure never stops the scheduler.
+    _dashboard_enabled = os.environ.get("DASHBOARD_ENABLED", "false").lower() == "true"
+    if _dashboard_enabled:
+        try:
+            from tools.dashboard_sync import run_dashboard_sync
+            sync_minutes = int(os.environ.get("DASHBOARD_SYNC_INTERVAL_MIN", "5"))
+            _scheduler.add_job(
+                lambda: run_dashboard_sync(reason="cron"),
+                trigger="interval",
+                minutes=sync_minutes,
+                id="dashboard_sync",
+                replace_existing=True,
+                misfire_grace_time=120,
+            )
+            logger.info("Dashboard sync job registered (every %d min).", sync_minutes)
+        except Exception:
+            logger.exception("Failed to register dashboard_sync job — scheduler still starting")
+
     _scheduler.start()
     logger.info("Scheduler started — checking every 5 minutes for due reports.")
 
@@ -114,6 +134,19 @@ def init_scheduler(app) -> None:
             except Exception:
                 logger.exception("Initial RAG sync failed at startup")
         threading.Thread(target=_initial_rag_sync, daemon=True).start()
+
+    # Dashboard: immediate startup sync so the read-model isn't empty for up
+    # to one interval after a container restart. Same daemon-thread pattern
+    # as the RAG startup sync — never blocks app startup.
+    if _dashboard_enabled:
+        def _initial_dashboard_sync():
+            try:
+                from tools.dashboard_sync import run_dashboard_sync
+                logger.info("Dashboard sync: firing initial sync on startup")
+                run_dashboard_sync(reason="startup")
+            except Exception:
+                logger.exception("Initial dashboard sync failed at startup")
+        threading.Thread(target=_initial_dashboard_sync, daemon=True).start()
 
 
 def _check_due_schedules(app) -> None:

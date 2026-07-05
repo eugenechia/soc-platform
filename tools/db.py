@@ -34,6 +34,11 @@ _REPORTS_DIR = os.path.join(
 _pool: psycopg2.pool.ThreadedConnectionPool | None = None
 _pool_lock = threading.Lock()
 
+# Set True by init_db() once the dashboard read-model table exists. Dashboard
+# code checks this before querying; False means the DDL failed at startup (the
+# app still boots — the dashboard is optional, L1 triage is not).
+dashboard_table_ok = False
+
 
 def _get_pool() -> psycopg2.pool.ThreadedConnectionPool:
     """Lazily create the connection pool on first use.
@@ -180,6 +185,44 @@ def init_db() -> None:
         """)
         _migrate_columns(con)
     logger.info("Database initialised (Postgres)")
+
+    # Dashboard read-model (L2, 2026-07). Isolated from the block above on
+    # purpose: init_db() is called bare in create_app(), so a failure here
+    # would stop Gunicorn booting and take the webhook (L1 triage) down with
+    # it. The dashboard is optional — if its DDL fails we log, leave
+    # dashboard_table_ok False, and let the app boot; dashboard endpoints
+    # check the flag and return 503.
+    global dashboard_table_ok
+    try:
+        with _conn() as con:
+            con.executescript("""
+                CREATE TABLE IF NOT EXISTS dashboard_tickets (
+                    ticket_key          TEXT PRIMARY KEY,
+                    customer_id         TEXT NOT NULL DEFAULT '',
+                    project_key         TEXT NOT NULL DEFAULT '',
+                    summary             TEXT NOT NULL DEFAULT '',
+                    severity            TEXT NOT NULL DEFAULT '',
+                    source              TEXT NOT NULL DEFAULT '',
+                    verdict_label       TEXT NOT NULL DEFAULT '',
+                    priority            TEXT NOT NULL DEFAULT '',
+                    assignee            TEXT NOT NULL DEFAULT '',
+                    assignee_account_id TEXT NOT NULL DEFAULT '',
+                    raw_status          TEXT NOT NULL DEFAULT '',
+                    resolution          TEXT NOT NULL DEFAULT '',
+                    ai_explanation      TEXT NOT NULL DEFAULT '',
+                    created_at          TIMESTAMPTZ,
+                    first_enrichment_at TIMESTAMPTZ,
+                    synced_at           TIMESTAMPTZ
+                );
+
+                CREATE INDEX IF NOT EXISTS idx_dashtickets_cust_created
+                    ON dashboard_tickets (customer_id, created_at DESC);
+            """)
+        dashboard_table_ok = True
+    except Exception:
+        dashboard_table_ok = False
+        logger.exception(
+            "dashboard_tickets DDL failed — dashboard disabled, app boot continues")
 
 
 def _migrate_columns(con: "_ConnWrapper") -> None:
@@ -506,4 +549,168 @@ def _row_to_schedule(row: dict) -> dict:
         "last_run": row.get("last_run"),
         "created_at": row.get("created_at"),
         "aggregation_mode": row.get("aggregation_mode", "merged") or "merged",
+    }
+
+
+# ── Dashboard read-model (L2) ────────────────────────────────────────────────
+# The dashboard reads ONLY this table; tools/dashboard_sync.py is the sole
+# writer (plus touch_dashboard_ticket_after_action for optimistic UI updates
+# after a write-back action). Jira remains the system of record — every row
+# here is a disposable snapshot that the next sync cycle overwrites.
+
+# Statuses treated as terminal for the Active/Auto-resolved metrics. SCDM's
+# workflow uses "Closed"; the rest cover common Jira defaults so a customer
+# project with a stock workflow doesn't inflate the Active count.
+_DASHBOARD_TERMINAL_STATUSES = tuple(
+    s.strip().lower() for s in os.environ.get(
+        "DASHBOARD_TERMINAL_STATUSES",
+        "Closed,Done,Resolved,Canceled,Cancelled,Completed",
+    ).split(",") if s.strip()
+)
+
+# Metrics look back this many days so long-lived rows don't skew averages.
+_DASHBOARD_METRICS_WINDOW_DAYS = int(
+    os.environ.get("DASHBOARD_METRICS_WINDOW_DAYS", "7"))
+
+_DASHBOARD_TICKET_COLS = (
+    "ticket_key", "customer_id", "project_key", "summary", "severity",
+    "source", "verdict_label", "priority", "assignee", "assignee_account_id",
+    "raw_status", "resolution", "ai_explanation", "created_at",
+    "first_enrichment_at", "synced_at",
+)
+
+
+def upsert_dashboard_ticket(rec: dict) -> None:
+    """Insert-or-update one ticket snapshot, keyed on ticket_key."""
+    with _conn() as con:
+        con.execute(
+            """
+            INSERT INTO dashboard_tickets
+              (ticket_key, customer_id, project_key, summary, severity, source,
+               verdict_label, priority, assignee, assignee_account_id,
+               raw_status, resolution, ai_explanation, created_at,
+               first_enrichment_at, synced_at)
+            VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,NOW())
+            ON CONFLICT (ticket_key) DO UPDATE SET
+              customer_id         = EXCLUDED.customer_id,
+              project_key         = EXCLUDED.project_key,
+              summary             = EXCLUDED.summary,
+              severity            = EXCLUDED.severity,
+              source              = EXCLUDED.source,
+              verdict_label       = EXCLUDED.verdict_label,
+              priority            = EXCLUDED.priority,
+              assignee            = EXCLUDED.assignee,
+              assignee_account_id = EXCLUDED.assignee_account_id,
+              raw_status          = EXCLUDED.raw_status,
+              resolution          = EXCLUDED.resolution,
+              ai_explanation      = EXCLUDED.ai_explanation,
+              created_at          = EXCLUDED.created_at,
+              first_enrichment_at = EXCLUDED.first_enrichment_at,
+              synced_at           = NOW()
+            """,
+            (
+                rec.get("ticket_key", ""),
+                rec.get("customer_id", ""),
+                rec.get("project_key", ""),
+                rec.get("summary", ""),
+                rec.get("severity", ""),
+                rec.get("source", ""),
+                rec.get("verdict_label", ""),
+                rec.get("priority", ""),
+                rec.get("assignee", ""),
+                rec.get("assignee_account_id", ""),
+                rec.get("raw_status", ""),
+                rec.get("resolution", ""),
+                rec.get("ai_explanation", ""),
+                rec.get("created_at"),
+                rec.get("first_enrichment_at"),
+            ),
+        )
+
+
+def load_dashboard_feed(customer_id: str | None = None, limit: int = 100) -> list[dict]:
+    """Newest-first ticket snapshots; customer_id None/'' = all customers."""
+    sql = f"SELECT {', '.join(_DASHBOARD_TICKET_COLS)} FROM dashboard_tickets"
+    params: list = []
+    if customer_id:
+        sql += " WHERE customer_id = %s"
+        params.append(customer_id)
+    sql += " ORDER BY created_at DESC NULLS LAST LIMIT %s"
+    params.append(max(1, min(int(limit), 500)))
+    with _conn() as con:
+        return [dict(r) for r in con.execute(sql, tuple(params)).fetchall()]
+
+
+def get_dashboard_ticket(ticket_key: str) -> dict | None:
+    with _conn() as con:
+        row = con.execute(
+            f"SELECT {', '.join(_DASHBOARD_TICKET_COLS)} FROM dashboard_tickets"
+            " WHERE ticket_key = %s",
+            (ticket_key,),
+        ).fetchone()
+    return dict(row) if row else None
+
+
+def touch_dashboard_ticket_after_action(ticket_key: str, **changed) -> None:
+    """Optimistic local update after a dashboard write-back (reassign /
+    priority / close) so the UI reflects the action before the next sync
+    cycle reconciles from Jira. Only whitelisted columns are settable."""
+    allowed = {"priority", "assignee", "assignee_account_id", "raw_status",
+               "resolution", "verdict_label"}
+    updates = {k: v for k, v in changed.items() if k in allowed}
+    if not updates:
+        return
+    sets = ", ".join(f"{col} = %s" for col in updates)
+    with _conn() as con:
+        con.execute(
+            f"UPDATE dashboard_tickets SET {sets}, synced_at = NOW()"
+            " WHERE ticket_key = %s",
+            (*updates.values(), ticket_key),
+        )
+
+
+def load_dashboard_metrics(customer_id: str | None = None) -> dict:
+    """The four metric-card values, over the last N days (default 7):
+
+    - active:               tickets whose status is not terminal
+    - critical:             active tickets with severity Critical
+    - avg_response_seconds: mean (first bot enrichment comment - created);
+                            None when no ticket has an enrichment time yet
+    - auto_resolved_pct:    Benign-Positive share of terminal tickets;
+                            None when nothing is terminal yet
+    """
+    where = "created_at >= NOW() - make_interval(days => %s)"
+    params: list = [_DASHBOARD_METRICS_WINDOW_DAYS]
+    if customer_id:
+        where += " AND customer_id = %s"
+        params.append(customer_id)
+
+    sql = f"""
+        SELECT
+          COUNT(*) FILTER (WHERE LOWER(raw_status) NOT IN %s)      AS active,
+          COUNT(*) FILTER (WHERE LOWER(raw_status) NOT IN %s
+                           AND LOWER(severity) = 'critical')       AS critical,
+          AVG(EXTRACT(EPOCH FROM (first_enrichment_at - created_at)))
+            FILTER (WHERE first_enrichment_at IS NOT NULL
+                    AND created_at IS NOT NULL)                    AS avg_response_seconds,
+          COUNT(*) FILTER (WHERE LOWER(raw_status) IN %s)          AS terminal,
+          COUNT(*) FILTER (WHERE LOWER(raw_status) IN %s
+                           AND LOWER(verdict_label) LIKE 'benign%%') AS benign_terminal
+        FROM dashboard_tickets
+        WHERE {where}
+    """
+    terms = _DASHBOARD_TERMINAL_STATUSES or ("closed",)
+    with _conn() as con:
+        row = con.execute(sql, (terms, terms, terms, terms, *params)).fetchone() or {}
+
+    terminal = row.get("terminal") or 0
+    avg_resp = row.get("avg_response_seconds")
+    return {
+        "active": row.get("active") or 0,
+        "critical": row.get("critical") or 0,
+        "avg_response_seconds": float(avg_resp) if avg_resp is not None else None,
+        "auto_resolved_pct": (
+            round(100.0 * (row.get("benign_terminal") or 0) / terminal, 1)
+            if terminal else None
+        ),
     }
