@@ -24,6 +24,7 @@
       --cyan: #22D3EE;
       --radius: 10px;
       --shadow: 0 1px 3px rgba(0,0,0,0.4);
+      --header-h: 66px;   /* shared height: logo cell + search-box row align flush */
     }
 
     html, body { height: 100%; }
@@ -54,7 +55,8 @@
       display: flex;
       align-items: center;
       gap: 10px;
-      padding: 18px 16px 14px;
+      min-height: var(--header-h);
+      padding: 12px 16px;
       font-weight: 650;
       font-size: 0.98rem;
       border-bottom: 1px solid var(--border);
@@ -130,7 +132,8 @@
       display: flex;
       align-items: center;
       gap: 14px;
-      padding: 12px 22px;
+      min-height: var(--header-h);
+      padding: 10px 22px;
       background: var(--bg-panel);
       border-bottom: 1px solid var(--border);
       position: sticky;
