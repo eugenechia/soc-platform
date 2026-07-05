@@ -13,8 +13,13 @@ context the server injects up front:
   2. A snapshot of recent tickets for the selected customer from the
      dashboard_tickets read-model (key, severity, verdict, status, summary).
   3. The current metric values.
-The model is instructed to answer ONLY from that context and to say so when
-the data doesn't contain the answer.
+  4. Web search results (Tavily — same engine as ioc_insights) so the
+     copilot can reach out for external knowledge: CVEs, threat actors,
+     tools, IP/domain reputation context. Killswitch
+     DASHBOARD_CHAT_WEB_ENABLED (default on); fail-silent.
+The model is instructed to treat the alert data as the ONLY source of truth
+about tickets, use web results only for external knowledge (citing source
+domains), and say so when neither contains the answer.
 
 Failure isolation: answer() never raises — it returns an apologetic string
 on any error, and the L1 pipeline is never touched.
@@ -37,14 +42,19 @@ _MAX_COMMENT_CHARS = 1800   # cap per fetched enrichment comment
 _TICKET_KEY_RE = re.compile(r"\b[A-Z][A-Z0-9]{1,9}-\d{1,6}\b")
 
 _SYSTEM_PROMPT = (
-    "You are the SOC dashboard copilot for Logicalis SOC analysts. Answer "
-    "questions about the security alerts (Jira tickets) using ONLY the data "
-    "provided in the DATA section of the user message: the recent-alert "
-    "snapshot, the metrics, and any fetched ticket details. Do not invent "
-    "tickets, verdicts, IOCs, or timestamps. If the answer is not in the "
-    "provided data, say so plainly and suggest what the analyst could check. "
+    "You are the SOC dashboard copilot for Logicalis SOC analysts. The user "
+    "message contains a DATA section (recent-alert snapshot, metrics, fetched "
+    "ticket details) and may contain a WEB SEARCH RESULTS section. Rules: "
+    "(1) The DATA section is the ONLY source of truth about the customer's "
+    "tickets, verdicts, IOCs, and timestamps — never invent or infer ticket "
+    "facts beyond it. "
+    "(2) Use WEB SEARCH RESULTS for external knowledge — CVEs, threat actors, "
+    "malware, tools, IP/domain reputation, event-ID meanings — and cite the "
+    "source domain in parentheses for any web-derived claim. "
+    "(3) If neither contains the answer, say so plainly and suggest what the "
+    "analyst could check. "
     "Always reference tickets by their key (e.g. SCDM-727). Be concise: a "
-    "few sentences, or a short list when comparing several tickets. Plain "
+    "few sentences, or a short list when comparing several items. Plain "
     "text only — no markdown formatting."
 )
 
@@ -125,6 +135,20 @@ def _snapshot_block(customer_id: str | None) -> str:
     return "\n".join(parts)
 
 
+def _web_context(message: str) -> str:
+    """Tavily web search on the analyst's question — the copilot's reach
+    beyond internal data. Fail-silent: '' when disabled, unconfigured, or
+    the search errors/returns nothing."""
+    if os.environ.get("DASHBOARD_CHAT_WEB_ENABLED", "true").lower() != "true":
+        return ""
+    try:
+        from tools.tavily_client import fetch_web_context
+        return fetch_web_context((message or "").strip()[:200]) or ""
+    except Exception:
+        logger.exception("dashboard_chat: web search failed")
+        return ""
+
+
 def build_context(message: str, customer_id: str | None) -> str:
     blocks = [_snapshot_block(customer_id)]
     for key in _mentioned_ticket_keys(message):
@@ -134,6 +158,9 @@ def build_context(message: str, customer_id: str | None) -> str:
             logger.exception("dashboard_chat: ticket fetch failed for %s", key)
             detail = ""
         blocks.append(detail or f"Ticket {key}: could not be fetched from Jira.")
+    web = _web_context(message)
+    if web:
+        blocks.append("WEB SEARCH RESULTS:\n" + web)
     return "\n\n".join(b for b in blocks if b)
 
 

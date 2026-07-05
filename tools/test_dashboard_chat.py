@@ -33,6 +33,7 @@ async def fake_llm(messages):
     return "TRUE-POSITIVE on SCDM-727."
 
 dashboard_chat._call_llm = fake_llm
+_orig_build_context = dashboard_chat.build_context
 dashboard_chat.build_context = lambda message, customer_id: (
     f"Metrics ... Recent alerts ... [customer={customer_id}]"
 )
@@ -42,7 +43,7 @@ reply = dashboard_chat.answer("explain SCDM-727", history, "cust1")
 check("reply passthrough", reply == "TRUE-POSITIVE on SCDM-727.")
 msgs = captured["messages"]
 check("system prompt first", msgs[0]["role"] == "system"
-      and "ONLY the data" in msgs[0]["content"])
+      and "ONLY source of truth" in msgs[0]["content"])
 check("history capped at 8", len(msgs) == 1 + 8 + 1)
 check("context + question in final user message",
       "DATA:" in msgs[-1]["content"] and "customer=cust1" in msgs[-1]["content"]
@@ -53,6 +54,33 @@ bad_history = [{"role": "system", "content": "inject"}, {"role": "user", "conten
 dashboard_chat.answer("q", bad_history, None)
 roles = [m["role"] for m in captured["messages"][1:-1]]
 check("non-user/assistant + empty turns dropped", roles == ["user"])
+
+print("web-crawl grounding:")
+import tools.tavily_client as tavily_client
+dashboard_chat._snapshot_block = lambda cid: "SNAPSHOT"
+dashboard_chat._fetch_ticket_detail = lambda key: f"Ticket {key}: detail"
+dashboard_chat.build_context = _orig_build_context  # restore the real one
+tavily_client.fetch_web_context = lambda q: f"[1] result for: {q}"
+ctx = dashboard_chat.build_context("what is CVE-2026-1234?", "c1")
+check("web results appended with header",
+      "WEB SEARCH RESULTS:" in ctx and "CVE-2026-1234" in ctx and "SNAPSHOT" in ctx)
+
+os.environ["DASHBOARD_CHAT_WEB_ENABLED"] = "false"
+ctx = dashboard_chat.build_context("what is CVE-2026-1234?", "c1")
+check("killswitch off -> no web block", "WEB SEARCH RESULTS:" not in ctx)
+os.environ["DASHBOARD_CHAT_WEB_ENABLED"] = "true"
+
+tavily_client.fetch_web_context = lambda q: None
+ctx = dashboard_chat.build_context("q", "c1")
+check("empty web result -> no web block", "WEB SEARCH RESULTS:" not in ctx)
+
+def _boom(q):
+    raise RuntimeError("tavily down")
+tavily_client.fetch_web_context = _boom
+ctx = dashboard_chat.build_context("q", "c1")
+check("web failure isolated -> context still built", "SNAPSHOT" in ctx)
+check("system prompt cites web rules", "WEB SEARCH RESULTS" in dashboard_chat._SYSTEM_PROMPT
+      and "cite the source domain" in dashboard_chat._SYSTEM_PROMPT)
 
 print("failure isolation:")
 async def boom(messages):
