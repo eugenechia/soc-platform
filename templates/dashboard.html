@@ -213,7 +213,47 @@
       background: var(--bg-panel); border: 1px solid var(--border);
       border-radius: var(--radius); padding: 15px 17px; box-shadow: var(--shadow);
       display: flex; align-items: center; gap: 13px;
+      position: relative; cursor: default;
     }
+    /* Hover tooltip — explains what each stat means. Pure CSS, theme-matched. */
+    .metric-card::after {
+      content: attr(data-tip);
+      position: absolute;
+      top: calc(100% + 9px);
+      left: 50%;
+      transform: translateX(-50%);
+      width: max-content;
+      max-width: 240px;
+      background: var(--bg-raised);
+      border: 1px solid var(--border);
+      color: var(--text-primary);
+      font-size: 0.75rem;
+      font-weight: 400;
+      line-height: 1.45;
+      text-align: left;
+      padding: 8px 11px;
+      border-radius: 8px;
+      box-shadow: 0 6px 18px rgba(0,0,0,0.45);
+      opacity: 0;
+      pointer-events: none;
+      transition: opacity 0.15s ease;
+      z-index: 100;
+    }
+    .metric-card::before {
+      content: "";
+      position: absolute;
+      top: calc(100% + 3px);
+      left: 50%;
+      transform: translateX(-50%);
+      border: 6px solid transparent;
+      border-bottom-color: var(--bg-raised);
+      opacity: 0;
+      pointer-events: none;
+      transition: opacity 0.15s ease;
+      z-index: 101;
+    }
+    .metric-card:hover::after,
+    .metric-card:hover::before { opacity: 1; }
     .metric-card .icon {
       width: 42px; height: 42px; border-radius: 50%;
       display: flex; align-items: center; justify-content: center; flex-shrink: 0;
@@ -404,19 +444,19 @@
 
   <main class="content">
     <div class="metric-row">
-      <div class="metric-card">
+      <div class="metric-card" data-tip="Open tickets not yet closed or resolved, for the selected customer and time window." aria-label="Active Alerts: open tickets not yet closed or resolved.">
         <div class="icon red"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="#EF4444" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M18 8A6 6 0 0 0 6 8c0 7-3 9-3 9h18s-3-2-3-9"/><path d="M13.73 21a2 2 0 0 1-3.46 0"/></svg></div>
         <div><div class="label">Active Alerts</div><div class="value" id="mActive">—</div></div>
       </div>
-      <div class="metric-card">
+      <div class="metric-card" data-tip="Active tickets whose severity is Critical or High (includes Sev-0 / Sev-1)." aria-label="Critical / High: active tickets at Critical or High severity.">
         <div class="icon orange"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="#F59E0B" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M10.29 3.86 1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/><line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/></svg></div>
         <div><div class="label">Critical / High</div><div class="value" id="mCritical">—</div></div>
       </div>
-      <div class="metric-card">
+      <div class="metric-card" data-tip="Average time from a ticket being created to its first automated L1 triage comment." aria-label="Avg Response Time: average time from ticket creation to first automated triage comment.">
         <div class="icon blue"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="#3B82F6" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/></svg></div>
         <div><div class="label">Avg Response Time</div><div class="value" id="mResponse">—</div></div>
       </div>
-      <div class="metric-card">
+      <div class="metric-card" data-tip="Share of closed tickets that were auto-triaged as benign / false-positive in this window." aria-label="Auto-Resolved (Benign): share of closed tickets auto-triaged as benign.">
         <div class="icon green"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="#22C55E" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M22 11.08V12a10 10 0 1 1-5.93-9.14"/><polyline points="22 4 12 14.01 9 11.01"/></svg></div>
         <div><div class="label">Auto-Resolved (Benign)</div><div class="value" id="mAuto">—</div></div>
       </div>
