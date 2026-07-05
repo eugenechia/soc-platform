@@ -33,6 +33,9 @@
       font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', system-ui, sans-serif;
       font-size: 15px;
       display: flex;
+      height: 100vh;
+      height: 100dvh;
+      overflow: hidden;   /* the app fills the screen; panels scroll internally */
     }
 
     /* ── Sidebar ─────────────────────────────────────────── */
@@ -122,7 +125,7 @@
     .sys-health.bad .pulse { background: var(--red); box-shadow: 0 0 8px rgba(239,68,68,0.6); }
 
     /* ── Main column ─────────────────────────────────────── */
-    .main-col { flex: 1; min-width: 0; display: flex; flex-direction: column; }
+    .main-col { flex: 1; min-width: 0; display: flex; flex-direction: column; height: 100%; }
     .topbar {
       display: flex;
       align-items: center;
@@ -174,7 +177,32 @@
     }
     .logout-btn:hover { background: var(--bg-raised); color: var(--red); }
 
-    .content { padding: 20px 22px; display: flex; flex-direction: column; gap: 16px; }
+    /* Full-viewport grid: metrics on top; feed fills the middle-left; the
+       volume chart anchors bottom-left ("middle bottom"); the chat spans
+       the full right column. Panels scroll internally — the page doesn't. */
+    .content {
+      flex: 1;
+      min-height: 0;
+      padding: 16px 22px 18px;
+      display: grid;
+      gap: 14px;
+      grid-template-columns: minmax(0, 2.2fr) minmax(340px, 1fr);
+      grid-template-rows: auto minmax(0, 1fr) minmax(180px, 27%);
+    }
+    .metric-row { grid-column: 1 / -1; }
+    .feed-panel   { grid-column: 1; grid-row: 2; }
+    .volume-panel { grid-column: 1; grid-row: 3; }
+    .chat-panel   { grid-column: 2; grid-row: 2 / span 2; }
+
+    @media (max-width: 1099px) {
+      body { overflow: auto; height: auto; }
+      .content {
+        display: flex;
+        flex-direction: column;
+      }
+      .chat-panel .chat-messages { height: 420px; }
+      .volume-panel .volume-body svg { height: 180px; }
+    }
 
     /* ── Metric cards ────────────────────────────────────── */
     .metric-row { display: grid; grid-template-columns: repeat(auto-fit, minmax(190px, 1fr)); gap: 14px; }
@@ -194,14 +222,11 @@
     .metric-card .label { font-size: 0.76rem; color: var(--text-muted); margin-bottom: 3px; }
     .metric-card .value { font-size: 1.55rem; font-weight: 650; line-height: 1.1; }
 
-    /* ── Panels / grid ───────────────────────────────────── */
-    .dash-main { display: grid; grid-template-columns: minmax(0, 1fr); gap: 16px; align-items: start; }
-    @media (min-width: 1100px) { .dash-main { grid-template-columns: minmax(0, 2fr) minmax(340px, 1fr); } }
-    .left-col { display: flex; flex-direction: column; gap: 16px; min-width: 0; }
-
+    /* ── Panels ──────────────────────────────────────────── */
     .panel {
       background: var(--bg-panel); border: 1px solid var(--border);
       border-radius: var(--radius); box-shadow: var(--shadow); overflow: hidden;
+      display: flex; flex-direction: column; min-height: 0; min-width: 0;
     }
     .panel-head {
       padding: 13px 18px; border-bottom: 1px solid var(--border);
@@ -216,7 +241,7 @@
       border-radius: 999px; cursor: pointer;
     }
 
-    .feed-scroll { overflow-x: auto; }
+    .feed-scroll { overflow: auto; flex: 1; min-height: 0; }
     table.feed { width: 100%; border-collapse: collapse; font-size: 0.84rem; }
     table.feed th {
       text-align: left; padding: 9px 13px; color: var(--text-muted);
@@ -249,16 +274,34 @@
     .src-jira  { background: rgba(167,139,250,0.15); color: var(--purple); }
     .feed-empty { padding: 36px 20px; text-align: center; color: var(--text-muted); }
 
-    /* ── Volume chart ────────────────────────────────────── */
-    .volume-body { padding: 14px 18px 10px; }
-    .volume-body svg { width: 100%; height: 150px; display: block; }
-    .vol-bar { fill: var(--accent); opacity: 0.75; }
-    .vol-bar:hover { opacity: 1; }
+    /* ── Volume chart (smooth gradient area, hover tooltip) ── */
+    .volume-body { padding: 10px 16px 8px; flex: 1; min-height: 0; position: relative; }
+    .volume-body svg { width: 100%; height: 100%; display: block; }
     .vol-axis { font-size: 10px; fill: var(--text-muted); }
+    .vol-grid { stroke: var(--border); stroke-width: 1; opacity: 0.55; }
+    .vol-line { fill: none; stroke: var(--accent); stroke-width: 2.5; stroke-linejoin: round; }
+    .vol-guide { stroke: var(--text-muted); stroke-width: 1; stroke-dasharray: 3 3; opacity: 0; }
+    .vol-dot { fill: var(--accent); stroke: #0E1320; stroke-width: 2; opacity: 0; }
+    .vol-tip {
+      position: absolute;
+      pointer-events: none;
+      background: var(--bg-raised);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      padding: 6px 10px;
+      font-size: 0.75rem;
+      color: var(--text-primary);
+      white-space: nowrap;
+      transform: translate(-50%, -120%);
+      opacity: 0;
+      transition: opacity 0.1s;
+      box-shadow: 0 4px 14px rgba(0,0,0,0.4);
+    }
+    .vol-tip b { color: var(--accent); }
 
     /* ── Chat ────────────────────────────────────────────── */
     .chat-messages {
-      height: 480px; overflow-y: auto; padding: 15px;
+      flex: 1; min-height: 0; overflow-y: auto; padding: 15px;
       display: flex; flex-direction: column; gap: 10px;
     }
     .chat-msg {
@@ -376,38 +419,38 @@
       </div>
     </div>
 
-    <div class="dash-main">
-      <div class="left-col">
-        <div class="panel">
-          <div class="panel-head" id="feedHead">
-            <span class="live-dot" id="feedLiveDot"></span>
-            <span id="feedTitle">Live Alert Feed</span>
-            <span class="right" id="feedSubtitle">Latest 7 · severity first</span>
-            <button class="clear-btn" id="clearSearch" style="display:none;">Clear search</button>
-          </div>
-          <div class="feed-scroll">
-            <table class="feed">
-              <thead>
-                <tr>
-                  <th>Ticket</th><th>Severity</th><th>Verdict</th><th>Source</th>
-                  <th>Alert</th><th>AI Explanation</th><th>Created</th>
-                </tr>
-              </thead>
-              <tbody id="feedBody">
-                <tr><td colspan="7" class="feed-empty">Loading…</td></tr>
-              </tbody>
-            </table>
-          </div>
-        </div>
-
-        <div class="panel">
-          <div class="panel-head">Alert Volume <span class="right">Last 24 hours</span></div>
-          <div class="volume-body"><svg id="volumeChart" preserveAspectRatio="none"></svg></div>
-        </div>
+    <div class="panel feed-panel">
+      <div class="panel-head" id="feedHead">
+        <span class="live-dot" id="feedLiveDot"></span>
+        <span id="feedTitle">Live Alert Feed</span>
+        <span class="right" id="feedSubtitle">Latest 7 · severity first</span>
+        <button class="clear-btn" id="clearSearch" style="display:none;">Clear search</button>
       </div>
+      <div class="feed-scroll">
+        <table class="feed">
+          <thead>
+            <tr>
+              <th>Ticket</th><th>Severity</th><th>Verdict</th><th>Source</th>
+              <th>Alert</th><th>AI Explanation</th><th>Created</th>
+            </tr>
+          </thead>
+          <tbody id="feedBody">
+            <tr><td colspan="7" class="feed-empty">Loading…</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </div>
 
-      <div class="panel">
-        <div class="panel-head">AI Copilot</div>
+    <div class="panel volume-panel">
+      <div class="panel-head">Alert Volume <span class="right">Last 24 hours</span></div>
+      <div class="volume-body">
+        <svg id="volumeChart" preserveAspectRatio="none"></svg>
+        <div class="vol-tip" id="volTip"></div>
+      </div>
+    </div>
+
+    <div class="panel chat-panel">
+      <div class="panel-head">AI Copilot</div>
         <div class="chat-messages" id="chatMessages">
           <div class="chat-msg assistant">Ask me about your alerts or the threats behind them — for example: "What are the critical alerts today?", "Explain SCDM-727", or "What is CVE-2026-1234 and does it affect us?"</div>
         </div>
@@ -416,7 +459,6 @@
           <textarea id="chatInput" rows="1" placeholder="Ask about alerts, verdicts, tickets…"></textarea>
           <button id="chatSend">Send</button>
         </div>
-      </div>
     </div>
   </main>
 </div>
@@ -484,27 +526,101 @@
       </tr>`).join('');
   }
 
+  // Smooth gradient area chart (per the reference design) with a hover
+  // guideline + tooltip. Rendered in viewBox units; positions map back to
+  // client pixels for the tooltip.
+  let volBuckets = [];
+  const VOL_W = 900, VOL_H = 220, VOL_PB = 22, VOL_PT = 12, VOL_PL = 8, VOL_PR = 8;
+
+  function volPoints(buckets) {
+    const max = Math.max(1, ...buckets.map(b => b.count));
+    const innerW = VOL_W - VOL_PL - VOL_PR;
+    const innerH = VOL_H - VOL_PT - VOL_PB;
+    return buckets.map((b, i) => ({
+      x: VOL_PL + (buckets.length === 1 ? innerW / 2 : innerW * i / (buckets.length - 1)),
+      y: VOL_PT + innerH * (1 - b.count / max),
+      count: b.count,
+      hour: new Date(b.bucket).getHours(),
+    }));
+  }
+
+  function smoothPath(pts) {
+    if (pts.length < 2) return '';
+    let d = `M ${pts[0].x.toFixed(1)} ${pts[0].y.toFixed(1)}`;
+    for (let i = 1; i < pts.length; i++) {
+      const p0 = pts[i - 1], p1 = pts[i];
+      const cx = (p0.x + p1.x) / 2;
+      d += ` C ${cx.toFixed(1)} ${p0.y.toFixed(1)}, ${cx.toFixed(1)} ${p1.y.toFixed(1)}, ${p1.x.toFixed(1)} ${p1.y.toFixed(1)}`;
+    }
+    return d;
+  }
+
   function renderVolume(buckets) {
     const svg = document.getElementById('volumeChart');
-    if (!buckets || !buckets.length) { svg.innerHTML = ''; return; }
-    const W = 900, H = 150, padB = 18, padL = 4;
-    svg.setAttribute('viewBox', `0 0 ${W} ${H}`);
-    const max = Math.max(1, ...buckets.map(b => b.count));
-    const bw = (W - padL * 2) / buckets.length;
-    let out = '';
-    buckets.forEach((b, i) => {
-      const h = Math.round((H - padB - 6) * b.count / max);
-      const x = padL + i * bw;
-      const hour = new Date(b.bucket).getHours();
-      out += `<rect class="vol-bar" x="${(x + 1).toFixed(1)}" y="${H - padB - h}"
-        width="${(bw - 2).toFixed(1)}" height="${h}" rx="2"><title>${String(hour).padStart(2,'0')}:00 — ${b.count} alert(s)</title></rect>`;
+    volBuckets = buckets || [];
+    if (!volBuckets.length) { svg.innerHTML = ''; return; }
+    svg.setAttribute('viewBox', `0 0 ${VOL_W} ${VOL_H}`);
+    const pts = volPoints(volBuckets);
+    const line = smoothPath(pts);
+    const base = VOL_H - VOL_PB;
+    const area = `${line} L ${pts[pts.length - 1].x.toFixed(1)} ${base} L ${pts[0].x.toFixed(1)} ${base} Z`;
+
+    let out = `
+      <defs>
+        <linearGradient id="volGrad" x1="0" y1="0" x2="0" y2="1">
+          <stop offset="0%" stop-color="#3B82F6" stop-opacity="0.45"/>
+          <stop offset="100%" stop-color="#3B82F6" stop-opacity="0.02"/>
+        </linearGradient>
+      </defs>`;
+    for (let g = 1; g <= 3; g++) {
+      const gy = VOL_PT + (base - VOL_PT) * g / 4;
+      out += `<line class="vol-grid" x1="${VOL_PL}" y1="${gy.toFixed(1)}" x2="${VOL_W - VOL_PR}" y2="${gy.toFixed(1)}"/>`;
+    }
+    out += `<path d="${area}" fill="url(#volGrad)"/>`;
+    out += `<path class="vol-line" d="${line}"/>`;
+    pts.forEach((p, i) => {
       if (i % 4 === 0) {
-        out += `<text class="vol-axis" x="${(x + bw / 2).toFixed(1)}" y="${H - 4}"
-          text-anchor="middle">${String(hour).padStart(2,'0')}:00</text>`;
+        out += `<text class="vol-axis" x="${p.x.toFixed(1)}" y="${VOL_H - 6}"
+          text-anchor="middle">${String(p.hour).padStart(2,'0')}:00</text>`;
       }
     });
+    out += `<line class="vol-guide" id="volGuide" y1="${VOL_PT}" y2="${base}" x1="0" x2="0"/>`;
+    out += `<circle class="vol-dot" id="volDot" r="4.5" cx="0" cy="0"/>`;
     svg.innerHTML = out;
   }
+
+  (function wireVolumeHover() {
+    const svg = document.getElementById('volumeChart');
+    const tip = document.getElementById('volTip');
+    const body = svg.parentElement;
+    svg.addEventListener('mousemove', (e) => {
+      if (!volBuckets.length) return;
+      const rect = svg.getBoundingClientRect();
+      const pts = volPoints(volBuckets);
+      const vx = (e.clientX - rect.left) / rect.width * VOL_W;
+      let nearest = pts[0], idx = 0;
+      pts.forEach((p, i) => { if (Math.abs(p.x - vx) < Math.abs(nearest.x - vx)) { nearest = p; idx = i; } });
+      const guide = document.getElementById('volGuide');
+      const dot = document.getElementById('volDot');
+      if (!guide || !dot) return;
+      guide.setAttribute('x1', nearest.x); guide.setAttribute('x2', nearest.x);
+      guide.style.opacity = 1;
+      dot.setAttribute('cx', nearest.x); dot.setAttribute('cy', nearest.y);
+      dot.style.opacity = 1;
+      const bodyRect = body.getBoundingClientRect();
+      tip.style.left = (rect.left - bodyRect.left + nearest.x / VOL_W * rect.width) + 'px';
+      tip.style.top = (rect.top - bodyRect.top + nearest.y / VOL_H * rect.height) + 'px';
+      tip.innerHTML = `${String(nearest.hour).padStart(2,'0')}:00 — <b>${nearest.count}</b> alert${nearest.count === 1 ? '' : 's'}`;
+      tip.style.opacity = 1;
+    });
+    svg.addEventListener('mouseleave', () => {
+      tip.style.opacity = 0;
+      const guide = document.getElementById('volGuide');
+      const dot = document.getElementById('volDot');
+      if (guide) guide.style.opacity = 0;
+      if (dot) dot.style.opacity = 0;
+    });
+  })();
 
   async function refresh() {
     const cid = encodeURIComponent(sel.value);
