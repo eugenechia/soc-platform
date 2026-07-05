@@ -286,6 +286,26 @@
     </div>
 
     <div class="mode-cards">
+      {% if dashboard_enabled %}
+      <a href="/dashboard/" class="mode-card">
+        <div class="card-icon">
+          <svg viewBox="0 0 24 24" width="28" height="28" fill="none" stroke="var(--accent)" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <rect x="3" y="3" width="7" height="9"/>
+            <rect x="14" y="3" width="7" height="5"/>
+            <rect x="14" y="12" width="7" height="9"/>
+            <rect x="3" y="16" width="7" height="5"/>
+          </svg>
+        </div>
+        <div class="card-title">SOC Dashboard</div>
+        <div class="card-desc">
+          Live alert feed across customers with AI triage verdicts and explanations, plus response metrics from the L1 pipeline.
+        </div>
+        <span class="card-cta">
+          Open Dashboard
+          <svg viewBox="0 0 24 24"><line x1="5" y1="12" x2="19" y2="12"/><polyline points="12 5 19 12 12 19"/></svg>
+        </span>
+      </a>
+      {% endif %}
       <a href="/reports/" class="mode-card">
         <div class="card-icon">
           <svg viewBox="0 0 24 24" width="28" height="28" fill="none" stroke="var(--accent)" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">

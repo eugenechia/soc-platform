@@ -29,6 +29,7 @@ from routes.exports import exports_bp
 from routes.webhook import webhook_bp
 from routes.gateway import gateway_bp
 from routes.status import status_bp
+from routes.dashboard import dashboard_bp
 
 
 def create_app() -> Flask:
@@ -57,6 +58,14 @@ def create_app() -> Flask:
     app.register_blueprint(webhook_bp,      url_prefix="/webhook")
     app.register_blueprint(gateway_bp,      url_prefix="/api")
     app.register_blueprint(status_bp,       url_prefix="/status")
+    app.register_blueprint(dashboard_bp,    url_prefix="/dashboard")
+
+    # Templates need the flag so base.html can gate the Dashboard nav tab;
+    # the dashboard routes themselves also self-gate (404 when disabled).
+    @app.context_processor
+    def _inject_dashboard_flag():
+        return {"dashboard_enabled":
+                os.environ.get("DASHBOARD_ENABLED", "false").lower() == "true"}
 
     # Every request requires an authenticated Entra ID session, except:
     # /auth/*    SSO flow

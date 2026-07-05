@@ -183,6 +183,9 @@
     </a>
 
     <nav class="mode-tabs">
+      {% if dashboard_enabled %}
+      <a href="/dashboard/"   class="{% if active_mode == 'dashboard' %}active{% endif %}">Dashboard</a>
+      {% endif %}
       <a href="/reports/"     class="{% if active_mode == 'reports' %}active{% endif %}">Generate Report</a>
       <a href="/admin/customers" class="{% if active_mode == 'admin' %}active{% endif %}">Customers</a>
       <a href="/admin/history"   class="{% if active_mode == 'history' %}active{% endif %}">History</a>

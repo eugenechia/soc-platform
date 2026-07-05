@@ -1,0 +1,257 @@
+{% extends "base.html" %}
+{% block title %}Dashboard — Logicalis SOC Platform{% endblock %}
+
+{% block head_extra %}
+<style>
+  .dash-toolbar {
+    display: flex;
+    align-items: center;
+    gap: 16px;
+    margin-bottom: 20px;
+    flex-wrap: wrap;
+  }
+  .dash-toolbar h1 { font-size: 1.25rem; font-weight: 600; }
+  .dash-toolbar select {
+    padding: 8px 12px;
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    background: var(--bg-surface);
+    color: var(--text-primary);
+    font-size: 0.9rem;
+    min-width: 220px;
+  }
+  .dash-freshness {
+    margin-left: auto;
+    font-size: 0.8rem;
+    color: var(--text-muted);
+  }
+
+  /* Metric cards */
+  .metric-row {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+    gap: 16px;
+    margin-bottom: 24px;
+  }
+  .metric-card {
+    background: var(--bg-surface);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    padding: 18px 20px;
+    box-shadow: var(--shadow);
+  }
+  .metric-card .label {
+    font-size: 0.8rem;
+    color: var(--text-muted);
+    margin-bottom: 6px;
+  }
+  .metric-card .value {
+    font-size: 1.9rem;
+    font-weight: 650;
+    line-height: 1.1;
+  }
+  .metric-card .value.crit { color: var(--danger); }
+
+  /* Feed table */
+  .feed-panel {
+    background: var(--bg-surface);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    box-shadow: var(--shadow);
+    overflow: hidden;
+  }
+  .feed-panel .panel-head {
+    padding: 14px 20px;
+    border-bottom: 1px solid var(--border);
+    font-weight: 600;
+    display: flex;
+    align-items: center;
+    gap: 10px;
+  }
+  .feed-scroll { overflow-x: auto; }
+  table.feed {
+    width: 100%;
+    border-collapse: collapse;
+    font-size: 0.86rem;
+  }
+  table.feed th {
+    text-align: left;
+    padding: 10px 14px;
+    color: var(--text-muted);
+    font-weight: 500;
+    font-size: 0.76rem;
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+    border-bottom: 1px solid var(--border);
+    white-space: nowrap;
+  }
+  table.feed td {
+    padding: 10px 14px;
+    border-bottom: 1px solid var(--border);
+    vertical-align: top;
+  }
+  table.feed tr:last-child td { border-bottom: none; }
+  table.feed tr:hover td { background: var(--bg-raised); }
+  td.col-key { white-space: nowrap; }
+  td.col-key a { color: var(--accent); text-decoration: none; font-weight: 600; }
+  td.col-key a:hover { text-decoration: underline; }
+  td.col-summary { min-width: 220px; max-width: 420px; }
+  td.col-expl { min-width: 260px; max-width: 480px; color: var(--text-muted); }
+  td.col-time { white-space: nowrap; color: var(--text-muted); }
+
+  .badge {
+    display: inline-block;
+    padding: 2px 9px;
+    border-radius: 999px;
+    font-size: 0.72rem;
+    font-weight: 600;
+    white-space: nowrap;
+  }
+  .sev-critical { background: #FEE2E2; color: #B91C1C; }
+  .sev-high     { background: #FFEDD5; color: #C2410C; }
+  .sev-medium   { background: #FEF9C3; color: #A16207; }
+  .sev-low      { background: #DCFCE7; color: #15803D; }
+  .sev-info     { background: var(--bg-raised); color: var(--text-muted); }
+  [data-theme="dark"] .sev-critical { background: #4C1D1D; color: #FCA5A5; }
+  [data-theme="dark"] .sev-high     { background: #4A2A12; color: #FDBA74; }
+  [data-theme="dark"] .sev-medium   { background: #423A12; color: #FDE047; }
+  [data-theme="dark"] .sev-low      { background: #14351F; color: #86EFAC; }
+
+  .v-tp      { background: #FEE2E2; color: #B91C1C; }
+  .v-benign  { background: #DCFCE7; color: #15803D; }
+  .v-unknown { background: #FEF9C3; color: #A16207; }
+  .v-pending { background: var(--bg-raised); color: var(--text-muted); }
+  [data-theme="dark"] .v-tp      { background: #4C1D1D; color: #FCA5A5; }
+  [data-theme="dark"] .v-benign  { background: #14351F; color: #86EFAC; }
+  [data-theme="dark"] .v-unknown { background: #423A12; color: #FDE047; }
+
+  .feed-empty {
+    padding: 40px 20px;
+    text-align: center;
+    color: var(--text-muted);
+  }
+</style>
+{% endblock %}
+
+{% block content %}
+<div class="dash-toolbar">
+  <h1>SOC Dashboard</h1>
+  <select id="customerSelect" aria-label="Customer filter">
+    <option value="all">All customers</option>
+    {% for c in customers %}
+    <option value="{{ c.id }}">{{ c.name }}</option>
+    {% endfor %}
+  </select>
+  <span class="dash-freshness" id="freshness"></span>
+</div>
+
+<div class="metric-row">
+  <div class="metric-card"><div class="label">Active Alerts</div><div class="value" id="mActive">—</div></div>
+  <div class="metric-card"><div class="label">Critical</div><div class="value crit" id="mCritical">—</div></div>
+  <div class="metric-card"><div class="label">Avg Response Time</div><div class="value" id="mResponse">—</div></div>
+  <div class="metric-card"><div class="label">Auto-Resolved (Benign)</div><div class="value" id="mAuto">—</div></div>
+</div>
+
+<div class="feed-panel">
+  <div class="panel-head">Live Alert Feed</div>
+  <div class="feed-scroll">
+    <table class="feed">
+      <thead>
+        <tr>
+          <th>Ticket</th><th>Severity</th><th>Verdict</th><th>Source</th>
+          <th>Alert</th><th>AI Explanation</th><th>Created</th>
+        </tr>
+      </thead>
+      <tbody id="feedBody">
+        <tr><td colspan="7" class="feed-empty">Loading…</td></tr>
+      </tbody>
+    </table>
+  </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+(function () {
+  const JIRA_BASE = {{ jira_base | tojson }};
+  const POLL_MS = 20000;
+  const sel = document.getElementById('customerSelect');
+
+  function esc(s) {
+    return String(s ?? '').replace(/[&<>"']/g,
+      c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+  }
+
+  function sevClass(sev) {
+    const s = (sev || '').toLowerCase();
+    if (s.includes('critical') || s === 'sev-1') return 'sev-critical';
+    if (s.includes('high')     || s === 'sev-2') return 'sev-high';
+    if (s.includes('medium')   || s === 'sev-3') return 'sev-medium';
+    if (s.includes('low')      || s === 'sev-4') return 'sev-low';
+    return 'sev-info';
+  }
+
+  function verdictClass(v) {
+    const s = (v || '').toUpperCase();
+    if (s === 'TRUE-POSITIVE') return 'v-tp';
+    if (s === 'BENIGN-POSITIVE') return 'v-benign';
+    if (s === 'UNKNOWN') return 'v-unknown';
+    return 'v-pending';
+  }
+
+  function fmtDuration(seconds) {
+    if (seconds == null) return '—';
+    if (seconds < 90) return Math.round(seconds) + 's';
+    const m = seconds / 60;
+    if (m < 90) return m.toFixed(1) + ' min';
+    return (m / 60).toFixed(1) + ' h';
+  }
+
+  async function refresh() {
+    const cid = encodeURIComponent(sel.value);
+    try {
+      const [mRes, fRes] = await Promise.all([
+        fetch(`/dashboard/api/metrics?customer_id=${cid}`),
+        fetch(`/dashboard/api/feed?customer_id=${cid}`),
+      ]);
+      if (!mRes.ok || !fRes.ok) throw new Error('fetch failed');
+      const m = await mRes.json();
+      const f = await fRes.json();
+
+      document.getElementById('mActive').textContent = m.active ?? '—';
+      document.getElementById('mCritical').textContent = m.critical ?? '—';
+      document.getElementById('mResponse').textContent = fmtDuration(m.avg_response_seconds);
+      document.getElementById('mAuto').textContent =
+        m.auto_resolved_pct == null ? '—' : m.auto_resolved_pct + '%';
+
+      const body = document.getElementById('feedBody');
+      const rows = f.tickets || [];
+      if (!rows.length) {
+        body.innerHTML = '<tr><td colspan="7" class="feed-empty">No alerts in the sync window.</td></tr>';
+      } else {
+        body.innerHTML = rows.map(t => `
+          <tr>
+            <td class="col-key"><a href="${JIRA_BASE}/browse/${esc(t.ticket_key)}"
+                target="_blank" rel="noopener">${esc(t.ticket_key)}</a></td>
+            <td><span class="badge ${sevClass(t.severity)}">${esc(t.severity || '—')}</span></td>
+            <td><span class="badge ${verdictClass(t.verdict_label)}">${esc(t.verdict_label || '—')}</span></td>
+            <td>${esc(t.source || '—')}</td>
+            <td class="col-summary">${esc(t.summary)}</td>
+            <td class="col-expl">${esc(t.ai_explanation || '')}</td>
+            <td class="col-time">${esc(t.created_at_display || '')}</td>
+          </tr>`).join('');
+      }
+
+      document.getElementById('freshness').textContent =
+        f.last_synced_display ? `Last synced ${f.last_synced_display}` : '';
+    } catch (e) {
+      document.getElementById('freshness').textContent = 'Refresh failed — retrying…';
+    }
+  }
+
+  sel.addEventListener('change', refresh);
+  refresh();
+  setInterval(refresh, POLL_MS);
+})();
+</script>
+{% endblock %}
