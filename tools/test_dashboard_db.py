@@ -166,6 +166,19 @@ else:
     check("optimistic touch updates priority",
           db.get_dashboard_ticket("TST-2")["priority"] == "Highest")
 
+    vol = db.load_dashboard_volume("test-cust", hours=24)
+    check("volume has 24 hourly buckets", len(vol) == 24)
+    check("volume counts recent rows (4 in last 24h)",
+          sum(b["count"] for b in vol) == 4)
+
+    hits = db.search_dashboard_tickets("TST-3", "test-cust")
+    check("search finds by key", len(hits) == 1 and hits[0]["ticket_key"] == "TST-3")
+    hits = db.search_dashboard_tickets("tst-", "test-cust")
+    check("search case-insensitive substring", len(hits) == 5)
+    check("search empty query -> []", db.search_dashboard_tickets("", None) == [])
+    check("db liveness check", db.dashboard_db_ok())
+    check("last synced is recent", db.dashboard_last_synced() is not None)
+
     other = db.load_dashboard_metrics("someone-else")
     check("customer scoping isolates metrics", other["active"] == 0)
 

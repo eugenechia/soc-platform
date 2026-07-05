@@ -724,3 +724,75 @@ def load_dashboard_metrics(customer_id: str | None = None,
             if terminal else None
         ),
     }
+
+
+def load_dashboard_volume(customer_id: str | None = None,
+                          hours: int = 24) -> list[dict]:
+    """Hourly alert counts for the volume chart: one row per hour bucket in
+    the window (empty hours included, count 0), oldest first."""
+    params: list = [hours, hours]
+    cust_where = ""
+    if customer_id:
+        cust_where = "AND t.customer_id = %s"
+        params.append(customer_id)
+    sql = f"""
+        SELECT h.bucket, COALESCE(COUNT(t.ticket_key), 0) AS count
+        FROM generate_series(
+               date_trunc('hour', NOW() - make_interval(hours => %s - 1)),
+               date_trunc('hour', NOW()),
+               '1 hour') AS h(bucket)
+        LEFT JOIN dashboard_tickets t
+          ON date_trunc('hour', t.created_at) = h.bucket
+          AND t.created_at >= NOW() - make_interval(hours => %s)
+          {cust_where}
+        GROUP BY h.bucket
+        ORDER BY h.bucket
+    """
+    with _conn() as con:
+        rows = con.execute(sql, tuple(params)).fetchall()
+    return [{"bucket": r["bucket"].isoformat(), "count": int(r["count"])}
+            for r in rows]
+
+
+def search_dashboard_tickets(q: str, customer_id: str | None = None,
+                             limit: int = 50) -> list[dict]:
+    """Case-insensitive substring search over the read-model: ticket key,
+    summary, AI explanation, assignee, source. Newest first."""
+    q = (q or "").strip()
+    if not q:
+        return []
+    like = f"%{q}%"
+    sql = (
+        f"SELECT {', '.join(_DASHBOARD_TICKET_COLS)} FROM dashboard_tickets"
+        " WHERE (ticket_key ILIKE %s OR summary ILIKE %s OR ai_explanation"
+        " ILIKE %s OR assignee ILIKE %s OR source ILIKE %s)"
+    )
+    params: list = [like, like, like, like, like]
+    if customer_id:
+        sql += " AND customer_id = %s"
+        params.append(customer_id)
+    sql += " ORDER BY created_at DESC NULLS LAST LIMIT %s"
+    params.append(max(1, min(int(limit), 200)))
+    with _conn() as con:
+        return [dict(r) for r in con.execute(sql, tuple(params)).fetchall()]
+
+
+def dashboard_db_ok() -> bool:
+    """Cheap liveness check for the status panel."""
+    try:
+        with _conn() as con:
+            con.execute("SELECT 1").fetchone()
+        return True
+    except Exception:
+        return False
+
+
+def dashboard_last_synced():
+    """MAX(synced_at) across the read-model; None when empty/unavailable."""
+    try:
+        with _conn() as con:
+            row = con.execute(
+                "SELECT MAX(synced_at) AS m FROM dashboard_tickets").fetchone()
+        return row.get("m") if row else None
+    except Exception:
+        return None

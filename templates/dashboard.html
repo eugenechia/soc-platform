@@ -1,326 +1,445 @@
-{% extends "base.html" %}
-{% block title %}Dashboard — Logicalis SOC Platform{% endblock %}
+<!DOCTYPE html>
+<html lang="en" data-theme="dark">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>SOC Dashboard — Logicalis SOC Platform</title>
+  <link rel="icon" type="image/x-icon" href="/static/favicon.ico">
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
 
-{% block head_extra %}
-<style>
-  .dash-toolbar {
-    display: flex;
-    align-items: center;
-    gap: 16px;
-    margin-bottom: 20px;
-    flex-wrap: wrap;
-  }
-  .dash-toolbar h1 { font-size: 1.25rem; font-weight: 600; }
-  .dash-toolbar select {
-    padding: 8px 12px;
-    border: 1px solid var(--border);
-    border-radius: var(--radius);
-    background: var(--bg-surface);
-    color: var(--text-primary);
-    font-size: 0.9rem;
-    min-width: 220px;
-  }
-  .dash-freshness {
-    margin-left: auto;
-    font-size: 0.8rem;
-    color: var(--text-muted);
-  }
+    :root {
+      --bg-base: #0E1320;
+      --bg-panel: #161C2C;
+      --bg-raised: #1E2638;
+      --border: #273049;
+      --text-primary: #E6EAF2;
+      --text-muted: #8A94AD;
+      --accent: #3B82F6;
+      --accent-light: #16233F;
+      --red: #EF4444;
+      --orange: #F59E0B;
+      --green: #22C55E;
+      --purple: #A78BFA;
+      --cyan: #22D3EE;
+      --radius: 10px;
+      --shadow: 0 1px 3px rgba(0,0,0,0.4);
+    }
 
-  /* Metrics window segmented control */
-  .window-toggle {
-    display: inline-flex;
-    border: 1px solid var(--border);
-    border-radius: var(--radius);
-    overflow: hidden;
-  }
-  .window-toggle button {
-    padding: 8px 14px;
-    border: none;
-    background: var(--bg-surface);
-    color: var(--text-muted);
-    font-size: 0.85rem;
-    cursor: pointer;
-  }
-  .window-toggle button + button { border-left: 1px solid var(--border); }
-  .window-toggle button.active {
-    background: var(--accent-light);
-    color: var(--accent);
-    font-weight: 600;
-  }
+    html, body { height: 100%; }
+    body {
+      background: var(--bg-base);
+      color: var(--text-primary);
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', system-ui, sans-serif;
+      font-size: 15px;
+      display: flex;
+    }
 
-  /* Feed + chat side-by-side on wide screens, stacked on narrow */
-  .dash-main {
-    display: grid;
-    grid-template-columns: minmax(0, 1fr);
-    gap: 16px;
-    align-items: start;
-  }
-  @media (min-width: 1100px) {
-    .dash-main { grid-template-columns: minmax(0, 2fr) minmax(340px, 1fr); }
-  }
-  .chat-panel {
-    background: var(--bg-surface);
-    border: 1px solid var(--border);
-    border-radius: var(--radius);
-    box-shadow: var(--shadow);
-    overflow: hidden;
-    display: flex;
-    flex-direction: column;
-  }
-  .chat-panel .panel-head {
-    padding: 14px 20px;
-    border-bottom: 1px solid var(--border);
-    font-weight: 600;
-  }
-  .chat-messages {
-    height: 520px;
-    overflow-y: auto;
-    padding: 16px;
-    display: flex;
-    flex-direction: column;
-    gap: 10px;
-  }
-  .chat-msg {
-    max-width: 92%;
-    padding: 10px 13px;
-    border-radius: var(--radius);
-    font-size: 0.88rem;
-    line-height: 1.45;
-    white-space: pre-wrap;
-    word-break: break-word;
-  }
-  .chat-msg.user {
-    align-self: flex-end;
-    background: var(--accent-light);
-    color: var(--text-primary);
-  }
-  .chat-msg.assistant {
-    align-self: flex-start;
-    background: var(--bg-raised);
-    color: var(--text-primary);
-  }
-  .chat-msg.pending { color: var(--text-muted); font-style: italic; }
-  .chat-hint {
-    padding: 0 16px 8px;
-    font-size: 0.76rem;
-    color: var(--text-muted);
-  }
-  .chat-input-row {
-    display: flex;
-    gap: 8px;
-    padding: 12px 16px;
-    border-top: 1px solid var(--border);
-  }
-  .chat-input-row textarea {
-    flex: 1;
-    resize: none;
-    padding: 9px 12px;
-    border: 1px solid var(--border);
-    border-radius: var(--radius);
-    background: var(--bg-base);
-    color: var(--text-primary);
-    font-family: inherit;
-    font-size: 0.88rem;
-    min-height: 42px;
-    max-height: 120px;
-  }
-  .chat-input-row button {
-    padding: 9px 18px;
-    border: none;
-    border-radius: var(--radius);
-    background: var(--accent);
-    color: #fff;
-    font-weight: 600;
-    font-size: 0.88rem;
-    cursor: pointer;
-  }
-  .chat-input-row button:disabled { opacity: 0.5; cursor: not-allowed; }
+    /* ── Sidebar ─────────────────────────────────────────── */
+    .sidebar {
+      width: 232px;
+      flex-shrink: 0;
+      background: var(--bg-panel);
+      border-right: 1px solid var(--border);
+      display: flex;
+      flex-direction: column;
+      height: 100vh;
+      position: sticky;
+      top: 0;
+    }
+    .sidebar .brand {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      padding: 18px 16px 14px;
+      font-weight: 650;
+      font-size: 0.98rem;
+      border-bottom: 1px solid var(--border);
+    }
+    .sidebar .brand img { height: 26px; filter: brightness(0) invert(1); }
+    .sidebar .brand small {
+      display: block;
+      font-weight: 400;
+      font-size: 0.68rem;
+      color: var(--text-muted);
+    }
+    nav.side-nav { padding: 12px 10px; display: flex; flex-direction: column; gap: 2px; }
+    nav.side-nav a {
+      display: flex;
+      align-items: center;
+      gap: 11px;
+      padding: 9px 12px;
+      border-radius: var(--radius);
+      color: var(--text-muted);
+      text-decoration: none;
+      font-weight: 500;
+      font-size: 0.9rem;
+      transition: background 0.15s, color 0.15s;
+    }
+    nav.side-nav a:hover { background: var(--bg-raised); color: var(--text-primary); }
+    nav.side-nav a.active { background: var(--accent-light); color: var(--text-primary); }
+    nav.side-nav a svg { flex-shrink: 0; }
 
-  /* Metric cards */
-  .metric-row {
-    display: grid;
-    grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
-    gap: 16px;
-    margin-bottom: 24px;
-  }
-  .metric-card {
-    background: var(--bg-surface);
-    border: 1px solid var(--border);
-    border-radius: var(--radius);
-    padding: 18px 20px;
-    box-shadow: var(--shadow);
-  }
-  .metric-card .label {
-    font-size: 0.8rem;
-    color: var(--text-muted);
-    margin-bottom: 6px;
-  }
-  .metric-card .value {
-    font-size: 1.9rem;
-    font-weight: 650;
-    line-height: 1.1;
-  }
-  .metric-card .value.crit { color: var(--danger); }
+    .side-bottom {
+      margin-top: auto;
+      padding: 12px 14px 14px;
+      border-top: 1px solid var(--border);
+      display: flex;
+      flex-direction: column;
+      gap: 12px;
+    }
+    .side-section-title {
+      font-size: 0.68rem;
+      text-transform: uppercase;
+      letter-spacing: 0.06em;
+      color: var(--text-muted);
+      margin-bottom: 7px;
+    }
+    .integration-row {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      font-size: 0.8rem;
+      padding: 3px 0;
+      color: var(--text-primary);
+    }
+    .integration-row .dot {
+      width: 8px; height: 8px; border-radius: 50%;
+      background: var(--text-muted); flex-shrink: 0;
+    }
+    .integration-row .dot.ok { background: var(--green); box-shadow: 0 0 6px rgba(34,197,94,0.55); }
+    .integration-row .dot.bad { background: var(--red); box-shadow: 0 0 6px rgba(239,68,68,0.55); }
+    .integration-row .st { margin-left: auto; font-size: 0.7rem; color: var(--text-muted); }
+    .sys-health {
+      display: flex; align-items: center; gap: 9px;
+      font-size: 0.8rem; padding: 9px 11px;
+      background: var(--bg-raised); border-radius: var(--radius);
+    }
+    .sys-health .pulse {
+      width: 9px; height: 9px; border-radius: 50%;
+      background: var(--green); box-shadow: 0 0 8px rgba(34,197,94,0.6);
+    }
+    .sys-health.bad .pulse { background: var(--red); box-shadow: 0 0 8px rgba(239,68,68,0.6); }
 
-  /* Feed table */
-  .feed-panel {
-    background: var(--bg-surface);
-    border: 1px solid var(--border);
-    border-radius: var(--radius);
-    box-shadow: var(--shadow);
-    overflow: hidden;
-  }
-  .feed-panel .panel-head {
-    padding: 14px 20px;
-    border-bottom: 1px solid var(--border);
-    font-weight: 600;
-    display: flex;
-    align-items: center;
-    gap: 10px;
-  }
-  .feed-scroll { overflow-x: auto; }
-  table.feed {
-    width: 100%;
-    border-collapse: collapse;
-    font-size: 0.86rem;
-  }
-  table.feed th {
-    text-align: left;
-    padding: 10px 14px;
-    color: var(--text-muted);
-    font-weight: 500;
-    font-size: 0.76rem;
-    text-transform: uppercase;
-    letter-spacing: 0.04em;
-    border-bottom: 1px solid var(--border);
-    white-space: nowrap;
-  }
-  table.feed td {
-    padding: 10px 14px;
-    border-bottom: 1px solid var(--border);
-    vertical-align: top;
-  }
-  table.feed tr:last-child td { border-bottom: none; }
-  table.feed tr:hover td { background: var(--bg-raised); }
-  td.col-key { white-space: nowrap; }
-  td.col-key a { color: var(--accent); text-decoration: none; font-weight: 600; }
-  td.col-key a:hover { text-decoration: underline; }
-  td.col-summary { min-width: 220px; max-width: 420px; }
-  td.col-expl { min-width: 260px; max-width: 480px; color: var(--text-muted); }
-  td.col-time { white-space: nowrap; color: var(--text-muted); }
+    /* ── Main column ─────────────────────────────────────── */
+    .main-col { flex: 1; min-width: 0; display: flex; flex-direction: column; }
+    .topbar {
+      display: flex;
+      align-items: center;
+      gap: 14px;
+      padding: 12px 22px;
+      background: var(--bg-panel);
+      border-bottom: 1px solid var(--border);
+      position: sticky;
+      top: 0;
+      z-index: 50;
+    }
+    .search-wrap { flex: 1; max-width: 560px; position: relative; }
+    .search-wrap svg {
+      position: absolute; left: 12px; top: 50%; transform: translateY(-50%);
+      pointer-events: none;
+    }
+    .search-wrap input {
+      width: 100%;
+      padding: 9px 34px 9px 38px;
+      border: 1px solid var(--border);
+      border-radius: 999px;
+      background: var(--bg-base);
+      color: var(--text-primary);
+      font-size: 0.88rem;
+    }
+    .search-wrap input:focus { outline: 1px solid var(--accent); }
+    .topbar select {
+      padding: 8px 12px;
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      background: var(--bg-base);
+      color: var(--text-primary);
+      font-size: 0.85rem;
+      max-width: 220px;
+    }
+    .window-toggle { display: inline-flex; border: 1px solid var(--border); border-radius: var(--radius); overflow: hidden; }
+    .window-toggle button {
+      padding: 8px 13px; border: none; background: var(--bg-base);
+      color: var(--text-muted); font-size: 0.82rem; cursor: pointer;
+    }
+    .window-toggle button + button { border-left: 1px solid var(--border); }
+    .window-toggle button.active { background: var(--accent-light); color: var(--accent); font-weight: 600; }
+    .user-chip { margin-left: auto; display: flex; align-items: center; gap: 10px; font-size: 0.83rem; color: var(--text-muted); white-space: nowrap; }
+    .user-chip .email { color: var(--text-primary); }
+    .logout-btn {
+      border: 1px solid var(--border); color: var(--text-muted);
+      padding: 6px 12px; border-radius: var(--radius); font-size: 0.8rem;
+      text-decoration: none; background: none;
+    }
+    .logout-btn:hover { background: var(--bg-raised); color: var(--red); }
 
-  .badge {
-    display: inline-block;
-    padding: 2px 9px;
-    border-radius: 999px;
-    font-size: 0.72rem;
-    font-weight: 600;
-    white-space: nowrap;
-  }
-  .sev-critical { background: #FEE2E2; color: #B91C1C; }
-  .sev-high     { background: #FFEDD5; color: #C2410C; }
-  .sev-medium   { background: #FEF9C3; color: #A16207; }
-  .sev-low      { background: #DCFCE7; color: #15803D; }
-  .sev-info     { background: var(--bg-raised); color: var(--text-muted); }
-  [data-theme="dark"] .sev-critical { background: #4C1D1D; color: #FCA5A5; }
-  [data-theme="dark"] .sev-high     { background: #4A2A12; color: #FDBA74; }
-  [data-theme="dark"] .sev-medium   { background: #423A12; color: #FDE047; }
-  [data-theme="dark"] .sev-low      { background: #14351F; color: #86EFAC; }
+    .content { padding: 20px 22px; display: flex; flex-direction: column; gap: 16px; }
 
-  .v-tp      { background: #FEE2E2; color: #B91C1C; }
-  .v-benign  { background: #DCFCE7; color: #15803D; }
-  .v-unknown { background: #FEF9C3; color: #A16207; }
-  .v-pending { background: var(--bg-raised); color: var(--text-muted); }
-  [data-theme="dark"] .v-tp      { background: #4C1D1D; color: #FCA5A5; }
-  [data-theme="dark"] .v-benign  { background: #14351F; color: #86EFAC; }
-  [data-theme="dark"] .v-unknown { background: #423A12; color: #FDE047; }
+    /* ── Metric cards ────────────────────────────────────── */
+    .metric-row { display: grid; grid-template-columns: repeat(auto-fit, minmax(190px, 1fr)); gap: 14px; }
+    .metric-card {
+      background: var(--bg-panel); border: 1px solid var(--border);
+      border-radius: var(--radius); padding: 15px 17px; box-shadow: var(--shadow);
+      display: flex; align-items: center; gap: 13px;
+    }
+    .metric-card .icon {
+      width: 42px; height: 42px; border-radius: 50%;
+      display: flex; align-items: center; justify-content: center; flex-shrink: 0;
+    }
+    .metric-card .icon.red    { background: rgba(239,68,68,0.14); }
+    .metric-card .icon.orange { background: rgba(245,158,11,0.14); }
+    .metric-card .icon.blue   { background: rgba(59,130,246,0.14); }
+    .metric-card .icon.green  { background: rgba(34,197,94,0.14); }
+    .metric-card .label { font-size: 0.76rem; color: var(--text-muted); margin-bottom: 3px; }
+    .metric-card .value { font-size: 1.55rem; font-weight: 650; line-height: 1.1; }
 
-  .feed-empty {
-    padding: 40px 20px;
-    text-align: center;
-    color: var(--text-muted);
-  }
-</style>
-{% endblock %}
+    /* ── Panels / grid ───────────────────────────────────── */
+    .dash-main { display: grid; grid-template-columns: minmax(0, 1fr); gap: 16px; align-items: start; }
+    @media (min-width: 1100px) { .dash-main { grid-template-columns: minmax(0, 2fr) minmax(340px, 1fr); } }
+    .left-col { display: flex; flex-direction: column; gap: 16px; min-width: 0; }
 
-{% block content %}
-<div class="dash-toolbar">
-  <h1>SOC Dashboard</h1>
-  <select id="customerSelect" aria-label="Customer filter">
-    <option value="all">All customers</option>
-    {% for c in customers %}
-    <option value="{{ c.id }}">{{ c.name }}</option>
-    {% endfor %}
-  </select>
-  <div class="window-toggle" id="windowToggle" role="group" aria-label="Metrics window">
-    <button data-window="1">24h</button>
-    <button data-window="7" class="active">7 days</button>
-    <button data-window="30">30 days</button>
+    .panel {
+      background: var(--bg-panel); border: 1px solid var(--border);
+      border-radius: var(--radius); box-shadow: var(--shadow); overflow: hidden;
+    }
+    .panel-head {
+      padding: 13px 18px; border-bottom: 1px solid var(--border);
+      font-weight: 600; font-size: 0.92rem;
+      display: flex; align-items: center; gap: 10px;
+    }
+    .panel-head .live-dot { width: 8px; height: 8px; border-radius: 50%; background: var(--green); box-shadow: 0 0 7px rgba(34,197,94,0.6); }
+    .panel-head .right { margin-left: auto; font-size: 0.74rem; font-weight: 400; color: var(--text-muted); }
+    .panel-head .clear-btn {
+      margin-left: auto; border: 1px solid var(--border); background: none;
+      color: var(--text-muted); font-size: 0.75rem; padding: 4px 10px;
+      border-radius: 999px; cursor: pointer;
+    }
+
+    .feed-scroll { overflow-x: auto; }
+    table.feed { width: 100%; border-collapse: collapse; font-size: 0.84rem; }
+    table.feed th {
+      text-align: left; padding: 9px 13px; color: var(--text-muted);
+      font-weight: 500; font-size: 0.72rem; text-transform: uppercase;
+      letter-spacing: 0.05em; border-bottom: 1px solid var(--border); white-space: nowrap;
+    }
+    table.feed td { padding: 9px 13px; border-bottom: 1px solid var(--border); vertical-align: top; }
+    table.feed tr:last-child td { border-bottom: none; }
+    table.feed tr:hover td { background: var(--bg-raised); }
+    td.col-key { white-space: nowrap; }
+    td.col-key a { color: var(--accent); text-decoration: none; font-weight: 600; }
+    td.col-key a:hover { text-decoration: underline; }
+    td.col-summary { min-width: 200px; max-width: 400px; }
+    td.col-expl { min-width: 240px; max-width: 460px; color: var(--text-muted); }
+    td.col-time { white-space: nowrap; color: var(--text-muted); font-size: 0.78rem; }
+
+    .badge {
+      display: inline-block; padding: 2px 9px; border-radius: 999px;
+      font-size: 0.7rem; font-weight: 600; white-space: nowrap;
+    }
+    .sev-critical { background: rgba(239,68,68,0.16); color: #FCA5A5; }
+    .sev-high     { background: rgba(245,158,11,0.16); color: #FCD34D; }
+    .sev-medium   { background: rgba(234,179,8,0.13);  color: #FDE68A; }
+    .sev-low      { background: rgba(34,197,94,0.14);  color: #86EFAC; }
+    .sev-info     { background: var(--bg-raised); color: var(--text-muted); }
+    .v-tp      { background: rgba(239,68,68,0.16); color: #FCA5A5; }
+    .v-benign  { background: rgba(34,197,94,0.14); color: #86EFAC; }
+    .v-unknown { background: rgba(234,179,8,0.13); color: #FDE68A; }
+    .v-pending { background: var(--bg-raised); color: var(--text-muted); }
+    .src-jira  { background: rgba(167,139,250,0.15); color: var(--purple); }
+    .feed-empty { padding: 36px 20px; text-align: center; color: var(--text-muted); }
+
+    /* ── Volume chart ────────────────────────────────────── */
+    .volume-body { padding: 14px 18px 10px; }
+    .volume-body svg { width: 100%; height: 150px; display: block; }
+    .vol-bar { fill: var(--accent); opacity: 0.75; }
+    .vol-bar:hover { opacity: 1; }
+    .vol-axis { font-size: 10px; fill: var(--text-muted); }
+
+    /* ── Chat ────────────────────────────────────────────── */
+    .chat-messages {
+      height: 480px; overflow-y: auto; padding: 15px;
+      display: flex; flex-direction: column; gap: 10px;
+    }
+    .chat-msg {
+      max-width: 92%; padding: 10px 13px; border-radius: var(--radius);
+      font-size: 0.86rem; line-height: 1.45; white-space: pre-wrap; word-break: break-word;
+    }
+    .chat-msg.user { align-self: flex-end; background: var(--accent-light); }
+    .chat-msg.assistant { align-self: flex-start; background: var(--bg-raised); }
+    .chat-msg.pending { color: var(--text-muted); font-style: italic; }
+    .chat-hint { padding: 0 15px 8px; font-size: 0.73rem; color: var(--text-muted); }
+    .chat-input-row { display: flex; gap: 8px; padding: 12px 15px; border-top: 1px solid var(--border); }
+    .chat-input-row textarea {
+      flex: 1; resize: none; padding: 9px 12px;
+      border: 1px solid var(--border); border-radius: var(--radius);
+      background: var(--bg-base); color: var(--text-primary);
+      font-family: inherit; font-size: 0.86rem; min-height: 42px; max-height: 120px;
+    }
+    .chat-input-row button {
+      padding: 9px 17px; border: none; border-radius: var(--radius);
+      background: var(--accent); color: #fff; font-weight: 600; font-size: 0.86rem; cursor: pointer;
+    }
+    .chat-input-row button:disabled { opacity: 0.5; cursor: not-allowed; }
+
+    .freshness { font-size: 0.74rem; color: var(--text-muted); }
+  </style>
+</head>
+<body>
+
+<aside class="sidebar">
+  <div class="brand">
+    <img src="/static/Logo.webp" alt="Logicalis">
+    <div>SOC Platform<small>Threat Detection &amp; Response</small></div>
   </div>
-  <span class="dash-freshness" id="freshness"></span>
-</div>
 
-<div class="metric-row">
-  <div class="metric-card"><div class="label">Active Alerts</div><div class="value" id="mActive">—</div></div>
-  <div class="metric-card"><div class="label">Critical / High</div><div class="value crit" id="mCritical">—</div></div>
-  <div class="metric-card"><div class="label">Avg Response Time</div><div class="value" id="mResponse">—</div></div>
-  <div class="metric-card"><div class="label">Auto-Resolved (Benign)</div><div class="value" id="mAuto">—</div></div>
-</div>
+  <nav class="side-nav">
+    <a href="/dashboard/" class="active">
+      <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="#EF4444" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M18 8A6 6 0 0 0 6 8c0 7-3 9-3 9h18s-3-2-3-9"/><path d="M13.73 21a2 2 0 0 1-3.46 0"/></svg>
+      Alerts
+    </a>
+    <a href="/reports/">
+      <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="#3B82F6" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="16" y1="13" x2="8" y2="13"/><line x1="16" y1="17" x2="8" y2="17"/></svg>
+      Reports
+    </a>
+    <a href="/admin/customers">
+      <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="#22C55E" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/></svg>
+      Customers
+    </a>
+    <a href="/admin/history">
+      <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="#A78BFA" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/></svg>
+      History
+    </a>
+    <a href="/admin/schedules">
+      <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="#22D3EE" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4" width="18" height="18" rx="2" ry="2"/><line x1="16" y1="2" x2="16" y2="6"/><line x1="8" y1="2" x2="8" y2="6"/><line x1="3" y1="10" x2="21" y2="10"/></svg>
+      Schedules
+    </a>
+  </nav>
 
-<div class="dash-main">
-  <div class="feed-panel">
-    <div class="panel-head">Live Alert Feed</div>
-    <div class="feed-scroll">
-      <table class="feed">
-        <thead>
-          <tr>
-            <th>Ticket</th><th>Severity</th><th>Verdict</th><th>Source</th>
-            <th>Alert</th><th>AI Explanation</th><th>Created</th>
-          </tr>
-        </thead>
-        <tbody id="feedBody">
-          <tr><td colspan="7" class="feed-empty">Loading…</td></tr>
-        </tbody>
-      </table>
+  <div class="side-bottom">
+    <div>
+      <div class="side-section-title">Integration Status</div>
+      <div id="integrationList">
+        <div class="integration-row"><span class="dot"></span>Loading…</div>
+      </div>
+    </div>
+    <div>
+      <div class="side-section-title">System Health</div>
+      <div class="sys-health" id="sysHealth">
+        <span class="pulse"></span><span id="sysHealthText">Checking…</span>
+      </div>
+    </div>
+  </div>
+</aside>
+
+<div class="main-col">
+  <div class="topbar">
+    <div class="search-wrap">
+      <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="#8A94AD" stroke-width="2" stroke-linecap="round"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
+      <input id="searchInput" type="search" placeholder="Search alerts, tickets, hosts, users…" autocomplete="off">
+    </div>
+    <select id="customerSelect" aria-label="Customer filter">
+      <option value="all">All customers</option>
+      {% for c in customers %}
+      <option value="{{ c.id }}">{{ c.name }}</option>
+      {% endfor %}
+    </select>
+    <div class="window-toggle" id="windowToggle" role="group" aria-label="Metrics window">
+      <button data-window="1">24h</button>
+      <button data-window="7" class="active">7d</button>
+      <button data-window="30">30d</button>
+    </div>
+    <div class="user-chip">
+      <span class="freshness" id="freshness"></span>
+      <span class="email">{{ user.email }}</span>
+      <a href="/auth/logout" class="logout-btn">Log out</a>
     </div>
   </div>
 
-  <div class="chat-panel">
-    <div class="panel-head">AI Copilot</div>
-    <div class="chat-messages" id="chatMessages">
-      <div class="chat-msg assistant">Ask me about your alerts — for example: "What are the critical alerts today?", "Explain SCDM-727", or "Any brute-force activity this week?"</div>
+  <main class="content">
+    <div class="metric-row">
+      <div class="metric-card">
+        <div class="icon red"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="#EF4444" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M18 8A6 6 0 0 0 6 8c0 7-3 9-3 9h18s-3-2-3-9"/><path d="M13.73 21a2 2 0 0 1-3.46 0"/></svg></div>
+        <div><div class="label">Active Alerts</div><div class="value" id="mActive">—</div></div>
+      </div>
+      <div class="metric-card">
+        <div class="icon orange"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="#F59E0B" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M10.29 3.86 1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/><line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/></svg></div>
+        <div><div class="label">Critical / High</div><div class="value" id="mCritical">—</div></div>
+      </div>
+      <div class="metric-card">
+        <div class="icon blue"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="#3B82F6" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/></svg></div>
+        <div><div class="label">Avg Response Time</div><div class="value" id="mResponse">—</div></div>
+      </div>
+      <div class="metric-card">
+        <div class="icon green"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="#22C55E" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M22 11.08V12a10 10 0 1 1-5.93-9.14"/><polyline points="22 4 12 14.01 9 11.01"/></svg></div>
+        <div><div class="label">Auto-Resolved (Benign)</div><div class="value" id="mAuto">—</div></div>
+      </div>
     </div>
-    <div class="chat-hint">Answers are grounded in the synced alert data and Jira; scoped to the customer selected above.</div>
-    <div class="chat-input-row">
-      <textarea id="chatInput" rows="1" placeholder="Ask about alerts, verdicts, tickets…"></textarea>
-      <button id="chatSend">Send</button>
-    </div>
-  </div>
-</div>
-{% endblock %}
 
-{% block scripts %}
+    <div class="dash-main">
+      <div class="left-col">
+        <div class="panel">
+          <div class="panel-head" id="feedHead">
+            <span class="live-dot" id="feedLiveDot"></span>
+            <span id="feedTitle">Live Alert Feed</span>
+            <button class="clear-btn" id="clearSearch" style="display:none;">Clear search</button>
+          </div>
+          <div class="feed-scroll">
+            <table class="feed">
+              <thead>
+                <tr>
+                  <th>Ticket</th><th>Severity</th><th>Verdict</th><th>Source</th>
+                  <th>Alert</th><th>AI Explanation</th><th>Created</th>
+                </tr>
+              </thead>
+              <tbody id="feedBody">
+                <tr><td colspan="7" class="feed-empty">Loading…</td></tr>
+              </tbody>
+            </table>
+          </div>
+        </div>
+
+        <div class="panel">
+          <div class="panel-head">Alert Volume <span class="right">Last 24 hours</span></div>
+          <div class="volume-body"><svg id="volumeChart" preserveAspectRatio="none"></svg></div>
+        </div>
+      </div>
+
+      <div class="panel">
+        <div class="panel-head">AI Copilot</div>
+        <div class="chat-messages" id="chatMessages">
+          <div class="chat-msg assistant">Ask me about your alerts — for example: "What are the critical alerts today?", "Explain SCDM-727", or "Any brute-force activity this week?"</div>
+        </div>
+        <div class="chat-hint">Answers are grounded in the synced alert data and Jira; scoped to the customer selected above.</div>
+        <div class="chat-input-row">
+          <textarea id="chatInput" rows="1" placeholder="Ask about alerts, verdicts, tickets…"></textarea>
+          <button id="chatSend">Send</button>
+        </div>
+      </div>
+    </div>
+  </main>
+</div>
+
 <script>
 (function () {
   const JIRA_BASE = {{ jira_base | tojson }};
   const POLL_MS = 20000;
   const sel = document.getElementById('customerSelect');
   let windowDays = 7;
+  let searchMode = false;
 
   function esc(s) {
     return String(s ?? '').replace(/[&<>"']/g,
       c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
   }
-
   function sevClass(sev) {
     const s = (sev || '').toLowerCase();
-    if (s.includes('critical') || s === 'sev-1') return 'sev-critical';
-    if (s.includes('high')     || s === 'sev-2') return 'sev-high';
-    if (s.includes('medium')   || s === 'sev-3') return 'sev-medium';
-    if (s.includes('low')      || s === 'sev-4') return 'sev-low';
+    if (s.includes('critical') || s === 'sev-0') return 'sev-critical';
+    if (s.includes('high')     || s === 'sev-1') return 'sev-high';
+    if (s.includes('medium')   || s === 'sev-2') return 'sev-medium';
+    if (s.includes('low')      || s === 'sev-3') return 'sev-low';
     return 'sev-info';
   }
-
   function verdictClass(v) {
     const s = (v || '').toUpperCase();
     if (s === 'TRUE-POSITIVE') return 'v-tp';
@@ -328,7 +447,6 @@
     if (s === 'UNKNOWN') return 'v-unknown';
     return 'v-pending';
   }
-
   function fmtDuration(seconds) {
     if (seconds == null) return '—';
     if (seconds < 90) return Math.round(seconds) + 's';
@@ -337,49 +455,136 @@
     return (m / 60).toFixed(1) + ' h';
   }
 
+  function renderRows(rows) {
+    const body = document.getElementById('feedBody');
+    if (!rows.length) {
+      body.innerHTML = '<tr><td colspan="7" class="feed-empty">' +
+        (searchMode ? 'No matches.' : 'No alerts in the sync window.') + '</td></tr>';
+      return;
+    }
+    body.innerHTML = rows.map(t => `
+      <tr>
+        <td class="col-key"><a href="${JIRA_BASE}/browse/${esc(t.ticket_key)}"
+            target="_blank" rel="noopener">${esc(t.ticket_key)}</a></td>
+        <td><span class="badge ${sevClass(t.severity)}">${esc(t.severity || '—')}</span></td>
+        <td><span class="badge ${verdictClass(t.verdict_label)}">${esc(t.verdict_label || '—')}</span></td>
+        <td>${t.from_jira ? '<span class="badge src-jira">Jira archive</span>' : esc(t.source || '—')}</td>
+        <td class="col-summary">${esc(t.summary)}</td>
+        <td class="col-expl">${esc(t.ai_explanation || '')}</td>
+        <td class="col-time">${esc(t.created_at_display || '')}</td>
+      </tr>`).join('');
+  }
+
+  function renderVolume(buckets) {
+    const svg = document.getElementById('volumeChart');
+    if (!buckets || !buckets.length) { svg.innerHTML = ''; return; }
+    const W = 900, H = 150, padB = 18, padL = 4;
+    svg.setAttribute('viewBox', `0 0 ${W} ${H}`);
+    const max = Math.max(1, ...buckets.map(b => b.count));
+    const bw = (W - padL * 2) / buckets.length;
+    let out = '';
+    buckets.forEach((b, i) => {
+      const h = Math.round((H - padB - 6) * b.count / max);
+      const x = padL + i * bw;
+      const hour = new Date(b.bucket).getHours();
+      out += `<rect class="vol-bar" x="${(x + 1).toFixed(1)}" y="${H - padB - h}"
+        width="${(bw - 2).toFixed(1)}" height="${h}" rx="2"><title>${String(hour).padStart(2,'0')}:00 — ${b.count} alert(s)</title></rect>`;
+      if (i % 4 === 0) {
+        out += `<text class="vol-axis" x="${(x + bw / 2).toFixed(1)}" y="${H - 4}"
+          text-anchor="middle">${String(hour).padStart(2,'0')}:00</text>`;
+      }
+    });
+    svg.innerHTML = out;
+  }
+
   async function refresh() {
     const cid = encodeURIComponent(sel.value);
     try {
-      const [mRes, fRes] = await Promise.all([
+      const fetches = [
         fetch(`/dashboard/api/metrics?customer_id=${cid}&window=${windowDays}`),
-        fetch(`/dashboard/api/feed?customer_id=${cid}`),
-      ]);
-      if (!mRes.ok || !fRes.ok) throw new Error('fetch failed');
-      const m = await mRes.json();
-      const f = await fRes.json();
+        fetch(`/dashboard/api/volume?customer_id=${cid}`),
+      ];
+      if (!searchMode) fetches.push(fetch(`/dashboard/api/feed?customer_id=${cid}`));
+      const res = await Promise.all(fetches);
+      if (res.some(r => !r.ok)) throw new Error('fetch failed');
+      const m = await res[0].json();
+      const v = await res[1].json();
 
       document.getElementById('mActive').textContent = m.active ?? '—';
       document.getElementById('mCritical').textContent = m.critical ?? '—';
       document.getElementById('mResponse').textContent = fmtDuration(m.avg_response_seconds);
       document.getElementById('mAuto').textContent =
         m.auto_resolved_pct == null ? '—' : m.auto_resolved_pct + '%';
+      renderVolume(v.buckets);
 
-      const body = document.getElementById('feedBody');
-      const rows = f.tickets || [];
-      if (!rows.length) {
-        body.innerHTML = '<tr><td colspan="7" class="feed-empty">No alerts in the sync window.</td></tr>';
-      } else {
-        body.innerHTML = rows.map(t => `
-          <tr>
-            <td class="col-key"><a href="${JIRA_BASE}/browse/${esc(t.ticket_key)}"
-                target="_blank" rel="noopener">${esc(t.ticket_key)}</a></td>
-            <td><span class="badge ${sevClass(t.severity)}">${esc(t.severity || '—')}</span></td>
-            <td><span class="badge ${verdictClass(t.verdict_label)}">${esc(t.verdict_label || '—')}</span></td>
-            <td>${esc(t.source || '—')}</td>
-            <td class="col-summary">${esc(t.summary)}</td>
-            <td class="col-expl">${esc(t.ai_explanation || '')}</td>
-            <td class="col-time">${esc(t.created_at_display || '')}</td>
-          </tr>`).join('');
+      if (!searchMode) {
+        const f = await res[2].json();
+        renderRows(f.tickets || []);
+        document.getElementById('freshness').textContent =
+          f.last_synced_display ? `Synced ${f.last_synced_display}` : '';
       }
-
-      document.getElementById('freshness').textContent =
-        f.last_synced_display ? `Last synced ${f.last_synced_display}` : '';
     } catch (e) {
       document.getElementById('freshness').textContent = 'Refresh failed — retrying…';
     }
   }
 
-  sel.addEventListener('change', refresh);
+  async function refreshStatus() {
+    try {
+      const r = await fetch('/dashboard/api/status');
+      if (!r.ok) throw new Error();
+      const s = await r.json();
+      document.getElementById('integrationList').innerHTML =
+        (s.integrations || []).map(i => `
+          <div class="integration-row">
+            <span class="dot ${i.ok ? 'ok' : 'bad'}"></span>${esc(i.name)}
+            <span class="st">${esc(i.ok ? (i.detail || 'Connected') : (i.detail || 'Down'))}</span>
+          </div>`).join('');
+      const health = document.getElementById('sysHealth');
+      health.classList.toggle('bad', !s.health.ok);
+      document.getElementById('sysHealthText').textContent = s.health.text;
+    } catch (e) { /* keep last known state */ }
+  }
+
+  // ── Search ─────────────────────────────────────────────
+  const searchInput = document.getElementById('searchInput');
+  const clearBtn = document.getElementById('clearSearch');
+
+  async function runSearch() {
+    const q = searchInput.value.trim();
+    if (q.length < 2) return;
+    searchMode = true;
+    document.getElementById('feedTitle').textContent = `Search results for "${q}"`;
+    document.getElementById('feedLiveDot').style.display = 'none';
+    clearBtn.style.display = '';
+    document.getElementById('feedBody').innerHTML =
+      '<tr><td colspan="7" class="feed-empty">Searching alerts + Jira…</td></tr>';
+    try {
+      const r = await fetch(`/dashboard/api/search?q=${encodeURIComponent(q)}&customer_id=${encodeURIComponent(sel.value)}`);
+      const data = r.ok ? await r.json() : { tickets: [] };
+      renderRows(data.tickets || []);
+      document.getElementById('feedTitle').textContent =
+        `Search results for "${q}" (${(data.tickets || []).length})`;
+    } catch (e) {
+      document.getElementById('feedBody').innerHTML =
+        '<tr><td colspan="7" class="feed-empty">Search failed — try again.</td></tr>';
+    }
+  }
+  function clearSearch() {
+    searchMode = false;
+    searchInput.value = '';
+    clearBtn.style.display = 'none';
+    document.getElementById('feedLiveDot').style.display = '';
+    document.getElementById('feedTitle').textContent = 'Live Alert Feed';
+    refresh();
+  }
+  searchInput.addEventListener('keydown', (e) => {
+    if (e.key === 'Enter') { e.preventDefault(); runSearch(); }
+    if (e.key === 'Escape') clearSearch();
+  });
+  clearBtn.addEventListener('click', clearSearch);
+
+  // ── Controls ───────────────────────────────────────────
+  sel.addEventListener('change', () => { if (searchMode) runSearch(); refresh(); });
   document.getElementById('windowToggle').addEventListener('click', (e) => {
     const btn = e.target.closest('button[data-window]');
     if (!btn) return;
@@ -388,14 +593,17 @@
       .forEach(b => b.classList.toggle('active', b === btn));
     refresh();
   });
-  refresh();
-  setInterval(refresh, POLL_MS);
 
-  // ── Copilot chat ──────────────────────────────────────────────────────
+  refresh();
+  refreshStatus();
+  setInterval(refresh, POLL_MS);
+  setInterval(refreshStatus, 60000);
+
+  // ── Copilot chat ───────────────────────────────────────
   const chatBox = document.getElementById('chatMessages');
   const chatInput = document.getElementById('chatInput');
   const chatSend = document.getElementById('chatSend');
-  const chatHistory = [];   // last turns, sent for conversational context
+  const chatHistory = [];
 
   function addMsg(role, text, pending) {
     const div = document.createElement('div');
@@ -445,4 +653,5 @@
   });
 })();
 </script>
-{% endblock %}
+</body>
+</html>

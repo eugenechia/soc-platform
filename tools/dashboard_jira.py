@@ -82,6 +82,49 @@ def jira_search_with_comments(jql: str, max_results: int = 100,
     return r.json()
 
 
+def search_jira_text(q: str, project_keys: list[str],
+                     max_results: int = 20) -> list[dict]:
+    """Live Jira full-text search, scoped to the given project keys. Used by
+    the dashboard search bar to reach past the read-model's sync window.
+    Returns compact feed-shaped dicts (source='jira'); [] on any failure."""
+    from tools.jira_client import jira_search, _normalize_severity
+
+    q = (q or "").replace('"', " ").replace("\\", " ").strip()
+    keys = [k for k in (project_keys or []) if k]
+    if not q or len(q) < 3 or not keys:
+        return []
+    scope = ", ".join(f'"{k}"' for k in keys[:60])
+    jql = f'project in ({scope}) AND text ~ "{q}" ORDER BY created DESC'
+    try:
+        result = jira_search(jql, max_results=max_results)
+    except Exception:
+        logger.exception("search_jira_text failed")
+        return []
+    if not isinstance(result, dict) or result.get("error"):
+        return []
+
+    out = []
+    for issue in result.get("issues", []):
+        f = issue.get("fields", {}) or {}
+        labels_lower = {str(l).lower() for l in (f.get("labels") or [])}
+        verdict = ("TRUE-POSITIVE" if "true-positive" in labels_lower
+                   else "BENIGN-POSITIVE" if "benign-positive" in labels_lower
+                   else "UNKNOWN" if "unknown" in labels_lower else "")
+        sev = (f.get("customfield_10038") or {}).get("value", "")
+        out.append({
+            "ticket_key": issue.get("key", ""),
+            "summary": f.get("summary", "") or "",
+            "severity": _normalize_severity(sev),
+            "verdict_label": verdict,
+            "raw_status": (f.get("status") or {}).get("name", ""),
+            "source": "Jira archive",
+            "ai_explanation": "",
+            "created_at": f.get("created", ""),
+            "from_jira": True,
+        })
+    return out
+
+
 def close_ticket(ticket_key: str, justification: str, resolution_summary: str,
                  resolution_category: str,
                  project_spec: dict | None = None) -> tuple[bool, str]:

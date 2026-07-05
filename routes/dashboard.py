@@ -16,6 +16,9 @@ Routes under /dashboard/*:
   GET  /api/metrics      the four metric-card values
   GET  /api/feed         recent ticket snapshots, newest first
   POST /api/chat         grounded copilot Q&A over the alert data
+  GET  /api/volume       hourly alert counts (volume chart)
+  GET  /api/search       read-model + live-Jira ticket search
+  GET  /api/status       integration status + system health (sidebar)
 """
 import logging
 import os
@@ -133,6 +136,129 @@ def api_feed():
         "tickets": rows,
         "last_synced": newest_sync.isoformat() if newest_sync else None,
         "last_synced_display": _iso_sgt(newest_sync),
+    })
+
+
+@dashboard_bp.route("/api/volume")
+@require_login
+def api_volume():
+    gate = _gate()
+    if gate:
+        return gate
+    from tools import db
+    try:
+        return jsonify({"buckets": db.load_dashboard_volume(_customer_id_param(),
+                                                            hours=24)})
+    except Exception:
+        log.exception("dashboard volume query failed")
+        return jsonify({"error": "volume unavailable"}), 500
+
+
+@dashboard_bp.route("/api/search")
+@require_login
+def api_search():
+    gate = _gate()
+    if gate:
+        return gate
+    q = (request.args.get("q") or "").strip()[:100]
+    if len(q) < 2:
+        return jsonify({"error": "query too short"}), 400
+    customer_id = _customer_id_param()
+
+    from tools import db
+    try:
+        local = db.search_dashboard_tickets(q, customer_id, limit=50)
+    except Exception:
+        log.exception("dashboard search (read-model) failed")
+        local = []
+    for r in local:
+        for col in ("created_at", "first_enrichment_at"):
+            r[col + "_display"] = _iso_sgt(r.get(col))
+            r[col] = r[col].isoformat() if r.get(col) else None
+        if r.get("synced_at"):
+            r["synced_at"] = r["synced_at"].isoformat()
+
+    # Live Jira reaches past the sync window; failure degrades to local-only.
+    jira_rows: list[dict] = []
+    try:
+        from tools.customers import load_customers
+        from tools.dashboard_jira import search_jira_text
+        keys: list[str] = []
+        for c in (load_customers() or []):
+            if customer_id and c.get("id") != customer_id:
+                continue
+            for p in (c.get("jira_projects") or []):
+                k = (p.get("project_key") or "").strip()
+                if k and k not in keys:
+                    keys.append(k)
+        local_keys = {r["ticket_key"] for r in local}
+        jira_rows = [r for r in search_jira_text(q, keys, max_results=20)
+                     if r["ticket_key"] not in local_keys]
+        for r in jira_rows:
+            r["created_at_display"] = r.get("created_at", "")
+    except Exception:
+        log.exception("dashboard search (live Jira) failed")
+
+    return jsonify({"query": q, "tickets": local + jira_rows,
+                    "local_count": len(local), "jira_count": len(jira_rows)})
+
+
+@dashboard_bp.route("/api/status")
+@require_login
+def api_status():
+    gate = _gate()
+    if gate:
+        return gate
+    from tools import db
+
+    db_ok = db.dashboard_db_ok()
+    last_sync = db.dashboard_last_synced()
+    sync_age_s = None
+    if last_sync:
+        try:
+            sync_age_s = int((datetime.now(timezone.utc)
+                              - last_sync).total_seconds())
+        except Exception:
+            sync_age_s = None
+    interval_min = int(os.environ.get("DASHBOARD_SYNC_INTERVAL_MIN", "5"))
+    jira_ok = sync_age_s is not None and sync_age_s < interval_min * 60 * 3
+
+    sentinel_customers = 0
+    try:
+        from tools.customers import load_customers
+        for c in (load_customers() or []):
+            if c.get("sentinel_workspaces"):
+                sentinel_customers += 1
+    except Exception:
+        pass
+
+    integrations = [
+        {"name": "Jira", "ok": jira_ok,
+         "detail": (f"synced {sync_age_s // 60}m ago" if sync_age_s is not None
+                    else "no sync yet")},
+        {"name": "PostgreSQL", "ok": db_ok,
+         "detail": "connected" if db_ok else "unreachable"},
+        {"name": "Azure OpenAI",
+         "ok": bool(os.environ.get("AZURE_OPENAI_ENDPOINT")
+                    or os.environ.get("OPENAI_API_KEY")),
+         "detail": "configured"},
+        {"name": "Microsoft Sentinel", "ok": sentinel_customers > 0,
+         "detail": f"{sentinel_customers} customer(s)"},
+        {"name": "Splunk", "ok": bool(os.environ.get("SPLUNK_HOST")),
+         "detail": "configured" if os.environ.get("SPLUNK_HOST") else "not configured"},
+        {"name": "SOCRadar", "ok": bool(os.environ.get("SOCRADAR_COMPANY_KEY")
+                                        or os.environ.get("SOCRADAR_API_KEY")),
+         "detail": "configured"},
+    ]
+    healthy = db_ok and jira_ok
+    return jsonify({
+        "integrations": integrations,
+        "health": {
+            "ok": healthy,
+            "text": "All systems operational" if healthy
+                    else "Degraded — check sync/database",
+            "last_sync_age_s": sync_age_s,
+        },
     })
 
 

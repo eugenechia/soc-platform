@@ -80,6 +80,15 @@ def create_app() -> Flask:
     @app.route("/")
     @require_login
     def index():
+        # The dashboard is the platform's landing page; the legacy launcher
+        # remains at /home (and stays the default while the flag is off).
+        if os.environ.get("DASHBOARD_ENABLED", "false").lower() == "true":
+            return redirect("/dashboard/")
+        return render_template("home.html", user=session.get("user", {}))
+
+    @app.route("/home")
+    @require_login
+    def home():
         return render_template("home.html", user=session.get("user", {}))
 
     # Warn loudly if gunicorn is running with multiple workers (breaks APScheduler)

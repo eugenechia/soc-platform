@@ -323,7 +323,7 @@
 
     function initTheme() {
       const saved = localStorage.getItem('soc-theme');
-      if (saved === 'dark') {
+      if (saved !== 'light') {
         document.documentElement.setAttribute('data-theme', 'dark');
         document.getElementById('darkIcon').classList.add('active');
         document.getElementById('lightIcon').classList.remove('active');

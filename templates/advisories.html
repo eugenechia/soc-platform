@@ -384,7 +384,7 @@
       const current = document.documentElement.getAttribute('data-theme') || 'light';
       applyTheme(current === 'light' ? 'dark' : 'light');
     }
-    applyTheme(localStorage.getItem('theme') || 'light');
+    applyTheme(localStorage.getItem('theme') || 'dark');
 
     // ── State ────────────────────────────────────────────────────────────────
     let selectedCustomerId = null;
