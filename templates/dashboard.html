@@ -382,6 +382,7 @@
           <div class="panel-head" id="feedHead">
             <span class="live-dot" id="feedLiveDot"></span>
             <span id="feedTitle">Live Alert Feed</span>
+            <span class="right" id="feedSubtitle">Latest 7 · severity first</span>
             <button class="clear-btn" id="clearSearch" style="display:none;">Clear search</button>
           </div>
           <div class="feed-scroll">
@@ -439,6 +440,14 @@
     if (s.includes('medium')   || s === 'sev-2') return 'sev-medium';
     if (s.includes('low')      || s === 'sev-3') return 'sev-low';
     return 'sev-info';
+  }
+  function sevRank(sev) {
+    const s = (sev || '').toLowerCase();
+    if (s.includes('critical') || s === 'sev-0') return 4;
+    if (s.includes('high')     || s === 'sev-1') return 3;
+    if (s.includes('medium')   || s === 'sev-2') return 2;
+    if (s.includes('low')      || s === 'sev-3') return 1;
+    return 0;
   }
   function verdictClass(v) {
     const s = (v || '').toUpperCase();
@@ -504,7 +513,7 @@
         fetch(`/dashboard/api/metrics?customer_id=${cid}&window=${windowDays}`),
         fetch(`/dashboard/api/volume?customer_id=${cid}`),
       ];
-      if (!searchMode) fetches.push(fetch(`/dashboard/api/feed?customer_id=${cid}`));
+      if (!searchMode) fetches.push(fetch(`/dashboard/api/feed?customer_id=${cid}&limit=7`));
       const res = await Promise.all(fetches);
       if (res.some(r => !r.ok)) throw new Error('fetch failed');
       const m = await res[0].json();
@@ -519,7 +528,12 @@
 
       if (!searchMode) {
         const f = await res[2].json();
-        renderRows(f.tickets || []);
+        // Latest 7 tickets, displayed by severity (highest first), newest
+        // first within the same severity.
+        const rows = (f.tickets || []).slice()
+          .sort((a, b) => sevRank(b.severity) - sevRank(a.severity)
+                          || String(b.created_at || '').localeCompare(String(a.created_at || '')));
+        renderRows(rows);
         document.getElementById('freshness').textContent =
           f.last_synced_display ? `Synced ${f.last_synced_display}` : '';
       }
@@ -555,6 +569,7 @@
     searchMode = true;
     document.getElementById('feedTitle').textContent = `Search results for "${q}"`;
     document.getElementById('feedLiveDot').style.display = 'none';
+    document.getElementById('feedSubtitle').style.display = 'none';
     clearBtn.style.display = '';
     document.getElementById('feedBody').innerHTML =
       '<tr><td colspan="7" class="feed-empty">Searching alerts + Jira…</td></tr>';
@@ -574,6 +589,7 @@
     searchInput.value = '';
     clearBtn.style.display = 'none';
     document.getElementById('feedLiveDot').style.display = '';
+    document.getElementById('feedSubtitle').style.display = '';
     document.getElementById('feedTitle').textContent = 'Live Alert Feed';
     refresh();
   }
