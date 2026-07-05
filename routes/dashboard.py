@@ -15,6 +15,7 @@ Routes under /dashboard/*:
   GET  /                 the dashboard UI
   GET  /api/metrics      the four metric-card values
   GET  /api/feed         recent ticket snapshots, newest first
+  POST /api/chat         grounded copilot Q&A over the alert data
 """
 import logging
 import os
@@ -133,3 +134,27 @@ def api_feed():
         "last_synced": newest_sync.isoformat() if newest_sync else None,
         "last_synced_display": _iso_sgt(newest_sync),
     })
+
+
+@dashboard_bp.route("/api/chat", methods=["POST"])
+@require_login
+def api_chat():
+    gate = _gate()
+    if gate:
+        return gate
+    payload = request.get_json(silent=True) or {}
+    message = str(payload.get("message") or "").strip()[:2000]
+    if not message:
+        return jsonify({"error": "empty message"}), 400
+    history = payload.get("history")
+    if not isinstance(history, list):
+        history = []
+    cid = (str(payload.get("customer_id") or "")).strip()
+    customer_id = None if cid in ("", "all") else cid
+
+    from tools.dashboard_chat import answer
+    user = session.get("user", {})
+    log.info("dashboard chat: question by %s (customer=%s)",
+             user.get("email", "?"), customer_id or "all")
+    reply = answer(message, history, customer_id)
+    return jsonify({"reply": reply})

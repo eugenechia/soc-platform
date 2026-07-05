@@ -23,7 +23,6 @@ from tools.secrets import get_secret
 
 from routes.auth import auth_bp, require_login
 from routes.reports import reports_bp
-from routes.investigate import investigate_bp
 from routes.admin import admin_bp
 from routes.exports import exports_bp
 from routes.webhook import webhook_bp
@@ -52,7 +51,6 @@ def create_app() -> Flask:
     # Register feature blueprints
     app.register_blueprint(auth_bp,         url_prefix="/auth")
     app.register_blueprint(reports_bp,      url_prefix="/reports")
-    app.register_blueprint(investigate_bp,  url_prefix="/investigate")
     app.register_blueprint(admin_bp,        url_prefix="/admin")
     app.register_blueprint(exports_bp,      url_prefix="/exports")
     app.register_blueprint(webhook_bp,      url_prefix="/webhook")
