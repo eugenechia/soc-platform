@@ -557,6 +557,25 @@ def _append_insights_section(lines: list[str], ioc_results: list[dict] | None) -
     lines.append("")
 
 
+def _append_cmdline_section(lines: list[str], cmdline_analysis: dict | None) -> None:
+    """Improvement #4 (2026-07-06): AI command-line reputation check. No-op unless
+    CMDLINE_ANALYSIS_ENABLED produced results. ADVISORY ONLY — never affects the
+    ticket verdict; it tells the analyst whether the process/PowerShell command
+    line looks malicious or is legitimately associated with known software."""
+    items = (cmdline_analysis or {}).get("items") or []
+    if not items:
+        return
+    lines.append("Command-Line Analysis (AI + Open-Source Web Research):")
+    for it in items:
+        img = it.get("image") or "process"
+        lines.append(f"  [{it.get('verdict', '?')}] {img}")
+        lines.append(f"    Command line: {it.get('command_line', '')}")
+        if it.get("parent_image"):
+            lines.append(f"    Parent: {it['parent_image']}")
+        lines.append(f"    {it.get('analysis', '')}")
+    lines.append("")
+
+
 def _append_mitre_section(lines: list[str], mitre_result: dict | None) -> None:
     """Inject MITRE ATT&CK section into lines in-place. No-op if result is absent."""
     if not mitre_result:
@@ -788,6 +807,7 @@ def _build_comment(ioc_results: list[dict], overall_verdict: str, action_taken: 
                    recommendation: str | None = None,
                    whitelist_matches: list[dict] | None = None,
                    whitelist_conflict: list[dict] | None = None,
+                   cmdline_analysis: dict | None = None,
                    ticket_key: str = "") -> str:
     lines: list[str] = []
     _append_known_activity_advisory(lines, rag_info)   # Improvement #3: top advisory box
@@ -810,6 +830,7 @@ def _build_comment(ioc_results: list[dict], overall_verdict: str, action_taken: 
         _append_customer_knowledge_section(lines, rag_info)
         _append_sentinel_evidence_section(lines, kql_evidence)
         _append_historical_section(lines, historical)
+        _append_cmdline_section(lines, cmdline_analysis)
         _append_mitre_section(lines, mitre_result)
         _append_whitelist_conflict(lines, whitelist_conflict)
         lines += [
@@ -915,6 +936,7 @@ def _build_comment(ioc_results: list[dict], overall_verdict: str, action_taken: 
     _append_sentinel_evidence_section(lines, kql_evidence)
     _append_historical_section(lines, historical)
     _append_insights_section(lines, ioc_results)
+    _append_cmdline_section(lines, cmdline_analysis)
     _append_mitre_section(lines, mitre_result)
     _append_whitelist_conflict(lines, whitelist_conflict)
     lines.append(f"VERDICT: {verdict_display}")
@@ -1104,6 +1126,39 @@ def _adf_insights_block(ioc_results: list[dict] | None) -> list[dict]:
     return blocks
 
 
+# Colour the command-line panel by verdict so an analyst reads it at a glance.
+_CMDLINE_PANEL_TYPE = {
+    "Malicious": "error", "Suspicious": "warning",
+    "Legitimate": "success", "Inconclusive": "note",
+}
+
+
+def _adf_cmdline_block(cmdline_analysis: dict | None) -> list[dict]:
+    """Improvement #4 (2026-07-06): ADF 'Command-Line Analysis' section — one
+    colour-coded panel per command line. Returns [] unless the analyzer produced
+    items. Advisory only (does not drive the verdict)."""
+    from tools import adf
+    items = (cmdline_analysis or {}).get("items") or []
+    if not items:
+        return []
+    blocks = [adf.heading(3, "Command-Line Analysis (AI + Open-Source Web Research)")]
+    for it in items:
+        verdict = it.get("verdict", "Inconclusive")
+        img = it.get("image") or "process"
+        panel_type = _CMDLINE_PANEL_TYPE.get(verdict, "note")
+        inner = [
+            adf.paragraph(adf.text(f"{verdict}: ", bold=True), adf.text(img, bold=True)),
+            adf.paragraph(adf.text("Command line: ", bold=True),
+                          adf.text(it.get("command_line", ""), code=True)),
+        ]
+        if it.get("parent_image"):
+            inner.append(adf.paragraph(adf.text("Parent: ", bold=True),
+                                       adf.text(it["parent_image"], code=True)))
+        inner.append(adf.paragraph(adf.text(it.get("analysis", ""))))
+        blocks.append(adf.panel(panel_type, *inner))
+    return blocks
+
+
 def _adf_mitre_block(mitre_result: dict | None) -> list[dict]:
     from tools import adf
     if not mitre_result:
@@ -1254,6 +1309,7 @@ def _build_comment_adf(ioc_results: list[dict], overall_verdict: str, action_tak
                       recommendation: str | None = None,
                       whitelist_matches: list[dict] | None = None,
                       whitelist_conflict: list[dict] | None = None,
+                      cmdline_analysis: dict | None = None,
                       ticket_key: str = "") -> dict:
     """Return a full ADF document for the enrichment comment. Same input
     signature as _build_comment() so callers don't change."""
@@ -1288,6 +1344,7 @@ def _build_comment_adf(ioc_results: list[dict], overall_verdict: str, action_tak
     blocks.extend(_adf_sentinel_block(kql_evidence))
     blocks.extend(_adf_historical_block(historical))
     blocks.extend(_adf_insights_block(ioc_results))
+    blocks.extend(_adf_cmdline_block(cmdline_analysis))
     blocks.extend(_adf_mitre_block(mitre_result))
 
     return adf.doc(*blocks)
@@ -1622,6 +1679,27 @@ def enrich_ticket(ticket_key: str, fields: dict,
             logger.exception("enrich_ticket(%s): IOC insights synthesis failed — skipping",
                              ticket_key)
 
+    # Improvement #4 (2026-07-06): AI command-line reputation check. The process /
+    # PowerShell command line is NOT carried in the Jira ticket — it is fetched
+    # from the customer's own Sentinel workspace (SecurityAlert.Entities), each
+    # command line is researched on the open web, and the LLM judges whether it is
+    # malicious or legitimately associated with known software. Rendered as a
+    # "Command-Line Analysis" advisory section. ADVISORY ONLY — never changes the
+    # verdict (honours the #3 / Phase-4 "advisory must not drive the verdict"
+    # invariant). Killswitch CMDLINE_ANALYSIS_ENABLED (default off); the whole
+    # block is failure-isolated so it can never break the comment.
+    cmdline_analysis = None
+    if os.environ.get("CMDLINE_ANALYSIS_ENABLED", "false").lower() == "true":
+        try:
+            from tools.cmdline_analysis import analyze_ticket_command_lines
+            from tools.customers import find_customer_by_jira_project
+            _pk = ticket_key.split("-")[0] if ticket_key else ""
+            _cust = find_customer_by_jira_project(_pk) if _pk else None
+            cmdline_analysis = analyze_ticket_command_lines(_cust, ticket_key, fields)
+        except Exception:
+            logger.exception("enrich_ticket(%s): command-line analysis failed — skipping",
+                             ticket_key)
+
     l1_id = get_secret("JIRA_L1_ACCOUNT_ID")
     l2_id = get_secret("JIRA_L2_ACCOUNT_ID")
 
@@ -1732,6 +1810,7 @@ def enrich_ticket(ticket_key: str, fields: dict,
                                           recommendation=recommendation,
                                           whitelist_matches=whitelist_matches,
                                           whitelist_conflict=whitelist_conflict,
+                                          cmdline_analysis=cmdline_analysis,
                                           ticket_key=ticket_key)
             posted = post_jira_comment_adf(ticket_key, adf_doc)
         except Exception as e:
@@ -1743,6 +1822,7 @@ def enrich_ticket(ticket_key: str, fields: dict,
                                        recommendation=recommendation,
                                        whitelist_matches=whitelist_matches,
                                        whitelist_conflict=whitelist_conflict,
+                                       cmdline_analysis=cmdline_analysis,
                                        ticket_key=ticket_key)
         post_jira_comment(ticket_key, comment_text)
 
