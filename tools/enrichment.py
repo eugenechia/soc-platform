@@ -576,6 +576,21 @@ def _append_cmdline_section(lines: list[str], cmdline_analysis: dict | None) -> 
     lines.append("")
 
 
+def _append_code_explain_section(lines: list[str], code_explain: dict | None) -> None:
+    """Improvement #5 (2026-07-06): decode SIEM/XDR codes (Event IDs, Logon Types,
+    NTSTATUS, Kerberos failure codes). No-op unless CODE_EXPLAIN_ENABLED produced
+    items. Advisory only — never affects the verdict."""
+    items = (code_explain or {}).get("items") or []
+    if not items:
+        return
+    lines.append("Security Code Explanations:")
+    for it in items:
+        src = " (web)" if it.get("source") == "web" else ""
+        lines.append(f"  [{it.get('label', '')}] {it.get('code', '')}{src}")
+        lines.append(f"    {it.get('meaning', '')}")
+    lines.append("")
+
+
 def _append_mitre_section(lines: list[str], mitre_result: dict | None) -> None:
     """Inject MITRE ATT&CK section into lines in-place. No-op if result is absent."""
     if not mitre_result:
@@ -808,6 +823,7 @@ def _build_comment(ioc_results: list[dict], overall_verdict: str, action_taken: 
                    whitelist_matches: list[dict] | None = None,
                    whitelist_conflict: list[dict] | None = None,
                    cmdline_analysis: dict | None = None,
+                   code_explain: dict | None = None,
                    ticket_key: str = "") -> str:
     lines: list[str] = []
     _append_known_activity_advisory(lines, rag_info)   # Improvement #3: top advisory box
@@ -831,6 +847,7 @@ def _build_comment(ioc_results: list[dict], overall_verdict: str, action_taken: 
         _append_sentinel_evidence_section(lines, kql_evidence)
         _append_historical_section(lines, historical)
         _append_cmdline_section(lines, cmdline_analysis)
+        _append_code_explain_section(lines, code_explain)
         _append_mitre_section(lines, mitre_result)
         _append_whitelist_conflict(lines, whitelist_conflict)
         lines += [
@@ -937,6 +954,7 @@ def _build_comment(ioc_results: list[dict], overall_verdict: str, action_taken: 
     _append_historical_section(lines, historical)
     _append_insights_section(lines, ioc_results)
     _append_cmdline_section(lines, cmdline_analysis)
+    _append_code_explain_section(lines, code_explain)
     _append_mitre_section(lines, mitre_result)
     _append_whitelist_conflict(lines, whitelist_conflict)
     lines.append(f"VERDICT: {verdict_display}")
@@ -1159,6 +1177,26 @@ def _adf_cmdline_block(cmdline_analysis: dict | None) -> list[dict]:
     return blocks
 
 
+def _adf_code_explain_block(code_explain: dict | None) -> list[dict]:
+    """Improvement #5 (2026-07-06): ADF 'Security Code Explanations' section — a
+    table decoding Event IDs / Logon Types / NTSTATUS / Kerberos codes. Returns []
+    unless CODE_EXPLAIN_ENABLED produced items. Advisory only."""
+    from tools import adf
+    items = (code_explain or {}).get("items") or []
+    if not items:
+        return []
+    rows = []
+    for it in items:
+        code = it.get("code", "")
+        if it.get("source") == "web":
+            code += " *"
+        rows.append([code, it.get("label", ""), it.get("meaning", "")])
+    return [
+        adf.heading(3, "Security Code Explanations"),
+        adf.table(["Code", "Type", "Meaning"], rows),
+    ]
+
+
 def _adf_mitre_block(mitre_result: dict | None) -> list[dict]:
     from tools import adf
     if not mitre_result:
@@ -1310,6 +1348,7 @@ def _build_comment_adf(ioc_results: list[dict], overall_verdict: str, action_tak
                       whitelist_matches: list[dict] | None = None,
                       whitelist_conflict: list[dict] | None = None,
                       cmdline_analysis: dict | None = None,
+                      code_explain: dict | None = None,
                       ticket_key: str = "") -> dict:
     """Return a full ADF document for the enrichment comment. Same input
     signature as _build_comment() so callers don't change."""
@@ -1345,6 +1384,7 @@ def _build_comment_adf(ioc_results: list[dict], overall_verdict: str, action_tak
     blocks.extend(_adf_historical_block(historical))
     blocks.extend(_adf_insights_block(ioc_results))
     blocks.extend(_adf_cmdline_block(cmdline_analysis))
+    blocks.extend(_adf_code_explain_block(code_explain))
     blocks.extend(_adf_mitre_block(mitre_result))
 
     return adf.doc(*blocks)
@@ -1700,6 +1740,21 @@ def enrich_ticket(ticket_key: str, fields: dict,
             logger.exception("enrich_ticket(%s): command-line analysis failed — skipping",
                              ticket_key)
 
+    # Improvement #5 (2026-07-06): decode SIEM/XDR codes (Windows Event IDs, Logon
+    # Types, NTSTATUS logon sub-status, Kerberos failure codes) found in the ticket
+    # text. Deterministic dictionary decode (offline) + optional LLM lookup for
+    # unknown, marker-qualified codes. Precision-guarded (never decodes a bare
+    # number). Rendered as a "Security Code Explanations" advisory section.
+    # ADVISORY ONLY. Killswitch CODE_EXPLAIN_ENABLED (default off); failure-isolated.
+    code_explain = None
+    if os.environ.get("CODE_EXPLAIN_ENABLED", "false").lower() == "true":
+        try:
+            from tools.code_explain import explain_ticket_codes
+            code_explain = explain_ticket_codes(fields)
+        except Exception:
+            logger.exception("enrich_ticket(%s): code explanation failed — skipping",
+                             ticket_key)
+
     l1_id = get_secret("JIRA_L1_ACCOUNT_ID")
     l2_id = get_secret("JIRA_L2_ACCOUNT_ID")
 
@@ -1811,6 +1866,7 @@ def enrich_ticket(ticket_key: str, fields: dict,
                                           whitelist_matches=whitelist_matches,
                                           whitelist_conflict=whitelist_conflict,
                                           cmdline_analysis=cmdline_analysis,
+                                          code_explain=code_explain,
                                           ticket_key=ticket_key)
             posted = post_jira_comment_adf(ticket_key, adf_doc)
         except Exception as e:
@@ -1823,6 +1879,7 @@ def enrich_ticket(ticket_key: str, fields: dict,
                                        whitelist_matches=whitelist_matches,
                                        whitelist_conflict=whitelist_conflict,
                                        cmdline_analysis=cmdline_analysis,
+                                       code_explain=code_explain,
                                        ticket_key=ticket_key)
         post_jira_comment(ticket_key, comment_text)
 
