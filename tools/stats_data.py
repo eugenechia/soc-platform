@@ -214,11 +214,19 @@ def collect_stats() -> dict:
         logger.exception("stats: triage_health failed")
         pipeline = {"status": "unknown", "checks": []}
 
+    try:
+        from tools.azure_pricing import get_model_pricing
+        pricing = get_model_pricing()
+    except Exception:
+        logger.exception("stats: model pricing fetch failed")
+        pricing = None
+
     ready_count = sum(1 for c in customers if c["ready"])
     return {
         "pipeline": pipeline,
         "ai_services": _ai_services(sentinel_count),
         "feature_flags": _feature_flags(),
+        "pricing": pricing,
         "customers": customers,
         "summary": {
             "total_customers": len(customers),
