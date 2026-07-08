@@ -199,7 +199,8 @@ RULES:
 
 async def _call_llm(kind: str, code: str, web_context: str) -> str:
     from tools.llm_client import make_chat_client
-    client, model = make_chat_client()
+    # Non-verdict, mechanical decode of an unknown code — cheap tier.
+    client, model = make_chat_client(tier="cheap")
     user = (f"Code type: {_KIND_LABEL.get(kind, kind)}\nCode: {code}\n\n"
             f"Web-search results:\n{web_context or '(none)'}")
     resp = await client.chat.completions.create(

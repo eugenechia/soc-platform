@@ -52,13 +52,32 @@ from tools.secrets import get_secret
 log = logging.getLogger(__name__)
 
 
-def make_chat_client() -> tuple[AsyncOpenAI, str]:
-    """Return (async_client, default_model_name) for the configured provider.
+def _pick(cheap: bool, primary_env: str, cheap_env: str, primary_default: str) -> str:
+    """Resolve the model/deployment for a tier. The 'cheap' tier uses its own env
+    var when set, otherwise falls back to the primary model — so tiered routing is
+    strictly opt-in and changes NOTHING until a *_CHEAP model is configured."""
+    primary = os.environ.get(primary_env, "").strip() or primary_default
+    if cheap:
+        return os.environ.get(cheap_env, "").strip() or primary
+    return primary
+
+
+def make_chat_client(tier: str = "primary") -> tuple[AsyncOpenAI, str]:
+    """Return (async_client, model_name) for the configured provider.
+
+    ``tier``:
+      - ``"primary"`` (default) — the full triage model. Used for every
+        verdict-critical / security-reasoning call.
+      - ``"cheap"`` — a smaller, cheaper model for non-verdict tasks (report
+        prose, advisory extraction, code-decode of unknown codes, MITRE mapping).
+        Falls back to the primary model unless a ``*_CHEAP`` model is set, so
+        enabling it is a pure config change with no code risk.
 
     The returned client speaks chat.completions.create(...) the same way
-    regardless of underlying provider. Caller passes `model=<the_model>`
-    where `<the_model>` is the second tuple element.
+    regardless of provider; only the model/deployment name differs by tier.
     """
+    cheap = (tier == "cheap")
+
     # 1. OpenAI-compatible third-party (Ollama, vLLM, anything that exposes /v1/)
     #    OLLAMA_BASE_URL / OLLAMA_DEFAULT_MODEL are accepted as legacy aliases
     #    so existing Cisco-OCP deploys keep working without env changes.
@@ -68,12 +87,13 @@ def make_chat_client() -> tuple[AsyncOpenAI, str]:
     )
     if base_url:
         api_key = (get_secret("OPENAI_COMPAT_API_KEY") or "no-key-needed")
-        model = (
+        primary = (
             os.environ.get("OPENAI_COMPAT_MODEL", "").strip()
             or os.environ.get("OLLAMA_DEFAULT_MODEL", "").strip()
             or "qwen2.5:32b"
         )
-        log.info("LLM provider: openai-compat at %s, model=%s", base_url, model)
+        model = (os.environ.get("OPENAI_COMPAT_MODEL_CHEAP", "").strip() or primary) if cheap else primary
+        log.info("LLM provider: openai-compat at %s, tier=%s, model=%s", base_url, tier, model)
         return AsyncOpenAI(base_url=base_url, api_key=api_key), model
 
     # 2. Azure OpenAI
@@ -84,19 +104,16 @@ def make_chat_client() -> tuple[AsyncOpenAI, str]:
             api_key=get_secret("AZURE_OPENAI_API_KEY"),
             api_version=os.environ.get("AZURE_OPENAI_API_VERSION", "2024-10-21"),
         )
-        model = (
-            os.environ.get("AZURE_OPENAI_DEPLOYMENT", "").strip()
-            or "gpt-5.2"
-        )
-        log.info("LLM provider: azure-openai endpoint=%s, deployment=%s",
-                 azure_endpoint, model)
+        model = _pick(cheap, "AZURE_OPENAI_DEPLOYMENT", "AZURE_OPENAI_DEPLOYMENT_CHEAP", "gpt-5.2")
+        log.info("LLM provider: azure-openai endpoint=%s, tier=%s, deployment=%s",
+                 azure_endpoint, tier, model)
         return client, model
 
     # 3. Public OpenAI (developer / CI fallback)
     api_key = get_secret("OPENAI_API_KEY")
     if api_key:
-        model = os.environ.get("OPENAI_MODEL", "").strip() or "gpt-5.2"
-        log.info("LLM provider: public openai, model=%s", model)
+        model = _pick(cheap, "OPENAI_MODEL", "OPENAI_MODEL_CHEAP", "gpt-5.2")
+        log.info("LLM provider: public openai, tier=%s, model=%s", tier, model)
         return AsyncOpenAI(api_key=api_key), model
 
     raise RuntimeError(

@@ -196,7 +196,8 @@ Cap output at 25 advisories to avoid runaway. If the source clearly lists more, 
 
 async def _ai_extract_async(text: str) -> list[dict]:
     from tools.llm_client import make_chat_client
-    client, model = make_chat_client()
+    # Structured field extraction from advisory text — cheap tier.
+    client, model = make_chat_client(tier="cheap")
     # Cap input to ~15k chars (~3500 tokens) so we stay well under context
     # limits for any provider. CVE advisories are short — if the source is
     # huge it's almost certainly a digest of many; truncating still finds
