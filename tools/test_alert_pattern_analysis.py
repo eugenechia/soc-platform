@@ -114,6 +114,20 @@ check("same prefix helper as Phase 3 (imported, not copied)",
       apa._normalize_summary_prefix is _normalize_summary_prefix)
 check("bracket noise stripped", not apa._normalize_summary_prefix(s).startswith("["))
 
+# Mid-word cut trims to the last whole word — a JQL phrase with a trailing
+# partial token matches nothing in Lucene (found via SCDM probe 2026-07-08).
+mid = "Rare and potentially high-risk Office operations involving one user"
+assert len(mid) > 50 and mid[49] != " " and mid[50] != " "  # fixture sanity
+check("mid-word 50-char cut trims to word boundary",
+      _normalize_summary_prefix(mid) == "Rare and potentially high-risk Office operations")
+exact = ("A" * 44 + " word rest")  # char 50 boundary: prefix ends at whole word
+check("cut at word boundary keeps the word",
+      _normalize_summary_prefix(exact) == ("A" * 44 + " word"))
+check("short summary returned whole",
+      _normalize_summary_prefix("Short alert name") == "Short alert name")
+check("single long token not trimmed to empty",
+      _normalize_summary_prefix("B" * 80) == "B" * 50)
+
 
 # ── result assembly from canned payload (_analyze, mocked _search) ────────
 print("\n_analyze assembly")

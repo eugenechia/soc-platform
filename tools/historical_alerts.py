@@ -75,11 +75,22 @@ def _normalize_summary_prefix(summary: str) -> str:
     Bracket prefixes carry ticket-state semantics, not rule identity:
       "[DUPLICATE] Brute force on srv-01"      → "Brute force on srv-01"
       "[Resolved] [URGENT] Brute force..."      → "Brute force..."
+
+    When the N-char cut lands mid-word, trim back to the last complete word:
+    JQL `summary ~ "\"...\""` is a Lucene phrase query, and a trailing partial
+    token ("...Office operations i") matches NOTHING — discovered 2026-07-08
+    when a rule with 97 siblings in 30d returned zero matches.
     """
     if not summary:
         return ""
     cleaned = _BRACKET_NOISE_RE.sub("", summary).strip()
-    return cleaned[:_prefix_len()]
+    n = _prefix_len()
+    if len(cleaned) <= n:
+        return cleaned
+    prefix = cleaned[:n]
+    if not prefix.endswith(" ") and cleaned[n] != " " and " " in prefix:
+        prefix = prefix.rsplit(" ", 1)[0]
+    return prefix.strip()
 
 
 def _jql_escape(s: str) -> str:
