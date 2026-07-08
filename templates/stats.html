@@ -75,6 +75,14 @@
   .cell-no  { color: var(--text-muted); }
   .cell-warn { color: var(--warnc); font-weight: 600; }
 
+  /* pricing */
+  .price { font-variant-numeric: tabular-nums; font-weight: 600; color: var(--text-primary); white-space: nowrap; }
+  table.stats tr.in-use-row td { background: var(--accent-light); }
+  .inuse-tag { font-size: 0.63rem; font-weight: 700; letter-spacing: .04em; text-transform: uppercase;
+               color: var(--accent); border: 1px solid var(--accent); padding: 1px 7px; border-radius: 20px; white-space: nowrap; }
+  .stale-tag { font-size: 0.6rem; color: var(--warnc); border: 1px solid var(--warnc);
+               padding: 1px 6px; border-radius: 10px; text-transform: uppercase; margin-left: 6px; }
+
   /* semantic colours (base.html has no --success) — work in both themes */
   :root { --okc: #16A34A; --okc-bg: rgba(22,163,74,.12); --warnc: #D97706; --badc: #DC2626; --offc: #94A3B8; }
   [data-theme="dark"] { --okc: #22C55E; --okc-bg: rgba(34,197,94,.15); --warnc: #F59E0B; --badc: #EF4444; --offc: #64748B; }
@@ -126,6 +134,34 @@
       {% endfor %}
     </div>
   </div>
+
+  <!-- Azure AI model pricing (live from Azure Retail Prices API) -->
+  {% if stats.pricing %}
+  <div class="sec">
+    <div class="sec-title">Azure AI Model Pricing{% if stats.pricing.stale %}<span class="stale-tag">stale</span>{% endif %}</div>
+    <div class="tbl-wrap">
+      <table class="stats">
+        <thead>
+          <tr><th>Model</th><th>Input</th><th>Output</th><th></th></tr>
+        </thead>
+        <tbody>
+          {% for m in stats.pricing.models %}
+          <tr class="{{ 'in-use-row' if m.in_use else '' }}">
+            <td class="cust-name">{{ m.label }}</td>
+            <td class="price">{% if m.input_1m is not none %}${{ '%.3f'|format(m.input_1m) }}{% else %}<span class="cell-no">—</span>{% endif %}</td>
+            <td class="price">{% if m.embed %}<span class="cell-no">input only</span>{% elif m.output_1m is not none %}${{ '%.3f'|format(m.output_1m) }}{% else %}<span class="cell-no">—</span>{% endif %}</td>
+            <td>{% if m.in_use %}<span class="inuse-tag">In use</span>{% endif %}</td>
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+    <div class="sub" style="margin-top:10px;">
+      {{ stats.pricing.currency }} {{ stats.pricing.unit }} · {{ stats.pricing.deployment }} deployment ·
+      source: {{ stats.pricing.source }} · last synced {{ stats.pricing.synced_at }}{% if stats.pricing.stale %} — refresh failed, showing last known{% endif %}.
+    </div>
+  </div>
+  {% endif %}
 
   <!-- L1 feature flags -->
   <div class="sec">
