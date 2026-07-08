@@ -134,7 +134,8 @@ def _build_user_prompt(fields: dict, ioc_results: list[dict], hints: list[str]) 
 
 async def _call_llm(user_prompt: str) -> str:
     from tools.llm_client import make_chat_client
-    client, model = make_chat_client()
+    # ATT&CK technique mapping (advisory, semi-structured) — cheap tier.
+    client, model = make_chat_client(tier="cheap")
     response = await client.chat.completions.create(
         model=model,
         messages=[

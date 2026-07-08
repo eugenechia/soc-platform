@@ -1768,7 +1768,8 @@ async def _generate_group(group_sections: list, data_subset: dict, ctx: dict, co
         report_year=ctx["report_year"],
     )
 
-    client, model = make_chat_client()
+    # Report narrative prose — non-verdict, cheap tier.
+    client, model = make_chat_client(tier="cheap")
     response = await client.chat.completions.create(
         model=model,
         messages=[
