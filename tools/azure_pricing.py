@@ -32,7 +32,8 @@ _API = "https://prices.azure.com/api/retail/prices"
 _CURRENCY = "USD"
 
 # Products we pull once each and then extract models from.
-_PRODUCTS = ["Azure OpenAI", "Azure OpenAI Reasoning", "Azure OpenAI Embedding"]
+_PRODUCTS = ["Azure OpenAI", "Azure OpenAI GPT5", "Azure OpenAI Reasoning",
+             "Azure OpenAI Embedding"]
 
 # Deployment-tier preference (Global cheapest/most common → Data Zone → Regional).
 _TIER_TOKENS = [("glbl", "Global"), ("dz", "Data Zone"), ("regnl", "Regional")]
@@ -42,12 +43,15 @@ _EXCLUDE_COMMON = ("cached", "cchd", "batch", "ft ", " ft", "-ft", "audio",
                    "trscb", "tts", "rt-", "realtime", "grdr", "deep research")
 
 # Curated model catalogue. Each: label, product, include-tokens (all must be in
-# the meter name), extra excludes, embedding? (input-only), and the deployment
-# id-prefix that marks it as "in use" by this platform.
+# the meter name), extra excludes, embedding? (input-only). "In use" is decided
+# separately by classifying this platform's actual deployment names (see
+# _classify_deployment) — the labels below are the classifier's target names.
 _MODELS = [
+    {"label": "GPT-5 Chat",     "product": "Azure OpenAI GPT5",      "inc": ["gpt 5 chat"],    "exc": [],               "embed": False},
+    {"label": "GPT-5",          "product": "Azure OpenAI GPT5",      "inc": ["gpt 5"],         "exc": ["chat", "mini", "nano", "pro", "codex"], "embed": False},
+    {"label": "GPT-5 Mini",     "product": "Azure OpenAI GPT5",      "inc": ["gpt 5 mini"],    "exc": [],               "embed": False},
+    {"label": "GPT-5 Nano",     "product": "Azure OpenAI GPT5",      "inc": ["gpt 5 nano"],    "exc": [],               "embed": False},
     {"label": "gpt-4.1",        "product": "Azure OpenAI",           "inc": ["gpt 4.1"],       "exc": ["mini", "nano"], "embed": False},
-    {"label": "gpt-4.1-mini",   "product": "Azure OpenAI",           "inc": ["gpt 4.1 mini"],  "exc": ["nano"],         "embed": False},
-    {"label": "gpt-4o",         "product": "Azure OpenAI",           "inc": ["gpt 4o"],        "exc": ["mini", "4.1"],  "embed": False},
     {"label": "gpt-4o-mini",    "product": "Azure OpenAI",           "inc": ["gpt4omini", "txt"], "exc": [],            "embed": False},
     {"label": "o4-mini",        "product": "Azure OpenAI Reasoning", "inc": ["o4-mini"],       "exc": [],               "embed": False},
     {"label": "text-embedding-3-large", "product": "Azure OpenAI Embedding", "inc": ["text embedding 3 large"], "exc": [], "embed": True},
@@ -126,18 +130,49 @@ def _pick(items: list[dict], spec: dict, want: str | None) -> float | None:
     return None
 
 
+def _classify_deployment(dep_name: str) -> str | None:
+    """Map an Azure deployment name (e.g. 'gpt-5.3-chat', 'gpt-5.2',
+    'text-embedding-3-large') to a catalogue label. Robust to version suffixes.
+    Returns None if it doesn't map to a catalogue row."""
+    d = (dep_name or "").strip().lower()
+    if not d:
+        return None
+    if "embedding-3-large" in d:
+        return "text-embedding-3-large"
+    if "embedding-3-small" in d:
+        return "text-embedding-3-small"
+    if "o4-mini" in d or "o4mini" in d:
+        return "o4-mini"
+    if "gpt-5" in d or "gpt5" in d:
+        if "chat" in d:
+            return "GPT-5 Chat"
+        if "mini" in d:
+            return "GPT-5 Mini"
+        if "nano" in d:
+            return "GPT-5 Nano"
+        return "GPT-5"
+    if "gpt-4.1" in d or "gpt-4-1" in d or "gpt4.1" in d:
+        return "gpt-4.1"
+    if "gpt-4o" in d or "gpt4o" in d:
+        return "gpt-4o-mini" if "mini" in d else "gpt-4o"
+    return None
+
+
 def _in_use_labels() -> set[str]:
-    """Which catalogue labels this platform actually deploys (chat + embedding)."""
+    """Catalogue labels for the models this platform actually deploys — the chat
+    (triage) deployment, the analyst-copilot 'investigate' model, and the
+    embedding deployment."""
     import os
+    deployments = [
+        os.environ.get("AZURE_OPENAI_DEPLOYMENT", "") or os.environ.get("OPENAI_MODEL", ""),
+        os.environ.get("INVESTIGATE_MODEL", ""),
+        os.environ.get("AZURE_OPENAI_EMBEDDING_DEPLOYMENT", ""),
+    ]
     labels = set()
-    chat = (os.environ.get("AZURE_OPENAI_DEPLOYMENT", "") or os.environ.get("OPENAI_MODEL", "")).strip().lower()
-    embed = os.environ.get("AZURE_OPENAI_EMBEDDING_DEPLOYMENT", "").strip().lower()
-    for m in _MODELS:
-        lab = m["label"].lower()
-        if chat and (chat == lab or chat.startswith(lab)):
-            labels.add(m["label"])
-        if embed and (embed == lab or lab in embed):
-            labels.add(m["label"])
+    for dep in deployments:
+        lab = _classify_deployment(dep)
+        if lab:
+            labels.add(lab)
     return labels
 
 
