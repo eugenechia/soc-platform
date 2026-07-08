@@ -166,6 +166,23 @@ def _run_enrichment(job_id: str, ticket_key: str) -> None:
             logger.warning("Enrichment %s: historical lookup raised (%s); continuing without it: %s",
                            job_id, type(e).__name__, e)
 
+        # ── Alert Pattern Analysis (30d) ─────────────────────────────────────
+        # Extends Phase 3 to a 30-day view: frequency, first-ever occurrence,
+        # business-hours timing pattern, per-entity prior-incident correlation
+        # and a deterministic tuning recommendation. Killswitch defaults OFF
+        # (ALERT_PATTERN_ANALYSIS_ENABLED). Module never raises and self-caps
+        # at ALERT_PATTERN_TIMEOUT_S; this try/except is belt-and-suspenders.
+        # Comment rendering uses `pattern`; the LLM Triage prompt only sees it
+        # behind the separate ALERT_PATTERN_TO_LLM_PROMPT_ENABLED gate below.
+        pattern = None
+        try:
+            from tools.alert_pattern_analysis import analyze_alert_patterns
+            project_key = ticket_key.split("-")[0]
+            pattern = analyze_alert_patterns(ticket_key, last_issue["fields"], project_key, schema)
+        except Exception as e:
+            logger.warning("Enrichment %s: alert pattern analysis raised (%s); continuing without it: %s",
+                           job_id, type(e).__name__, e)
+
         # ── Phase 4: RAG Customer Context retrieval ─────────────────────────
         # Vector search over indexed knowledge documents (HRT/HVT lists,
         # Escalation Matrix, Whitelists, Asset Inventory, etc.) for snippets
@@ -248,7 +265,17 @@ def _run_enrichment(job_id: str, ticket_key: str) -> None:
                            job_id, type(e).__name__, e)
             chunks_for_prompt = []
 
-        _run_triage_foundation(job_id, ticket_key, last_issue["fields"], historical, chunks_for_prompt, schema)
+        # Alert Pattern → LLM prompt gate (same conservative ladder as RAG 4c):
+        # the comment always renders `pattern` when analysis ran; the LLM only
+        # sees it once the team has validated section quality and flipped
+        # ALERT_PATTERN_TO_LLM_PROMPT_ENABLED (default false — ships dark).
+        pattern_for_prompt = None
+        if pattern and os.environ.get("ALERT_PATTERN_TO_LLM_PROMPT_ENABLED", "false").strip().lower() == "true":
+            pattern_for_prompt = pattern
+            logger.info("Enrichment %s: passing alert pattern context to LLM Triage prompt", job_id)
+
+        _run_triage_foundation(job_id, ticket_key, last_issue["fields"], historical, chunks_for_prompt, schema,
+                               pattern_for_prompt)
 
         # ── Phase 5: AI-driven KQL expansion ─────────────────────────────────
         # Runs AFTER Phase 1 (so the triage call doesn't pay for KQL latency,
@@ -288,7 +315,8 @@ def _run_enrichment(job_id: str, ticket_key: str) -> None:
                            job_id, type(e).__name__, e)
             kql_evidence = None
 
-        result = enrich_ticket(ticket_key, last_issue["fields"], historical, rag_info, kql_evidence, schema)
+        result = enrich_ticket(ticket_key, last_issue["fields"], historical, rag_info, kql_evidence, schema,
+                               pattern=pattern)
         _jobs[job_id].update({"status": "done", "result": result})
         logger.info("Enrichment %s complete: ticket=%s verdict=%s",
                     job_id, ticket_key, result.get("verdict"))
@@ -300,7 +328,8 @@ def _run_enrichment(job_id: str, ticket_key: str) -> None:
 def _run_triage_foundation(job_id: str, ticket_key: str, fields: dict,
                            historical: dict | None = None,
                            rag_chunks_for_prompt: list[dict] | None = None,
-                           schema=None) -> None:
+                           schema=None,
+                           pattern_for_prompt: dict | None = None) -> None:
     """Phase 1 pre-enrichment steps. Each step logs and continues on failure
     so the downstream enrichment pipeline always runs.
 
@@ -348,7 +377,7 @@ def _run_triage_foundation(job_id: str, ticket_key: str, fields: dict,
 
     # ── 3. LLM Triage priority override ─────────────────────────────────
     rec = triage_priority(ticket_key, fields, severity, baseline_priority,
-                          historical, rag_chunks_for_prompt)
+                          historical, rag_chunks_for_prompt, pattern_for_prompt)
     if not rec:
         logger.info("Triage %s: LLM rec unavailable for %s — keeping baseline",
                     job_id, ticket_key)

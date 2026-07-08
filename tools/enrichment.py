@@ -721,6 +721,75 @@ def _append_historical_section(lines: list[str], historical: dict | None) -> Non
     lines.append("")
 
 
+_TIMING_DISPLAY = {
+    "business-hours-only": "business-hours-only",
+    "after-hours-only": "after-hours-only — atypical timing, weigh toward suspicion",
+    "mixed": "mixed",
+    "insufficient-sample": "insufficient sample",
+}
+
+
+def _append_pattern_section(lines: list[str], pattern: dict | None) -> None:
+    """Alert Pattern Analysis (30d): frequency, verdict history, business-hours
+    timing and the deterministic tuning recommendation. No-op when pattern is
+    None. Unlike the 24h historical block, total=0 still renders a one-liner
+    when this is the first occurrence of the rule ever — that IS signal."""
+    if not pattern:
+        return
+    days = pattern.get("window_days", 30)
+    total = int(pattern.get("total") or 0)
+    if total <= 0:
+        if not pattern.get("first_seen_ever"):
+            lines.append(f"Alert Pattern Analysis ({days}d): first occurrence of this rule "
+                         f"— no prior similar alerts found")
+            lines.append("")
+        return
+
+    total_str = f"{total}+" if pattern.get("truncated") else str(total)
+    lines.append(f"Alert Pattern Analysis ({days}d): {total_str} alerts")
+    lines.append(f"  ├─ True-Positive:  {pattern.get('true_positive', 0)}")
+    lines.append(f"  ├─ Benign-Positive: {pattern.get('false_positive', 0)}")
+    lines.append(f"  ├─ Unknown:        {pattern.get('unknown', 0)}")
+    lines.append(f"  └─ Untriaged:      {pattern.get('untriaged', 0)}")
+
+    first_ever = _format_sgt(pattern.get("first_seen_ever") or "")
+    if first_ever:
+        lines.append(f"  First seen (ever): {first_ever}")
+    elif pattern.get("first_seen_in_window"):
+        lines.append(f"  First seen (in window): {_format_sgt(pattern['first_seen_in_window'])}")
+
+    timing = pattern.get("timing_pattern") or ""
+    if timing:
+        start = os.environ.get("BUSINESS_HOURS_START", "9")
+        end = os.environ.get("BUSINESS_HOURS_END", "18")
+        lines.append(f"  Timing: {_TIMING_DISPLAY.get(timing, timing)} — "
+                     f"{pattern.get('business_hours_count', 0)} business-hours / "
+                     f"{pattern.get('after_hours_count', 0)} after-hours "
+                     f"(SGT {int(start):02d}:00-{int(end):02d}:00 Mon-Fri)")
+
+    entities = pattern.get("entity_correlation") or []
+    if entities:
+        lines.append("  Entity history:")
+        for e in entities:
+            bits = []
+            if e.get("false_positive"):
+                bits.append(f"{e['false_positive']} Benign-Positive")
+            if e.get("true_positive"):
+                bits.append(f"{e['true_positive']} True-Positive")
+            if e.get("unknown"):
+                bits.append(f"{e['unknown']} Unknown")
+            breakdown = f" ({', '.join(bits)})" if bits else ""
+            benign = " — recurring benign" if e.get("historically_benign") else ""
+            lines.append(f"    · {e.get('value','')} ({e.get('type','?')}) — "
+                         f"{e.get('count', 0)} prior incidents{breakdown}{benign}")
+
+    tuning = pattern.get("tuning")
+    if tuning and tuning.get("recommended"):
+        lines.append(f"  TUNING CANDIDATE ({tuning.get('strength', 'moderate')}): "
+                     f"{tuning.get('rationale', '')}")
+    lines.append("")
+
+
 def _append_whitelist_match_section(lines: list[str], matches: list[dict] | None) -> None:
     """Phase 5e (2026-06-16): direct (literal substring) IOC hits in the
     customer's Confluence chunks. Surfaces whitelist + reference-table
@@ -824,7 +893,8 @@ def _build_comment(ioc_results: list[dict], overall_verdict: str, action_taken: 
                    whitelist_conflict: list[dict] | None = None,
                    cmdline_analysis: dict | None = None,
                    code_explain: dict | None = None,
-                   ticket_key: str = "") -> str:
+                   ticket_key: str = "",
+                   pattern: dict | None = None) -> str:
     lines: list[str] = []
     _append_known_activity_advisory(lines, rag_info)   # Improvement #3: top advisory box
     lines += ["=== L1 Triage Report (Automated) ===", ""]
@@ -846,6 +916,7 @@ def _build_comment(ioc_results: list[dict], overall_verdict: str, action_taken: 
         _append_customer_knowledge_section(lines, rag_info)
         _append_sentinel_evidence_section(lines, kql_evidence)
         _append_historical_section(lines, historical)
+        _append_pattern_section(lines, pattern)
         _append_cmdline_section(lines, cmdline_analysis)
         _append_code_explain_section(lines, code_explain)
         _append_mitre_section(lines, mitre_result)
@@ -952,6 +1023,7 @@ def _build_comment(ioc_results: list[dict], overall_verdict: str, action_taken: 
     _append_customer_knowledge_section(lines, rag_info)
     _append_sentinel_evidence_section(lines, kql_evidence)
     _append_historical_section(lines, historical)
+    _append_pattern_section(lines, pattern)
     _append_insights_section(lines, ioc_results)
     _append_cmdline_section(lines, cmdline_analysis)
     _append_code_explain_section(lines, code_explain)
@@ -1339,6 +1411,83 @@ def _adf_historical_block(historical: dict | None) -> list[dict]:
     ]
 
 
+def _adf_pattern_block(pattern: dict | None) -> list[dict]:
+    """ADF twin of _append_pattern_section — Alert Pattern Analysis (30d)."""
+    if not pattern:
+        return []
+    from tools import adf
+    days = pattern.get("window_days", 30)
+    total = int(pattern.get("total") or 0)
+
+    if total <= 0:
+        if pattern.get("first_seen_ever"):
+            return []
+        return [
+            adf.heading(3, f"Alert Pattern Analysis ({days}d)"),
+            adf.paragraph(adf.text("First occurrence of this rule — no prior "
+                                   "similar alerts found", italic=True)),
+        ]
+
+    total_str = f"{total}+" if pattern.get("truncated") else str(total)
+    rows = [
+        ["True-Positive", str(pattern.get("true_positive", 0))],
+        ["Benign-Positive", str(pattern.get("false_positive", 0))],
+        ["Unknown", str(pattern.get("unknown", 0))],
+        ["Untriaged", str(pattern.get("untriaged", 0))],
+    ]
+    first_ever = _format_sgt(pattern.get("first_seen_ever") or "")
+    if first_ever:
+        rows.append(["First seen (ever)", first_ever])
+    elif pattern.get("first_seen_in_window"):
+        rows.append(["First seen (in window)", _format_sgt(pattern["first_seen_in_window"])])
+
+    timing = pattern.get("timing_pattern") or ""
+    if timing:
+        start = os.environ.get("BUSINESS_HOURS_START", "9")
+        end = os.environ.get("BUSINESS_HOURS_END", "18")
+        rows.append(["Timing", f"{_TIMING_DISPLAY.get(timing, timing)} — "
+                               f"{pattern.get('business_hours_count', 0)} business-hours / "
+                               f"{pattern.get('after_hours_count', 0)} after-hours "
+                               f"(SGT {int(start):02d}:00-{int(end):02d}:00 Mon-Fri)"])
+
+    blocks = [
+        adf.heading(3, f"Alert Pattern Analysis ({days}d)"),
+        adf.paragraph(adf.text(f"{total_str} similar alert(s) in the past {days} days",
+                               italic=True)),
+        adf.table(["Category", "Count"], rows),
+    ]
+
+    entities = pattern.get("entity_correlation") or []
+    if entities:
+        e_rows = []
+        for e in entities:
+            bits = []
+            if e.get("false_positive"):
+                bits.append(f"{e['false_positive']} Benign-Positive")
+            if e.get("true_positive"):
+                bits.append(f"{e['true_positive']} True-Positive")
+            if e.get("unknown"):
+                bits.append(f"{e['unknown']} Unknown")
+            outcome = ", ".join(bits) or "all untriaged"
+            if e.get("historically_benign"):
+                outcome += " — recurring benign"
+            e_rows.append([f"{e.get('value', '')} ({e.get('type', '?')})",
+                           str(e.get("count", 0)), outcome])
+        blocks.append(adf.heading(4, "Entity history (prior incidents)"))
+        blocks.append(adf.table(["Entity", "Incidents", "Outcomes"], e_rows))
+
+    tuning = pattern.get("tuning")
+    if tuning and tuning.get("recommended"):
+        blocks.append(adf.panel(
+            "warning",
+            adf.paragraph(
+                adf.text(f"TUNING CANDIDATE ({tuning.get('strength', 'moderate')}): ", bold=True),
+                adf.text(tuning.get("rationale", "")),
+            ),
+        ))
+    return blocks
+
+
 def _build_comment_adf(ioc_results: list[dict], overall_verdict: str, action_taken: str,
                       mitre_result: dict | None = None,
                       historical: dict | None = None,
@@ -1349,7 +1498,8 @@ def _build_comment_adf(ioc_results: list[dict], overall_verdict: str, action_tak
                       whitelist_conflict: list[dict] | None = None,
                       cmdline_analysis: dict | None = None,
                       code_explain: dict | None = None,
-                      ticket_key: str = "") -> dict:
+                      ticket_key: str = "",
+                      pattern: dict | None = None) -> dict:
     """Return a full ADF document for the enrichment comment. Same input
     signature as _build_comment() so callers don't change."""
     from tools import adf
@@ -1382,6 +1532,7 @@ def _build_comment_adf(ioc_results: list[dict], overall_verdict: str, action_tak
     blocks.extend(_adf_customer_knowledge_block(rag_info))
     blocks.extend(_adf_sentinel_block(kql_evidence))
     blocks.extend(_adf_historical_block(historical))
+    blocks.extend(_adf_pattern_block(pattern))
     blocks.extend(_adf_insights_block(ioc_results))
     blocks.extend(_adf_cmdline_block(cmdline_analysis))
     blocks.extend(_adf_code_explain_block(code_explain))
@@ -1570,7 +1721,8 @@ def enrich_ticket(ticket_key: str, fields: dict,
                   historical: dict | None = None,
                   rag_info: dict | None = None,
                   kql_evidence: dict | None = None,
-                  schema=None) -> dict:
+                  schema=None,
+                  pattern: dict | None = None) -> dict:
     """Full enrichment pipeline for one Jira ticket.
 
     Reads typed Sentinel-style entity fields first (the canonical IOC source),
@@ -1593,6 +1745,12 @@ def enrich_ticket(ticket_key: str, fields: dict,
     even when no relevant matches were found. Phase 4 deliberately does
     NOT pass rag_info into the LLM Triage call (mitigation against prior
     failure where bad retrievals confused the model).
+
+    Alert Pattern Analysis (2026-07-08): optional `pattern` arg from
+    tools.alert_pattern_analysis.analyze_alert_patterns(). When present,
+    renders an 'Alert Pattern Analysis (30d)' block (frequency, verdict
+    history, business-hours timing, entity correlation, tuning signal)
+    directly after the 24h historical block.
     """
     from tools.secrets import get_secret
     from tools.jira_schema import detect_schema_mismatch
@@ -1867,7 +2025,8 @@ def enrich_ticket(ticket_key: str, fields: dict,
                                           whitelist_conflict=whitelist_conflict,
                                           cmdline_analysis=cmdline_analysis,
                                           code_explain=code_explain,
-                                          ticket_key=ticket_key)
+                                          ticket_key=ticket_key,
+                                          pattern=pattern)
             posted = post_jira_comment_adf(ticket_key, adf_doc)
         except Exception as e:
             logger.exception("ADF comment build/post failed for %s — falling back to plain text", ticket_key)
@@ -1880,7 +2039,8 @@ def enrich_ticket(ticket_key: str, fields: dict,
                                        whitelist_conflict=whitelist_conflict,
                                        cmdline_analysis=cmdline_analysis,
                                        code_explain=code_explain,
-                                       ticket_key=ticket_key)
+                                       ticket_key=ticket_key,
+                                       pattern=pattern)
         post_jira_comment(ticket_key, comment_text)
 
     return {

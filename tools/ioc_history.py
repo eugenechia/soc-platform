@@ -97,6 +97,18 @@ def _build_jql(ioc_value: str, project: str, exclude_ticket_key: str) -> str:
 def lookup_ioc_history(ioc_value: str,
                        exclude_ticket_key: str = "",
                        project: str | None = None) -> dict | None:
+    """Killswitch-gated wrapper around :func:`fetch_ioc_history` — Phase 5b
+    comment rendering goes through here so ``IOC_HISTORY_ENABLED`` keeps its
+    original meaning. Alert Pattern Analysis calls ``fetch_ioc_history``
+    directly (it has its own killswitch)."""
+    if not _enabled():
+        return None
+    return fetch_ioc_history(ioc_value, exclude_ticket_key, project)
+
+
+def fetch_ioc_history(ioc_value: str,
+                      exclude_ticket_key: str = "",
+                      project: str | None = None) -> dict | None:
     """Return historical Jira ticket appearances of an IOC.
 
     Args:
@@ -108,18 +120,18 @@ def lookup_ioc_history(ioc_value: str,
             ``JIRA_PROJECT_KEY`` env var (or "SCDM" if unset).
 
     Returns:
-        ``{"count": int, "tickets": list[str]}`` when at least one prior ticket
-        is found. ``tickets`` is newest-first, capped at IOC_HISTORY_MAX_RESULTS.
-        ``None`` when disabled, no matches, or any error path. Caller treats
-        None as "skip the line".
+        ``{"count": int, "tickets": list[str], "true_positive": int,
+        "false_positive": int, "unknown": int, "untriaged": int,
+        "historically_benign": bool}`` when at least one prior ticket is
+        found. ``tickets`` is newest-first, capped at IOC_HISTORY_MAX_RESULTS.
+        ``historically_benign`` is True when ≥2 decided outcomes and zero
+        True-Positives. ``None`` when no matches or any error path. Caller
+        treats None as "skip the line".
 
     Module-level cache (TTL 60s) keyed by (ioc_value, exclude_ticket_key, project)
     avoids duplicate JQL calls when the same observable appears across
     back-to-back webhooks. This function MUST NOT raise.
     """
-    if not _enabled():
-        return None
-
     val = (ioc_value or "").strip()
     if not val or len(val) < 3:
         return None
@@ -179,7 +191,27 @@ def lookup_ioc_history(ioc_value: str,
             _cache[cache_key] = (now, None)
         return None
 
-    result = {"count": len(keys), "tickets": keys}
+    # Outcome breakdown — labels ride along free on every jira_search hit
+    # (see tools.jira_client._FIELDS), so this costs zero extra API calls.
+    from tools.historical_alerts import _categorise, _label_names
+    label_map = _label_names()
+    counts = {"tp": 0, "fp": 0, "unknown": 0, "untriaged": 0}
+    for iss in issues:
+        if not iss.get("key"):
+            continue
+        labels = (iss.get("fields") or {}).get("labels") or []
+        counts[_categorise(labels, label_map)] += 1
+    decided = counts["tp"] + counts["fp"]
+
+    result = {
+        "count": len(keys),
+        "tickets": keys,
+        "true_positive": counts["tp"],
+        "false_positive": counts["fp"],
+        "unknown": counts["unknown"],
+        "untriaged": counts["untriaged"],
+        "historically_benign": decided >= 2 and counts["tp"] == 0,
+    }
     with _cache_lock:
         _cache[cache_key] = (now, result)
     return result
@@ -203,4 +235,22 @@ def render_line(history: dict | None, max_keys_inline: int = 5) -> str | None:
         remaining = count - max_keys_inline
         suffix = f" (+{remaining} more)"
     times_word = "time" if count == 1 else "times"
-    return f"  Previously flagged: {count} {times_word} — {', '.join(visible)}{suffix}"
+    line = f"  Previously flagged: {count} {times_word} — {', '.join(visible)}{suffix}"
+
+    # Outcome breakdown (present when fetch parsed labels; absent on old
+    # cached shapes — render degrades gracefully to the bare count line).
+    outcome_bits = []
+    fp = int(history.get("false_positive") or 0)
+    tp = int(history.get("true_positive") or 0)
+    unknown = int(history.get("unknown") or 0)
+    if fp:
+        outcome_bits.append(f"{fp} Benign-Positive")
+    if tp:
+        outcome_bits.append(f"{tp} True-Positive")
+    if unknown:
+        outcome_bits.append(f"{unknown} Unknown")
+    if outcome_bits:
+        line += f" ({', '.join(outcome_bits)})"
+    if history.get("historically_benign"):
+        line += " — recurring benign pattern"
+    return line

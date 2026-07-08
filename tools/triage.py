@@ -55,6 +55,8 @@ If the description is empty or unhelpful, return the baseline priority with conf
 
 Historical context (when present) is a strong signal. A rule firing many times in the past 24h with mostly Benign-Positive outcomes is statistically likely to be benign again — be willing to de-escalate confidently. A rule with mixed outcomes deserves the baseline. A rule firing rarely or for the first time should rely on the ticket text itself.
 
+Alert pattern analysis over 30 days (when present) extends the historical context. A rule that fires only during business hours with overwhelmingly Benign-Positive outcomes is very likely routine business automation — de-escalate with confidence. A rule or entity that historically fires after-hours, or an IOC previously involved in True-Positive incidents, is MORE suspicious — weigh toward escalation. An entity marked "recurring benign" has repeatedly been investigated and cleared. Frequency alone NEVER outweighs explicit compromise indicators in the ticket text.
+
 Customer Knowledge Base context (when present) is high-quality customer-specific information retrieved from the customer's own Confluence pages — HVT lists, whitelists, asset inventories, escalation matrices, known-benign automations. Treat it as authoritative for that customer:
 - If a host or IP is flagged as a HVT / critical asset → escalate, even when the alert text alone is mild
 - If an IOC matches a documented whitelist or known-internal scanner → de-escalate, even when the alert text alone looks suspicious
@@ -117,7 +119,8 @@ def _extract_text(adf_or_str) -> str:
 def _build_user_prompt(fields: dict, severity: str, baseline_priority: str,
                        entity_iocs: list[dict] | None,
                        historical: dict | None = None,
-                       rag_chunks: list[dict] | None = None) -> str:
+                       rag_chunks: list[dict] | None = None,
+                       pattern: dict | None = None) -> str:
     summary = fields.get("summary") or "(none)"
     desc = _extract_text(fields.get("description")) or "(none)"
     # Cap description so we stay within token budget regardless of upstream size.
@@ -148,6 +151,52 @@ def _build_user_prompt(fields: dict, severity: str, baseline_priority: str,
             f"{historical['untriaged']} still untriaged\n"
         )
 
+    # Alert Pattern Analysis (2026-07-08): 30-day frequency / timing / outcome
+    # stats plus per-entity prior-incident correlation. Caller in
+    # routes/webhook.py gates this behind ALERT_PATTERN_TO_LLM_PROMPT_ENABLED
+    # (same conservative ladder as RAG 4 → 4c) — this function renders what
+    # it's given. None → no block.
+    pattern_block = ""
+    if pattern and (pattern.get("total", 0) > 0 or pattern.get("entity_correlation")):
+        days = pattern.get("window_days", 30)
+        total = pattern.get("total", 0)
+        total_str = f"{total}+" if pattern.get("truncated") else str(total)
+        plines = [
+            "",
+            f"Alert pattern analysis (past {days} days):",
+            f"- {total_str} similar alerts; "
+            f"{pattern.get('true_positive', 0)} True-Positive · "
+            f"{pattern.get('false_positive', 0)} Benign-Positive · "
+            f"{pattern.get('unknown', 0)} Unknown · "
+            f"{pattern.get('untriaged', 0)} untriaged",
+        ]
+        first_ever = (pattern.get("first_seen_ever") or "")[:10]
+        if first_ever:
+            plines.append(f"- First occurrence of this rule ever: {first_ever}")
+        timing = pattern.get("timing_pattern") or ""
+        if timing and timing != "insufficient-sample":
+            plines.append(
+                f"- Timing: {timing} "
+                f"({pattern.get('business_hours_count', 0)} business-hours / "
+                f"{pattern.get('after_hours_count', 0)} after-hours, SGT Mon-Fri)"
+            )
+        tuning = pattern.get("tuning")
+        if tuning and tuning.get("recommended"):
+            plines.append(f"- Tuning signal ({tuning.get('strength', 'moderate')}): "
+                          f"{tuning.get('rationale', '')}")
+        entities = pattern.get("entity_correlation") or []
+        if entities:
+            plines.append("Entity correlation with past incidents:")
+            for e in entities[:10]:
+                benign = " (recurring benign pattern)" if e.get("historically_benign") else ""
+                plines.append(
+                    f"- {e.get('value', '')} ({e.get('type', '?')}): "
+                    f"{e.get('count', 0)} prior incidents — "
+                    f"{e.get('false_positive', 0)} Benign-Positive, "
+                    f"{e.get('true_positive', 0)} True-Positive{benign}"
+                )
+        pattern_block = "\n".join(plines) + "\n"
+
     # Phase 4c (2026-06-15): customer-scoped RAG chunks above the stricter
     # prompt threshold (RAG_PROMPT_MIN_SCORE, gated by RAG_TO_LLM_PROMPT_ENABLED).
     # Caller in routes/webhook.py decides what passes through; this function
@@ -176,6 +225,7 @@ def _build_user_prompt(fields: dict, severity: str, baseline_priority: str,
         f"Ticket description:\n{desc}\n\n"
         f"Extracted IOCs:\n{iocs_str}"
         f"{historical_block}"
+        f"{pattern_block}"
         f"{rag_block}"
     )
 
@@ -183,7 +233,8 @@ def _build_user_prompt(fields: dict, severity: str, baseline_priority: str,
 def triage_priority(ticket_key: str, fields: dict, severity: str,
                     baseline_priority: str | None,
                     historical: dict | None = None,
-                    rag_chunks: list[dict] | None = None) -> dict | None:
+                    rag_chunks: list[dict] | None = None,
+                    pattern: dict | None = None) -> dict | None:
     """Synchronous wrapper around the async LLM call.
 
     Returns a dict like:
@@ -204,6 +255,12 @@ def triage_priority(ticket_key: str, fields: dict, severity: str,
     factor in customer-specific HVT lists, whitelists, asset inventories,
     etc. The function itself does NOT re-filter — it renders what it's
     given. Pass `None` or `[]` to suppress the block entirely.
+
+    Alert Pattern Analysis (2026-07-08): optional `pattern` arg from
+    tools.alert_pattern_analysis.analyze_alert_patterns(), gated by the
+    caller behind ALERT_PATTERN_TO_LLM_PROMPT_ENABLED. When present, the
+    prompt includes 30-day frequency / timing / outcome stats and per-entity
+    prior-incident correlation as escalation/de-escalation evidence.
     """
     try:
         from tools.enrichment import extract_iocs_from_entity_fields
@@ -219,8 +276,14 @@ def triage_priority(ticket_key: str, fields: dict, severity: str,
     if rag_chunks:
         logger.info("triage_priority(%s): customer knowledge base context included (%d chunks)",
                     ticket_key, len(rag_chunks))
+    if pattern:
+        logger.info("triage_priority(%s): alert pattern context included "
+                    "(%d alerts/%dd, timing=%s, %d entities)",
+                    ticket_key, pattern.get("total", 0), pattern.get("window_days", 30),
+                    pattern.get("timing_pattern", "?"),
+                    len(pattern.get("entity_correlation") or []))
     user_prompt = _build_user_prompt(fields, severity, baseline_priority or "",
-                                     entity_iocs, historical, rag_chunks)
+                                     entity_iocs, historical, rag_chunks, pattern)
 
     try:
         # asyncio.run is safe here because the webhook background thread has no
