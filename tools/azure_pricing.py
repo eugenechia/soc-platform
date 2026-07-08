@@ -160,12 +160,13 @@ def _classify_deployment(dep_name: str) -> str | None:
 
 def _in_use_labels() -> set[str]:
     """Catalogue labels for the models this platform actually deploys — the chat
-    (triage) deployment, the analyst-copilot 'investigate' model, and the
-    embedding deployment."""
+    (triage / dashboard-copilot) deployment and the embedding deployment. The
+    dashboard chat uses the same make_chat_client() deployment as triage
+    (AZURE_OPENAI_DEPLOYMENT); the old INVESTIGATE_MODEL var belonged to the
+    retired Investigate copilot and is intentionally NOT read here."""
     import os
     deployments = [
         os.environ.get("AZURE_OPENAI_DEPLOYMENT", "") or os.environ.get("OPENAI_MODEL", ""),
-        os.environ.get("INVESTIGATE_MODEL", ""),
         os.environ.get("AZURE_OPENAI_EMBEDDING_DEPLOYMENT", ""),
     ]
     labels = set()
