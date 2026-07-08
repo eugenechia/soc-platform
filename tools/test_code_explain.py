@@ -49,6 +49,31 @@ def _run():
     check("Kerberos 0x18 -> pre-auth failed",
           kb and kb[0]["kind"] == "kerberos" and "Pre-authentication" in kb[0]["meaning"])
 
+    print("doctrine knowledge (2026-07-08):")
+    dc = ce.extract_codes("Event ID 4662 on the domain controller")
+    check("4662 -> DCSync pattern", dc and "DCSync" in dc[0]["meaning"])
+    pth = ce.extract_codes("Logon Type: 9 observed")
+    check("Logon Type 9 -> pass-the-hash note", pth and "pass-the-hash" in pth[0]["meaning"])
+    krb = ce.extract_codes("Event ID: 4769 burst")
+    check("4769 -> Kerberoasting note", krb and "Kerberoasting" in krb[0]["meaning"])
+    # Regression vs the encryption-type/failure-code trap: Kerberos FAILURE
+    # code 0x17 is "password expired", NOT Kerberoasting.
+    k17 = ce.extract_codes("Kerberos Failure Code: 0x17")
+    check("Kerberos failure 0x17 still password-expired",
+          k17 and "password has expired" in k17[0]["meaning"] and "Kerberoast" not in k17[0]["meaning"])
+
+    print("Entra ID ResultTypes (curated, marker-gated):")
+    en = ce.extract_codes("Sign-in failed, ResultType: 500121 repeated")
+    check("ResultType 500121 -> MFA fatigue",
+          en and en[0]["kind"] == "entra_result" and "MFA" in en[0]["meaning"])
+    check("bare 500121 without marker not decoded",
+          ce.extract_codes("value 500121 in payload") == [])
+    check("non-curated Entra code not decoded (never an LLM candidate)",
+          ce.extract_codes("ResultType: 999999") == [])
+    ec = ce.extract_codes("error code 50126 for user sign-in")
+    check("error code 50126 -> invalid credentials",
+          ec and ec[0]["kind"] == "entra_result" and "Invalid username or password" in ec[0]["meaning"])
+
     print("unknown marker-qualified code -> LLM candidate (meaning None):")
     unk = ce.extract_codes("Sub Status: 0xC0009999")
     check("unknown sub-status surfaced with meaning None",

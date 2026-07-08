@@ -101,6 +101,24 @@ def _run_mocked():
     v3, _ = ca._parse_verdict('{"verdict":"legitimate","analysis":"ok"}')
     check("case-insensitive verdict normalised to Legitimate", v3 == "Legitimate")
 
+    # privacy sanitizers (doctrine 2026-07-08): no client-identifying tokens
+    # in public web queries.
+    print("web-query privacy sanitizers:")
+    q = ca._build_query({"image": "C:\\Users\\jsmith\\AppData\\Local\\Temp\\evil.exe",
+                         "alert_name": ""})
+    check("full-path image -> basename only", '"evil.exe"' in q)
+    check("username never reaches the query", "jsmith" not in q)
+    q2 = ca._build_query({"image": "svchost.exe",
+                          "alert_name": "Suspicious activity on 'SRV-FIN-01.corp.local'"})
+    check("quoted hostname rejected from family hint", "SRV-FIN-01" not in q2 and "corp.local" not in q2)
+    q3 = ca._build_query({"image": "gt.exe", "alert_name": "'Kepuall' unwanted software was detected"})
+    check("legit family hint still passes (regression)", "Kepuall" in q3)
+    q4 = ca._build_query({"image": "svchost.exe",
+                          "alert_name": "Anomalous sign-in for 'jsmith@client.com'"})
+    check("quoted UPN rejected from family hint", "jsmith" not in q4)
+    check("raw command line never appears in any web call",
+          all("-enc" not in c and "AAAA" not in c for c in web_calls))
+
     # fail-silent: LLM raises on one item -> that item omitted, no crash
     print("fail-silent per command line:")
     async def boom(*a, **k):

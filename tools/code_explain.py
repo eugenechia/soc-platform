@@ -56,14 +56,15 @@ _WEB_CONTEXT_CAP = 2500
 # precision guard for Event-ID extraction.
 _EVENT_IDS = {
     "4624": "An account was successfully logged on.",
-    "4625": "An account failed to log on (failed logon).",
+    "4625": "An account failed to log on (failed logon). Many accounts or many sources = spray/enumeration pattern; ONE account from ONE source at a steady rate = usually a stale credential, not an attack.",
     "4634": "An account was logged off.",
     "4647": "User-initiated logoff.",
-    "4648": "A logon was attempted using explicit credentials (runas / stored creds).",
+    "4648": "A logon was attempted using explicit credentials (runas / stored creds). Pairs with Logon Type 9; scrutinise the initiating process — a pass-the-hash-style pattern.",
     "4672": "Special privileges assigned to a new logon (admin-equivalent logon).",
     "4688": "A new process has been created.",
-    "4697": "A service was installed in the system.",
-    "4698": "A scheduled task was created.",
+    "4662": "An operation was performed on an Active Directory object. Replication GUIDs (DS-Replication-Get-Changes*) requested by a NON-domain-controller account = DCSync credential-theft pattern.",
+    "4697": "A service was installed in the system. Verify the binary path and service name — services in user-writable paths or with vendor-lookalike names are a persistence pattern.",
+    "4698": "A scheduled task was created. Verify the task action path and name — odd paths or vendor-lookalike names are a persistence pattern.",
     "4700": "A scheduled task was enabled.",
     "4702": "A scheduled task was updated.",
     "4720": "A user account was created.",
@@ -72,48 +73,48 @@ _EVENT_IDS = {
     "4724": "An attempt was made to reset an account's password.",
     "4725": "A user account was disabled.",
     "4726": "A user account was deleted.",
-    "4728": "A member was added to a security-enabled global group.",
-    "4732": "A member was added to a security-enabled local group.",
+    "4728": "A member was added to a security-enabled global group. Privileged-group additions (e.g. Domain Admins) should always be verified against a change ticket.",
+    "4732": "A member was added to a security-enabled local group (e.g. local Administrators). Always verify against a change ticket.",
     "4738": "A user account was changed.",
     "4740": "A user account was locked out.",
     "4767": "A user account was unlocked.",
     "4768": "A Kerberos authentication ticket (TGT) was requested.",
-    "4769": "A Kerberos service ticket (TGS) was requested.",
+    "4769": "A Kerberos service ticket (TGS) was requested. A burst of 4769s with Ticket Encryption Type 0x17 (RC4) across many services from one account = Kerberoasting pattern.",
     "4771": "Kerberos pre-authentication failed.",
     "4776": "The domain controller attempted to validate credentials (NTLM).",
     "4778": "A session was reconnected to a Window Station (RDP reconnect).",
     "4779": "A session was disconnected from a Window Station (RDP disconnect).",
-    "1102": "The audit log was cleared.",
-    "7045": "A new service was installed in the system (System log).",
+    "1102": "The audit log was cleared. Always investigate — log clearing is anti-forensics, never routine.",
+    "7045": "A new service was installed in the system (System log). Verify binary path and service name — persistence pattern when odd.",
 }
 
 # Windows Logon Types (Event 4624/4625 field).
 _LOGON_TYPES = {
     "2":  "Interactive — logon at the console (keyboard).",
-    "3":  "Network — access to a share or service over the network.",
+    "3":  "Network — access to a share or service over the network; also the type lateral movement (SMB/WinRM/PsExec) produces.",
     "4":  "Batch — scheduled task.",
     "5":  "Service — a service started by the Service Control Manager.",
     "7":  "Unlock — the workstation was unlocked.",
-    "8":  "NetworkCleartext — network logon sending the password in clear text (often IIS basic auth).",
-    "9":  "NewCredentials — RunAs with /netonly (alternate credentials for network access).",
-    "10": "RemoteInteractive — Remote Desktop (RDP / Terminal Services).",
+    "8":  "NetworkCleartext — network logon sending the password in clear text (often IIS basic auth); a credential-exposure risk.",
+    "9":  "NewCredentials — RunAs with /netonly (alternate credentials for network access); the logon type pass-the-hash tools produce — check the initiating process.",
+    "10": "RemoteInteractive — Remote Desktop (RDP / Terminal Services); verify the source host and account are expected.",
     "11": "CachedInteractive — logon using cached domain credentials (DC unreachable).",
 }
 
 # NTSTATUS / logon sub-status codes seen on 4625/4776 (the 'why it failed').
 _NTSTATUS = {
-    "0xC0000064": "The user name does not exist.",
-    "0xC000006A": "The user name is correct but the password is wrong.",
+    "0xC0000064": "The user name does not exist. Many of these across different names = account-enumeration / password-spray pattern.",
+    "0xC000006A": "The user name is correct but the password is wrong. A steady stream on ONE service account after a rotation = stale-credential false positive; across MANY accounts = spraying.",
     "0xC000006D": "Bad user name or password (generic logon failure).",
     "0xC000006E": "Account restriction prevents this logon (e.g. policy).",
     "0xC000006F": "The user is not allowed to log on at this time (logon hours).",
     "0xC0000070": "The user is not allowed to log on from this workstation.",
     "0xC0000071": "The account's password has expired.",
-    "0xC0000072": "The account is currently disabled.",
+    "0xC0000072": "The account is currently disabled. Attempts against disabled accounts are notable — attackers probe stale accounts.",
     "0xC0000133": "Clocks between the DC and the client are too far out of sync.",
     "0xC0000193": "The account has expired.",
     "0xC0000224": "The user must change their password before logging on.",
-    "0xC0000234": "The account is currently locked out.",
+    "0xC0000234": "The account is currently locked out. Check what caused the lockout — password sprays lock accounts.",
     "0xC00002EE": "An error occurred during logon.",
     "0xC0000371": "The local account store does not contain secret material.",
 }
@@ -124,13 +125,26 @@ _KERBEROS = {
     "0x7":  "Server not found in the Kerberos database (SPN missing).",
     "0x12": "Client credentials revoked (account disabled, expired, or locked out).",
     "0x17": "The password has expired.",
-    "0x18": "Pre-authentication failed — usually a wrong password.",
+    "0x18": "Pre-authentication failed — usually a wrong password. Repeated across many accounts = spray pattern.",
     "0x1d": "The server is not available.",
     "0x25": "Clock skew too great between client and DC.",
 }
 
+# Entra ID sign-in error / ResultType codes (SigninLogs). Curated set only —
+# membership is the precision guard; unknown Entra codes are NEVER decoded and
+# NEVER become LLM candidates (bare 5-6 digit numbers are too ambiguous).
+_ENTRA_RESULT = {
+    "500121": "MFA challenge not satisfied. Repeated 500121s followed by a success = MFA-fatigue / push-bombing pattern — verify with the user.",
+    "50126": "Invalid username or password. Across many accounts = spray; one account steadily = stale credential.",
+    "50053": "Sign-in blocked — account locked by smart lockout after repeated bad attempts.",
+    "53003": "Blocked by a Conditional Access policy.",
+    "50057": "The user account is disabled.",
+    "50055": "The account password has expired.",
+}
+
 _KIND_LABEL = {"event_id": "Windows Event ID", "logon_type": "Logon Type",
-               "ntstatus": "NTSTATUS / sub-status", "kerberos": "Kerberos failure code"}
+               "ntstatus": "NTSTATUS / sub-status", "kerberos": "Kerberos failure code",
+               "entra_result": "Entra ID sign-in ResultType"}
 
 # ── Extraction (precision-guarded) ──────────────────────────────────────────────
 
@@ -142,6 +156,8 @@ _RE_NTSTATUS = re.compile(
 _RE_NTSTATUS_BARE = re.compile(r"\b(0xC0000[0-9A-Fa-f]{3})\b")
 _RE_KERBEROS = re.compile(
     r"\b(?:failure\s*code|kerberos.*?code)\s*[:#]?\s*(0x[0-9A-Fa-f]{1,2})\b", re.IGNORECASE)
+_RE_ENTRA = re.compile(
+    r"\b(?:result\s*type|error\s*code|sign[- ]?in\s*error)\s*[:#]?\s*(\d{5,6})\b", re.IGNORECASE)
 
 
 def extract_codes(text: str) -> list[dict]:
@@ -184,12 +200,18 @@ def extract_codes(text: str) -> list[dict]:
         code = "0x" + m.group(1)[2:].lower()
         add("kerberos", code, _KERBEROS.get(code))
 
+    for m in _RE_ENTRA.finditer(text):
+        code = m.group(1)
+        # Precision guard: curated set only — never an LLM candidate.
+        if code in _ENTRA_RESULT:
+            add("entra_result", code, _ENTRA_RESULT[code])
+
     return list(found.values())
 
 
 # ── Optional LLM grounding for unknown, marker-qualified codes ───────────────────
 
-_SYSTEM_PROMPT = """You are a SOC analyst assistant. You are given a single SIEM/XDR code (a Windows Security Event ID, an NTSTATUS/logon sub-status, or a Kerberos failure code) that a curated dictionary did not cover, plus optional web-search results. State concisely what the code means in a security-logon context.
+_SYSTEM_PROMPT = """You are a SOC analyst assistant. You are given a single SIEM/XDR code (a Windows Security Event ID, an NTSTATUS/logon sub-status, a Kerberos failure code, or an Entra ID sign-in error code) that a curated dictionary did not cover, plus optional web-search results. State concisely what the code means in a security-logon context.
 
 RULES:
 - 1 sentence, ~30 words, plain text. No markdown.
