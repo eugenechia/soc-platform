@@ -29,6 +29,7 @@ from routes.webhook import webhook_bp
 from routes.gateway import gateway_bp
 from routes.status import status_bp
 from routes.dashboard import dashboard_bp
+from routes.stats import stats_bp
 
 
 def create_app() -> Flask:
@@ -57,6 +58,7 @@ def create_app() -> Flask:
     app.register_blueprint(gateway_bp,      url_prefix="/api")
     app.register_blueprint(status_bp,       url_prefix="/status")
     app.register_blueprint(dashboard_bp,    url_prefix="/dashboard")
+    app.register_blueprint(stats_bp,        url_prefix="/stats")
 
     # Templates need the flag so base.html can gate the Dashboard nav tab;
     # the dashboard routes themselves also self-gate (404 when disabled).

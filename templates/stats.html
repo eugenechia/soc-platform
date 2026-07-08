@@ -1,0 +1,180 @@
+{% extends "base.html" %}
+{% block title %}Logicalis SOC Platform — Stats{% endblock %}
+
+{% block head_extra %}
+<style>
+  .stats-wrap { max-width: 1100px; margin: 0 auto; padding: 8px 4px 48px; }
+  .stats-wrap h1 { font-size: 1.35rem; color: var(--text-primary); margin-bottom: 2px; }
+  .stats-wrap .sub { color: var(--text-muted); font-size: 0.85rem; margin-bottom: 20px; }
+
+  /* section */
+  .sec { margin-top: 28px; }
+  .sec-title { font-size: 0.78rem; letter-spacing: .06em; text-transform: uppercase;
+               color: var(--text-muted); font-weight: 600; margin-bottom: 12px; }
+
+  /* summary chips */
+  .chips { display: flex; flex-wrap: wrap; gap: 12px; }
+  .chip { background: var(--bg-surface); border: 1px solid var(--border);
+          border-radius: var(--radius); box-shadow: var(--shadow);
+          padding: 12px 16px; min-width: 120px; }
+  .chip .n { font-size: 1.5rem; font-weight: 700; color: var(--text-primary); line-height: 1.1; }
+  .chip .l { font-size: 0.72rem; color: var(--text-muted); margin-top: 2px; }
+
+  /* pipeline banner */
+  .banner { display: flex; align-items: center; gap: 14px; flex-wrap: wrap;
+            background: var(--bg-surface); border: 1px solid var(--border);
+            border-left: 4px solid var(--dot); border-radius: var(--radius);
+            box-shadow: var(--shadow); padding: 14px 18px; }
+  .banner .state { font-size: 1rem; font-weight: 700; color: var(--text-primary); text-transform: capitalize; }
+  .banner .checks { display: flex; gap: 18px; flex-wrap: wrap; margin-left: auto; }
+  .banner .checks span { font-size: 0.8rem; color: var(--text-muted); }
+
+  /* status dot */
+  .dot { --dot: var(--off); display: inline-block; width: 9px; height: 9px; border-radius: 50%;
+         background: var(--dot); flex: none; }
+  .ok   { --dot: var(--okc); }
+  .warn { --dot: var(--warnc); }
+  .bad  { --dot: var(--badc); }
+  .off  { --dot: var(--offc); }
+
+  /* service grid */
+  .grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(230px, 1fr)); gap: 12px; }
+  .svc { background: var(--bg-surface); border: 1px solid var(--border);
+         border-radius: var(--radius); box-shadow: var(--shadow); padding: 12px 14px; }
+  .svc .top { display: flex; align-items: center; gap: 9px; }
+  .svc .name { font-size: 0.9rem; font-weight: 600; color: var(--text-primary); }
+  .svc .cat { margin-left: auto; font-size: 0.62rem; text-transform: uppercase; letter-spacing: .04em;
+              color: var(--text-muted); background: var(--bg-raised); padding: 2px 7px; border-radius: 20px; }
+  .svc .detail { font-size: 0.78rem; color: var(--text-muted); margin-top: 7px; padding-left: 18px; }
+
+  /* feature flags */
+  .flags { display: grid; grid-template-columns: repeat(auto-fill, minmax(240px, 1fr)); gap: 10px; }
+  .flag { display: flex; align-items: center; gap: 10px; background: var(--bg-surface);
+          border: 1px solid var(--border); border-radius: var(--radius); padding: 10px 14px; }
+  .flag .fl-name { font-size: 0.85rem; color: var(--text-primary); }
+  .flag .fl-state { margin-left: auto; font-size: 0.68rem; font-weight: 700; letter-spacing: .04em;
+                    padding: 3px 9px; border-radius: 20px; }
+  .flag .on  { background: var(--okc-bg); color: var(--okc); }
+  .flag .offp { background: var(--bg-raised); color: var(--text-muted); }
+
+  /* table */
+  .tbl-wrap { overflow-x: auto; border: 1px solid var(--border); border-radius: var(--radius);
+              box-shadow: var(--shadow); }
+  table.stats { width: 100%; border-collapse: collapse; background: var(--bg-surface); font-size: 0.84rem; }
+  table.stats th { text-align: left; padding: 11px 14px; font-size: 0.68rem; text-transform: uppercase;
+                   letter-spacing: .05em; color: var(--text-muted); background: var(--bg-raised);
+                   border-bottom: 1px solid var(--border); white-space: nowrap; }
+  table.stats td { padding: 11px 14px; border-bottom: 1px solid var(--border); color: var(--text-primary);
+                   vertical-align: middle; }
+  table.stats tr:last-child td { border-bottom: none; }
+  .cust-name { font-weight: 600; }
+  .proj { font-family: ui-monospace, Menlo, monospace; font-size: 0.76rem; color: var(--text-muted); }
+  .tier { display: inline-flex; align-items: center; gap: 6px; font-size: 0.72rem; font-weight: 700;
+          text-transform: capitalize; }
+  .cell-yes { color: var(--okc); font-weight: 600; }
+  .cell-no  { color: var(--text-muted); }
+  .cell-warn { color: var(--warnc); font-weight: 600; }
+
+  /* semantic colours (base.html has no --success) — work in both themes */
+  :root { --okc: #16A34A; --okc-bg: rgba(22,163,74,.12); --warnc: #D97706; --badc: #DC2626; --offc: #94A3B8; }
+  [data-theme="dark"] { --okc: #22C55E; --okc-bg: rgba(34,197,94,.15); --warnc: #F59E0B; --badc: #EF4444; --offc: #64748B; }
+</style>
+{% endblock %}
+
+{% block content %}
+<div class="stats-wrap">
+  <h1>Stats</h1>
+  <div class="sub">L1 Triage readiness and connected AI across onboarded customers.</div>
+
+  <!-- Summary -->
+  <div class="chips">
+    <div class="chip"><div class="n">{{ stats.summary.total_customers }}</div><div class="l">Onboarded customers</div></div>
+    <div class="chip"><div class="n">{{ stats.summary.ready_customers }}</div><div class="l">Triage-enabled</div></div>
+    <div class="chip"><div class="n">{{ stats.summary.sentinel_customers }}</div><div class="l">With Sentinel</div></div>
+  </div>
+
+  <!-- Pipeline health -->
+  {% set p = stats.pipeline %}
+  {% set pcls = 'ok' if p.status == 'operational' else ('warn' if p.status == 'degraded' else ('bad' if p.status == 'down' else 'off')) %}
+  <div class="sec">
+    <div class="sec-title">L1 Triage Pipeline</div>
+    <div class="banner {{ pcls }}" style="--dot: var(--{{ 'okc' if pcls=='ok' else ('warnc' if pcls=='warn' else ('badc' if pcls=='bad' else 'offc')) }});">
+      <span class="dot {{ pcls }}"></span>
+      <span class="state">{{ p.status }}</span>
+      <div class="checks">
+        {% if p.checks %}
+        <span><span class="dot {{ 'ok' if p.checks.jira.ok else 'bad' }}"></span> Jira — {{ p.checks.jira.detail }}</span>
+        <span><span class="dot {{ 'ok' if p.checks.llm.ok else 'bad' }}"></span> Triage LLM — {{ p.checks.llm.detail }}</span>
+        {% endif %}
+      </div>
+    </div>
+  </div>
+
+  <!-- AI & enrichment services -->
+  <div class="sec">
+    <div class="sec-title">AI &amp; Enrichment Services Connected</div>
+    <div class="grid">
+      {% for s in stats.ai_services %}
+      <div class="svc">
+        <div class="top">
+          <span class="dot {{ 'ok' if s.ok else 'off' }}"></span>
+          <span class="name">{{ s.name }}</span>
+          <span class="cat">{{ s.category }}</span>
+        </div>
+        <div class="detail">{{ s.detail }}</div>
+      </div>
+      {% endfor %}
+    </div>
+  </div>
+
+  <!-- L1 feature flags -->
+  <div class="sec">
+    <div class="sec-title">L1 Triage AI Features</div>
+    <div class="flags">
+      {% for f in stats.feature_flags %}
+      <div class="flag">
+        <span class="dot {{ 'ok' if f.on else 'off' }}"></span>
+        <span class="fl-name">{{ f.label }}</span>
+        <span class="fl-state {{ 'on' if f.on else 'offp' }}">{{ 'ON' if f.on else 'OFF' }}</span>
+      </div>
+      {% endfor %}
+    </div>
+  </div>
+
+  <!-- Customer readiness -->
+  <div class="sec">
+    <div class="sec-title">Customer L1 Triage Readiness</div>
+    <div class="tbl-wrap">
+      <table class="stats">
+        <thead>
+          <tr>
+            <th>Customer</th><th>Project(s)</th><th>Status</th>
+            <th>Sentinel</th><th>Confluence (RAG)</th><th>Entity Mapping</th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for c in stats.customers %}
+          {% set tcls = 'ok' if c.tier == 'active' else ('warn' if c.tier == 'limited' else 'off') %}
+          <tr>
+            <td class="cust-name">{{ c.name }}</td>
+            <td class="proj">{{ c.projects | join(', ') if c.projects else '—' }}</td>
+            <td><span class="tier"><span class="dot {{ tcls }}"></span>{{ c.tier }}</span></td>
+            <td>{% if c.has_sentinel %}<span class="cell-yes">Yes ({{ c.sentinel_count }})</span>{% else %}<span class="cell-no">—</span>{% endif %}</td>
+            <td>{% if c.confluence_pages %}<span class="cell-yes">{{ c.confluence_pages }} page{{ 's' if c.confluence_pages != 1 else '' }}</span>{% else %}<span class="cell-no">—</span>{% endif %}</td>
+            <td>{% if c.mapping_flag %}<span class="cell-warn" title="{{ c.mapping_flag.detail }}">Check ({{ c.mapping_flag.count }})</span>{% else %}<span class="cell-yes">OK</span>{% endif %}</td>
+          </tr>
+          {% endfor %}
+          {% if not stats.customers %}
+          <tr><td colspan="6" class="cell-no" style="text-align:center;padding:24px;">No customers found.</td></tr>
+          {% endif %}
+        </tbody>
+      </table>
+    </div>
+    <div class="sub" style="margin-top:10px;">
+      <strong>Status</strong>: <span class="cell-yes">active</span> = triage-enabled with Sentinel + RAG ·
+      <span class="cell-warn">limited</span> = triage-enabled, missing an enrichment layer ·
+      inactive = project not in the enrichment allowlist (tickets not processed).
+    </div>
+  </div>
+</div>
+{% endblock %}
