@@ -1763,7 +1763,9 @@ async def _generate_group(group_sections: list, data_subset: dict, ctx: dict, co
         end_date=config.get("end_date", ""),
         report_type=config.get("report_type", "Monthly SOC Report"),
         sections_list=sections_list,
-        data_json=json.dumps(data_subset, indent=2),
+        # Compact separators, no indent: the LLM reads JSON fine without
+        # pretty-printing and it cuts ~20% off the prompt token count.
+        data_json=json.dumps(data_subset, separators=(",", ":")),
         available_sources=ctx["available_sources_str"],
         report_year=ctx["report_year"],
     )
@@ -1834,6 +1836,22 @@ def _build_appendix_markdown(jira_data: dict) -> str:
     return "\n".join(lines).rstrip() + "\n"
 
 
+def _strip_heavy_jira_arrays(jira_data: dict) -> dict:
+    """Copy of jira_data with the raw ticket arrays replaced by counts.
+
+    incident_details / pending_tickets are the only unbounded-size fields in
+    the payload — one row per ticket in the period — and no LLM section reads
+    them (summary tables and appendix tables are rendered in Python). Counts
+    stay so prompts can still cite volumes.
+    """
+    slim = dict(jira_data)
+    slim["incident_details_count"] = len(slim.get("incident_details") or [])
+    slim["pending_tickets_count"] = len(slim.get("pending_tickets") or [])
+    slim.pop("incident_details", None)
+    slim.pop("pending_tickets", None)
+    return slim
+
+
 async def _run_report_agent(data: dict, config: dict) -> str:
     ctx = _build_report_context(data, config)
     sections = ctx["sections"]
@@ -1861,7 +1879,14 @@ async def _run_report_agent(data: dict, config: dict) -> str:
     socradar_grp = _canonical_order([s for s in llm_sections if section_meta.get(s, {}).get("source") == "socradar"])
     industry_grp = _canonical_order([s for s in llm_sections if section_meta.get(s, {}).get("source") == "general"])
 
-    jira_payload = ctx["jira_data"]
+    # The raw incident_details / pending_tickets arrays never go to the LLM:
+    # §1.5 and §1.8 emit Python-substituted summary tokens, the Appendix tables
+    # are rendered in Python from ctx, and every other Jira section works from
+    # the aggregate/derived fields. A large customer-month (CLSA Jun 2026:
+    # ~320K prompt tokens vs the model's 272K input cap) blows the context
+    # window if they ship, so both LLM groups that carry jira data get the
+    # counts-only copy.
+    jira_payload = _strip_heavy_jira_arrays(ctx["jira_data"])
     # Customer advisory feeds (§1.15 Threat Analytics, §1.17 IOC Update) ship
     # alongside the Sentinel payload because both sections are in the sentinel
     # source group. Empty lists are still passed — the prompt branches on
@@ -1888,21 +1913,11 @@ async def _run_report_agent(data: dict, config: dict) -> str:
     # meta-analysis sections (trends_insights, recommendations, appendix).
     # Build a composite payload so AI synthesis sections can reference data
     # from every connected source — jira derived stats for MoM / MTTR / aging,
-    # sentinel utilization MoM, splunk totals, socradar threat actors. We
-    # strip out the heavy raw arrays (incident_details, pending_tickets) since
-    # the LLM only needs counts — the full tables are token-substituted.
+    # sentinel utilization MoM, splunk totals, socradar threat actors.
     if industry_grp:
-        _jira_meta = dict(ctx["jira_data"])
-        _jira_meta["incident_details_count"] = len(_jira_meta.get("incident_details") or [])
-        _jira_meta["pending_tickets_count"] = len(_jira_meta.get("pending_tickets") or [])
-        # Drop the raw arrays to keep the prompt under token budget. The
-        # appendix subsections only need the counts to write the lead line;
-        # the actual tables are post-rendered HTML.
-        _jira_meta.pop("incident_details", None)
-        _jira_meta.pop("pending_tickets", None)
         industry_payload = {
             "industry_intel": ctx["industry_intel_data"],
-            "jira": _jira_meta,
+            "jira": jira_payload,
             "sentinel": ctx["sentinel_data"] or {"connected": False},
             "splunk": ctx["splunk_data"] or {"connected": False},
             "socradar": ctx["socradar_data"] or {"connected": False},
