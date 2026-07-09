@@ -58,9 +58,21 @@ logger = logging.getLogger(__name__)
 _jobs: dict[str, dict] = {}
 
 
-def _run_enrichment(job_id: str, ticket_key: str) -> None:
+def _run_enrichment(job_id: str, ticket_key: str, *,
+                    jobs: dict | None = None,
+                    manual: bool = False) -> None:
     """Background worker. Polls the Jira API until entity fields are populated
-    (or the max wait expires), then runs the enrichment pipeline once."""
+    (or the max wait expires), then runs the enrichment pipeline once.
+
+    jobs   — job-state dict to write status into (defaults to this module's
+             webhook `_jobs`; the manual /triage runner passes its own dict so
+             manual results stay behind an authenticated endpoint).
+    manual — analyst-initiated run on an EXISTING ticket: first fetch after 1s
+             with no stabilization wait (fields are already populated), and
+             dedup is skipped entirely so the pasted ticket can never be
+             auto-closed as a duplicate.
+    """
+    jobs = jobs if jobs is not None else _jobs
     try:
         # Resolve the customer + per-customer Jira schema ONCE, up front. Entity
         # field IDs and severity mapping vary per customer; a project with no
@@ -78,8 +90,14 @@ def _run_enrichment(job_id: str, ticket_key: str) -> None:
         poll_interval = int(os.environ.get("WEBHOOK_FETCH_DELAY_SECONDS", "5"))
         max_wait = int(os.environ.get("WEBHOOK_FETCH_MAX_WAIT_SECONDS", "60"))
         stabilization = int(os.environ.get("WEBHOOK_FETCH_STABILIZATION_SECONDS", "30"))
+        if manual:
+            # Existing ticket: entity fields are already populated and stable.
+            poll_interval = 1
+            stabilization = 0
         elapsed = 0
         last_issue = None
+
+        jobs[job_id]["stage"] = "Fetching ticket from Jira"
 
         while elapsed < max_wait:
             time.sleep(poll_interval)
@@ -127,7 +145,7 @@ def _run_enrichment(job_id: str, ticket_key: str) -> None:
         if last_issue is None or "fields" not in last_issue:
             msg = f"failed to fetch issue {ticket_key} from Jira API after {elapsed}s"
             logger.error("Enrichment %s: %s", job_id, msg)
-            _jobs[job_id].update({"status": "error", "error": msg})
+            jobs[job_id].update({"status": "error", "error": msg})
             return
 
         # Dedup MUST run on polled (fully populated) data, not the webhook payload.
@@ -137,7 +155,7 @@ def _run_enrichment(job_id: str, ticket_key: str) -> None:
         # fuzzy fallback and produce a key that bears no relation to the actual
         # incident. Running here, after polling, guarantees Tier 1/2 see real data.
         dedup_result = None
-        if os.environ.get("DEDUP_WEBHOOK_ENABLED", "true").lower() == "true":
+        if not manual and os.environ.get("DEDUP_WEBHOOK_ENABLED", "true").lower() == "true":
             try:
                 dedup_result = _apply_dedup_if_strict_match(ticket_key, last_issue["fields"])
             except Exception as e:
@@ -149,7 +167,7 @@ def _run_enrichment(job_id: str, ticket_key: str) -> None:
             # closed ticket adds noise the analyst will never review.
             logger.info("Enrichment %s: skipping L1 Triage for %s (closed as duplicate of %s)",
                         job_id, ticket_key, dedup_result["original"])
-            _jobs[job_id].update({"status": "done", "result": dedup_result})
+            jobs[job_id].update({"status": "done", "result": dedup_result})
             return
 
         # ── Phase 3: Historical Alert Correlation ───────────────────────────
@@ -158,6 +176,7 @@ def _run_enrichment(job_id: str, ticket_key: str) -> None:
         # feeds both the Phase 1 LLM Triage call (de-escalation evidence) and
         # the enrichment comment (Similar Alerts section).
         historical = None
+        jobs[job_id]["stage"] = "Historical alert correlation (24h)"
         try:
             project_key = ticket_key.split("-")[0]
             summary = (last_issue["fields"].get("summary") or "")
@@ -175,6 +194,7 @@ def _run_enrichment(job_id: str, ticket_key: str) -> None:
         # Comment rendering uses `pattern`; the LLM Triage prompt only sees it
         # behind the separate ALERT_PATTERN_TO_LLM_PROMPT_ENABLED gate below.
         pattern = None
+        jobs[job_id]["stage"] = "Alert pattern analysis (30d)"
         try:
             from tools.alert_pattern_analysis import analyze_alert_patterns
             project_key = ticket_key.split("-")[0]
@@ -208,6 +228,7 @@ def _run_enrichment(job_id: str, ticket_key: str) -> None:
         # (statuses "matched" / "no_matches"). Every other status — disabled,
         # error, no_customer, no_query — is silent in the comment.
         rag_info = None
+        jobs[job_id]["stage"] = "Customer context (RAG)"
         try:
             summary_text = (last_issue["fields"].get("summary") or "")
             query = summary_text[:500]
@@ -274,6 +295,7 @@ def _run_enrichment(job_id: str, ticket_key: str) -> None:
             pattern_for_prompt = pattern
             logger.info("Enrichment %s: passing alert pattern context to LLM Triage prompt", job_id)
 
+        jobs[job_id]["stage"] = "L1 triage — severity sync, assignment, LLM priority"
         _run_triage_foundation(job_id, ticket_key, last_issue["fields"], historical, chunks_for_prompt, schema,
                                pattern_for_prompt)
 
@@ -285,6 +307,7 @@ def _run_enrichment(job_id: str, ticket_key: str) -> None:
         # and KQL_EXPANSION_MAX_ITERATIONS; failure-isolated (never raises;
         # None return = skip the section).
         kql_evidence = None
+        jobs[job_id]["stage"] = "KQL evidence expansion"
         try:
             from tools.kql_expansion import expand_with_kql
             summary_text = (last_issue["fields"].get("summary") or "")
@@ -315,14 +338,15 @@ def _run_enrichment(job_id: str, ticket_key: str) -> None:
                            job_id, type(e).__name__, e)
             kql_evidence = None
 
+        jobs[job_id]["stage"] = "IOC enrichment & comment"
         result = enrich_ticket(ticket_key, last_issue["fields"], historical, rag_info, kql_evidence, schema,
                                pattern=pattern)
-        _jobs[job_id].update({"status": "done", "result": result})
+        jobs[job_id].update({"status": "done", "result": result})
         logger.info("Enrichment %s complete: ticket=%s verdict=%s",
                     job_id, ticket_key, result.get("verdict"))
     except Exception as e:
         logger.exception("Enrichment %s failed for %s: %s", job_id, ticket_key, e)
-        _jobs[job_id].update({"status": "error", "error": str(e)})
+        jobs[job_id].update({"status": "error", "error": str(e)})
 
 
 def _run_triage_foundation(job_id: str, ticket_key: str, fields: dict,

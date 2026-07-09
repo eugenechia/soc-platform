@@ -1,0 +1,272 @@
+{% extends "base.html" %}
+{% block title %}Logicalis SOC Platform — Run Triage{% endblock %}
+
+{% block head_extra %}
+<style>
+  .triage-wrap { max-width: 760px; margin: 0 auto; padding: 8px 4px 48px; }
+  .triage-wrap h1 { font-size: 1.35rem; color: var(--text-primary); margin-bottom: 2px; }
+  .triage-wrap .sub { color: var(--text-muted); font-size: 0.85rem; margin-bottom: 20px; }
+
+  .card { background: var(--bg-surface); border: 1px solid var(--border);
+          border-radius: var(--radius); box-shadow: var(--shadow);
+          padding: 20px; margin-bottom: 16px; }
+
+  .run-row { display: flex; gap: 10px; flex-wrap: wrap; }
+  .run-row input { flex: 1; min-width: 200px; padding: 10px 12px;
+          font-size: 1rem; font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+          text-transform: uppercase; letter-spacing: .03em;
+          background: var(--bg-raised); color: var(--text-primary);
+          border: 1px solid var(--border); border-radius: var(--radius); }
+  .run-row input:focus { outline: none; border-color: var(--accent); }
+  .run-row button { padding: 10px 22px; font-size: 0.95rem; font-weight: 600;
+          background: var(--accent); color: #fff; border: none;
+          border-radius: var(--radius); cursor: pointer; }
+  .run-row button:hover { background: var(--accent-hover); }
+  .run-row button:disabled { opacity: .55; cursor: not-allowed; }
+
+  .caveat { margin-top: 12px; font-size: 0.78rem; line-height: 1.5; color: var(--text-muted); }
+
+  .warn { background: rgba(245, 158, 11, 0.10); border: 1px solid rgba(245, 158, 11, 0.45);
+          color: var(--text-primary); border-radius: var(--radius);
+          padding: 10px 14px; font-size: 0.85rem; margin-bottom: 10px; }
+
+  .err { background: rgba(239, 68, 68, 0.10); border: 1px solid rgba(239, 68, 68, 0.5);
+         color: var(--text-primary); border-radius: var(--radius);
+         padding: 10px 14px; font-size: 0.88rem; }
+
+  .status-line { display: flex; align-items: center; gap: 12px; }
+  .spinner { width: 18px; height: 18px; flex: none; border-radius: 50%;
+             border: 3px solid var(--border); border-top-color: var(--accent);
+             animation: spin 0.9s linear infinite; }
+  @keyframes spin { to { transform: rotate(360deg); } }
+  .status-line .stage { font-size: 0.92rem; color: var(--text-primary); font-weight: 600; }
+  .status-line .elapsed { margin-left: auto; font-size: 0.8rem; color: var(--text-muted);
+             font-variant-numeric: tabular-nums; }
+  .ticket-line { margin-top: 8px; font-size: 0.85rem; color: var(--text-muted); }
+  .ticket-line b { color: var(--text-primary); }
+
+  .verdict-badge { display: inline-block; padding: 4px 14px; border-radius: 999px;
+             font-size: 0.85rem; font-weight: 700; text-transform: uppercase;
+             letter-spacing: .05em; }
+  .verdict-malicious { background: rgba(239, 68, 68, 0.15); color: #EF4444;
+             border: 1px solid rgba(239, 68, 68, 0.5); }
+  .verdict-clean { background: rgba(16, 185, 129, 0.13); color: #10B981;
+             border: 1px solid rgba(16, 185, 129, 0.45); }
+  .verdict-unknown { background: rgba(245, 158, 11, 0.13); color: #F59E0B;
+             border: 1px solid rgba(245, 158, 11, 0.45); }
+
+  .result-head { display: flex; align-items: center; gap: 14px; flex-wrap: wrap; margin-bottom: 12px; }
+  .result-head .open-link { margin-left: auto; font-size: 0.85rem; color: var(--accent);
+             text-decoration: none; }
+  .result-head .open-link:hover { text-decoration: underline; }
+  .action-line { font-size: 0.88rem; color: var(--text-primary); line-height: 1.5; margin-bottom: 14px; }
+
+  .ioc-table-wrap { overflow-x: auto; }
+  table.iocs { width: 100%; border-collapse: collapse; font-size: 0.83rem; }
+  table.iocs th { text-align: left; padding: 7px 10px; color: var(--text-muted);
+             font-size: 0.72rem; text-transform: uppercase; letter-spacing: .05em;
+             border-bottom: 1px solid var(--border); }
+  table.iocs td { padding: 7px 10px; border-bottom: 1px solid var(--border);
+             font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
+  table.iocs td.v-malicious { color: #EF4444; font-weight: 700; }
+  table.iocs td.v-clean { color: #10B981; }
+  table.iocs td.v-unknown { color: #F59E0B; }
+
+  .hidden { display: none; }
+</style>
+{% endblock %}
+
+{% block content %}
+<div class="triage-wrap">
+  <h1>Run Triage</h1>
+  <div class="sub">Run the full L1 triage pipeline on any Jira ticket, on demand.</div>
+
+  <div class="card">
+    <div class="run-row">
+      <input id="ticketInput" type="text" placeholder="SCDM-727"
+             autocomplete="off" autocapitalize="characters" spellcheck="false">
+      <button id="runBtn" type="button">Run Triage</button>
+    </div>
+    <div class="caveat">
+      Runs are not idempotent: each run posts a <b>new enrichment comment</b> to the ticket,
+      priority and assignee are overwritten, and verdict labels are add-only (a changed verdict
+      leaves both labels on the ticket). The manual runner never closes tickets as duplicates.
+    </div>
+  </div>
+
+  <div id="warningsArea"></div>
+  <div id="errorArea" class="hidden"></div>
+
+  <div id="statusArea" class="card hidden">
+    <div class="status-line">
+      <div class="spinner"></div>
+      <div class="stage" id="stageMsg">Queued</div>
+      <div class="elapsed" id="elapsedMsg">0s</div>
+    </div>
+    <div class="ticket-line" id="ticketLine"></div>
+  </div>
+
+  <div id="resultArea" class="card hidden">
+    <div class="result-head">
+      <span id="verdictBadge" class="verdict-badge"></span>
+      <span id="resultTicket" style="font-weight:600;"></span>
+      <a id="openLink" class="open-link" href="#" target="_blank" rel="noopener">Open in Jira ↗</a>
+    </div>
+    <div class="action-line" id="actionLine"></div>
+    <div class="ioc-table-wrap">
+      <table class="iocs" id="iocTable">
+        <thead><tr><th>Indicator</th><th>Type</th><th>Verdict</th></tr></thead>
+        <tbody id="iocBody"></tbody>
+      </table>
+    </div>
+  </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+  const JIRA_URL = {{ jira_url | tojson }};
+  const input = document.getElementById('ticketInput');
+  const runBtn = document.getElementById('runBtn');
+  const warningsArea = document.getElementById('warningsArea');
+  const errorArea = document.getElementById('errorArea');
+  const statusArea = document.getElementById('statusArea');
+  const stageMsg = document.getElementById('stageMsg');
+  const elapsedMsg = document.getElementById('elapsedMsg');
+  const ticketLine = document.getElementById('ticketLine');
+  const resultArea = document.getElementById('resultArea');
+
+  let pollTimer = null;
+  let elapsedTimer = null;
+  let currentJobId = null;
+  let currentTicket = null;
+
+  input.addEventListener('input', () => { input.value = input.value.toUpperCase(); });
+  input.addEventListener('keydown', e => { if (e.key === 'Enter') runTriage(); });
+  runBtn.addEventListener('click', runTriage);
+
+  function stopTimers() {
+    if (pollTimer) { clearInterval(pollTimer); pollTimer = null; }
+    if (elapsedTimer) { clearInterval(elapsedTimer); elapsedTimer = null; }
+    runBtn.disabled = false;
+  }
+
+  function showError(msg) {
+    stopTimers();
+    statusArea.classList.add('hidden');
+    errorArea.textContent = msg || 'Unexpected error';
+    errorArea.className = 'err';
+  }
+
+  function renderWarnings(warnings) {
+    warningsArea.innerHTML = '';
+    for (const w of warnings) {
+      const div = document.createElement('div');
+      div.className = 'warn';
+      div.textContent = w;
+      warningsArea.appendChild(div);
+    }
+  }
+
+  function startPolling(jobId) {
+    currentJobId = jobId;
+    let seconds = 0;
+    elapsedMsg.textContent = '0s';
+    elapsedTimer = setInterval(() => { seconds += 1; elapsedMsg.textContent = seconds + 's'; }, 1000);
+    pollTimer = setInterval(pollJob, 1000);
+  }
+
+  async function runTriage() {
+    const key = input.value.trim().toUpperCase();
+    if (!key) return;
+    runBtn.disabled = true;
+    warningsArea.innerHTML = '';
+    errorArea.className = 'hidden';
+    errorArea.textContent = '';
+    resultArea.classList.add('hidden');
+    statusArea.classList.remove('hidden');
+    stageMsg.textContent = 'Submitting…';
+    ticketLine.textContent = '';
+    currentTicket = key;
+
+    let r, data;
+    try {
+      r = await fetch('/triage/api/run', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({ticket: key}),
+      });
+      data = await r.json();
+    } catch (e) {
+      showError('Request failed — is the server reachable?');
+      return;
+    }
+
+    if (r.status === 409 && data.job_id) {
+      // A run is already in flight for this ticket — attach to it.
+      renderWarnings([data.error + ' — attached to the running job.']);
+      startPolling(data.job_id);
+      return;
+    }
+    if (!r.ok) { showError(data.error); return; }
+
+    renderWarnings(data.warnings || []);
+    if (data.summary) {
+      ticketLine.innerHTML = '';
+      const b = document.createElement('b');
+      b.textContent = data.ticket;
+      ticketLine.appendChild(b);
+      ticketLine.appendChild(document.createTextNode(
+        ' — ' + data.summary + (data.status_name ? '  ·  status: ' + data.status_name : '')));
+    }
+    startPolling(data.job_id);
+  }
+
+  async function pollJob() {
+    let job;
+    try {
+      const r = await fetch('/triage/api/jobs/' + currentJobId);
+      if (!r.ok) { showError('Job not found — the app may have restarted mid-run.'); return; }
+      job = await r.json();
+    } catch (e) { return; /* transient network blip — keep polling */ }
+
+    if (job.stage) stageMsg.textContent = job.stage;
+    if (job.status === 'done') { stopTimers(); statusArea.classList.add('hidden'); renderResult(job); }
+    else if (job.status === 'error') { showError('Triage failed: ' + (job.error || 'unknown error')); }
+  }
+
+  function renderResult(job) {
+    const result = job.result || {};
+    const verdict = (result.verdict || 'unknown').toLowerCase();
+    const badge = document.getElementById('verdictBadge');
+    badge.textContent = verdict;
+    badge.className = 'verdict-badge verdict-' +
+      (['malicious', 'clean', 'unknown'].includes(verdict) ? verdict : 'unknown');
+
+    document.getElementById('resultTicket').textContent = job.ticket || currentTicket;
+    const link = document.getElementById('openLink');
+    link.href = JIRA_URL + '/browse/' + (job.ticket || currentTicket);
+
+    document.getElementById('actionLine').textContent = result.action || '';
+
+    const body = document.getElementById('iocBody');
+    body.innerHTML = '';
+    const iocs = Array.isArray(result.iocs) ? result.iocs : [];
+    document.getElementById('iocTable').classList.toggle('hidden', iocs.length === 0);
+    for (const entry of iocs) {
+      const ioc = entry.ioc || {};
+      const v = (entry.verdict || 'unknown').toLowerCase();
+      const tr = document.createElement('tr');
+      const tds = [ioc.value || '—', ioc.type || '—', v];
+      tds.forEach((text, i) => {
+        const td = document.createElement('td');
+        td.textContent = text;
+        if (i === 2) td.className = 'v-' + (['malicious', 'clean', 'unknown'].includes(v) ? v : 'unknown');
+        tr.appendChild(td);
+      });
+      body.appendChild(tr);
+    }
+    resultArea.classList.remove('hidden');
+  }
+</script>
+{% endblock %}

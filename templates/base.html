@@ -191,6 +191,9 @@
       <a href="/admin/history"   class="{% if active_mode == 'history' %}active{% endif %}">History</a>
       <a href="/admin/schedules" class="{% if active_mode == 'schedules' %}active{% endif %}">Schedules</a>
       <a href="/stats/"          class="{% if active_mode == 'stats' %}active{% endif %}">Stats</a>
+      {% if manual_triage_enabled %}
+      <a href="/triage/"         class="{% if active_mode == 'triage' %}active{% endif %}">Run Triage</a>
+      {% endif %}
     </nav>
 
     {% if user %}

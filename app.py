@@ -30,6 +30,7 @@ from routes.gateway import gateway_bp
 from routes.status import status_bp
 from routes.dashboard import dashboard_bp
 from routes.stats import stats_bp
+from routes.triage import triage_bp
 
 
 def create_app() -> Flask:
@@ -59,13 +60,18 @@ def create_app() -> Flask:
     app.register_blueprint(status_bp,       url_prefix="/status")
     app.register_blueprint(dashboard_bp,    url_prefix="/dashboard")
     app.register_blueprint(stats_bp,        url_prefix="/stats")
+    app.register_blueprint(triage_bp,       url_prefix="/triage")
 
-    # Templates need the flag so base.html can gate the Dashboard nav tab;
-    # the dashboard routes themselves also self-gate (404 when disabled).
+    # Templates need these flags so base.html can gate nav tabs; the gated
+    # routes themselves also self-gate (404 when disabled).
     @app.context_processor
-    def _inject_dashboard_flag():
-        return {"dashboard_enabled":
-                os.environ.get("DASHBOARD_ENABLED", "false").lower() == "true"}
+    def _inject_feature_flags():
+        return {
+            "dashboard_enabled":
+                os.environ.get("DASHBOARD_ENABLED", "false").lower() == "true",
+            "manual_triage_enabled":
+                os.environ.get("MANUAL_TRIAGE_ENABLED", "false").lower() == "true",
+        }
 
     # Every request requires an authenticated Entra ID session, except:
     # /auth/*    SSO flow
