@@ -8,6 +8,7 @@ import asyncio
 import logging
 import threading
 import base64
+from collections import Counter
 from datetime import datetime, timedelta, timezone
 
 SGT = timezone(timedelta(hours=8))  # report generation timestamps display in SGT
@@ -145,6 +146,18 @@ PENDING_TICKETS_TOKEN = "<!--PENDING_TICKETS_TABLE-->"
 # cross-reference there.
 INCIDENT_SUMMARY_TOKEN = "<!--INCIDENT_SUMMARY_TABLE-->"
 PENDING_SUMMARY_TOKEN = "<!--PENDING_SUMMARY_TABLE-->"
+
+# Same pattern for the SOCRadar Company Alarms table. This one previously
+# shipped the pre-rendered HTML INSIDE the LLM payload (socradar group AND the
+# industry/meta group, which embeds socradar_data wholesale) with a "reproduce
+# verbatim" instruction — the opposite of the token pattern above. On a heavy
+# alarm month the raw company_alarms array + its HTML duplicate pushed the
+# prompt past Azure's ADMISSION estimate (est. prompt tokens + max_completion
+# _tokens vs the deployment's TPM budget), which returns 429 rate_limit_exceeded
+# — not 400 — and no amount of retrying can ever admit it (July 2026 Logicalis
+# report-gen outage). The LLM now sees only bounded aggregates + a capped row
+# sample and emits this token; the full HTML is swapped in after assembly.
+SOCRADAR_ALARMS_TOKEN = "<!--SOCRADAR_ALARMS_TABLE-->"
 
 
 def _render_incident_details_html(incidents: list) -> str:
@@ -955,9 +968,9 @@ If SOCRadar data is unavailable, show the placeholder block.
 Otherwise, write the section in this exact order:
 
 1. **Company Alarms**:
-   - First, write 1–2 sentences summarising the count of company alarms and the dominant risk levels (e.g. "SOCRadar registered 8 company alarms during the period, all classified as HIGH risk.").
-   - Then, on a new line, INSERT THE EXACT VALUE of `socradar.company_alarms_html_table` VERBATIM. Do not modify it, do not re-format the rows, do not wrap it in code fences, do not paraphrase the values. The table is pre-rendered HTML and must reach the PDF unchanged.
-   - After the table, write 1 sentence noting any patterns (e.g. all related to one repository, mostly closed as false positives, etc.).
+   - First, write 1–2 sentences summarising the alarm volume and the dominant risk levels, grounded in `socradar.company_alarms_total`, `socradar.company_alarms_by_risk` and `socradar.company_alarms_by_status` (e.g. "SOCRadar registered 8 company alarms during the period, all classified as HIGH risk.").
+   - Then, on a new line, output the literal token `<!--SOCRADAR_ALARMS_TABLE-->` character-for-character — including the `<!--` and `-->` — exactly as shown. Do NOT emit any markdown or HTML table of alarms yourself; the full pre-rendered table is substituted in after generation.
+   - After the token line, write 1 sentence noting any patterns visible in `socradar.company_alarms_sample` (e.g. all related to one repository, mostly closed as false positives, etc.). The sample is capped at 40 rows; rely on the aggregate counts for totals.
 2. **Active Threat Actors**: Table with columns: Threat Actor | Origin | Target Industries | TTPs | Status. List top actors from socradar.threat_actors data.
 3. **Critical CVEs**: Sourced from `customer_advisories.cves` — vulnerability advisories supplied by GSOC/customer for hunting this period. If non-empty, render a markdown table with columns: `CVE / Threat | Report Type | Published | Hunting Result`. Map directly from each row's fields: `threat`, `report_type`, `published`, `hunting_result`. Sort by `published` descending. If `customer_advisories.cves` is empty, write the line: "No CVE-related advisories were tracked for this customer during the reporting period. GSOC maintains the CVE advisory feed within the customer's Threat Analytics advisory file."
 4. **Dark Web Monitoring**: Summary of any dark web mentions, leaked credentials, or mentions of the company domain. If socradar.dark_web_alarms is empty, state "No dark web mentions detected during this period."
@@ -1627,15 +1640,54 @@ def _build_report_context(data: dict, config: dict) -> dict:
         }
 
     socradar_data = {}
+    socradar_alarms_html = ""
     socradar = data.get("socradar")
     if socradar:
         alarms = socradar.get("company_alarms", []) or []
+        socradar_alarms_html = _render_socradar_alarms_html(alarms)
+
+        # LLM payload carries bounded aggregates + a capped compact sample,
+        # never the raw alarm objects (unbounded — heavy months blow Azure's
+        # rate-limit ADMISSION estimate and 429 forever; see
+        # SOCRADAR_ALARMS_TOKEN) and never the pre-rendered HTML (swapped in
+        # post-assembly via the token, same as the incident tables).
+        def _compact_alarm(a: dict) -> dict:
+            c = a.get("content") or {}
+            fname = (c.get("file_name") or c.get("filename") or "") if isinstance(c, dict) else ""
+            return {
+                "alarm_id": str(a.get("alarm_id") or "")[:12],
+                "date": str(a.get("date") or "")[:16],
+                "asset": str(a.get("alarm_asset") or "")[:60],
+                "file": str(fname)[:60],
+                "risk": str(a.get("alarm_risk_level") or "")[:12],
+                "status": str(a.get("status") or "")[:24],
+            }
+
+        _alarm_dicts = [a for a in alarms if isinstance(a, dict)]
+        by_risk = dict(Counter(
+            (a.get("alarm_risk_level") or "Unspecified") for a in _alarm_dicts))
+        by_status = dict(Counter(
+            (a.get("status") or "Unspecified") for a in _alarm_dicts))
+
+        _DARK_WEB_SAMPLE_CAP = 25
+        _ALARM_SAMPLE_CAP = 40
+        dark_web = socradar.get("dark_web_alarms", []) or []
         socradar_data = {
-            "company_alarms": alarms,
-            "company_alarms_html_table": _render_socradar_alarms_html(alarms),
+            "company_alarms_total": len(_alarm_dicts),
+            "company_alarms_by_risk": by_risk,
+            "company_alarms_by_status": by_status,
+            "company_alarms_sample": [
+                _compact_alarm(a) for a in _alarm_dicts[:_ALARM_SAMPLE_CAP]
+            ],
             "threat_actors": socradar.get("threat_actors", []),
-            "cve_intel": socradar.get("cve_intel", []),
-            "dark_web_alarms": socradar.get("dark_web_alarms", []),
+            # cve_intel feeds customer_advisories.cves below; the prompt reads
+            # CVEs from there, so only the count travels to the LLM.
+            "cve_intel_total": len(socradar.get("cve_intel", []) or []),
+            "dark_web_alarms_total": len(dark_web),
+            "dark_web_alarms": [
+                _compact_alarm(a) for a in dark_web[:_DARK_WEB_SAMPLE_CAP]
+                if isinstance(a, dict)
+            ],
         }
 
     industry_intel_raw = data.get("industry_intel", {})
@@ -1703,6 +1755,7 @@ def _build_report_context(data: dict, config: dict) -> dict:
         "sentinel_data": sentinel_data,
         "splunk_data": splunk_data,
         "socradar_data": socradar_data,
+        "socradar_alarms_html_table": socradar_alarms_html,
         "industry_intel_data": industry_intel_data,
         "customer_advisories_data": customer_advisories_data,
         # Pre-rendered HTML kept off `jira_data` so it does not bloat the LLM
@@ -2000,6 +2053,10 @@ async def _run_report_agent(data: dict, config: dict) -> str:
     pending_summary_html = ctx.get("pending_summary_html_table") or ""
     if PENDING_SUMMARY_TOKEN in assembled:
         assembled = assembled.replace(PENDING_SUMMARY_TOKEN, pending_summary_html)
+
+    socradar_alarms_html = ctx.get("socradar_alarms_html_table") or ""
+    if SOCRADAR_ALARMS_TOKEN in assembled:
+        assembled = assembled.replace(SOCRADAR_ALARMS_TOKEN, socradar_alarms_html)
 
     return assembled
 
