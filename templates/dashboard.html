@@ -433,6 +433,12 @@
       <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="#F59E0B" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="18" y1="20" x2="18" y2="10"/><line x1="12" y1="20" x2="12" y2="4"/><line x1="6" y1="20" x2="6" y2="14"/></svg>
       Stats
     </a>
+    {% if manual_triage_enabled %}
+    <a href="/triage/">
+      <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="#C084FC" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"/></svg>
+      Run Triage
+    </a>
+    {% endif %}
   </nav>
 
   <div class="side-bottom">
