@@ -52,6 +52,25 @@ from tools.secrets import get_secret
 log = logging.getLogger(__name__)
 
 
+def _max_retries() -> int:
+    """Retry budget passed to the openai SDK client.
+
+    The SDK retries 429/5xx/connection errors with backoff and honours the
+    server's Retry-After header. Its default of 2 near-immediate attempts
+    cannot outlast an Azure per-minute token-window 429 (which persists up
+    to 60s), so a rate-limited report run used to fail outright — the
+    July 2026 report-gen 429s. 5 attempts with Retry-After waits rides out
+    a full window. Every caller is an async background path (report gen,
+    L1 triage, dashboard chat) where waiting beats failing.
+    """
+    raw = os.environ.get("LLM_MAX_RETRIES", "").strip()
+    try:
+        return max(0, int(raw)) if raw else 5
+    except ValueError:
+        log.warning("LLM_MAX_RETRIES=%r is not an integer; using default 5", raw)
+        return 5
+
+
 def _pick(cheap: bool, primary_env: str, cheap_env: str, primary_default: str) -> str:
     """Resolve the model/deployment for a tier. The 'cheap' tier uses its own env
     var when set, otherwise falls back to the primary model — so tiered routing is
@@ -94,7 +113,8 @@ def make_chat_client(tier: str = "primary") -> tuple[AsyncOpenAI, str]:
         )
         model = (os.environ.get("OPENAI_COMPAT_MODEL_CHEAP", "").strip() or primary) if cheap else primary
         log.info("LLM provider: openai-compat at %s, tier=%s, model=%s", base_url, tier, model)
-        return AsyncOpenAI(base_url=base_url, api_key=api_key), model
+        return AsyncOpenAI(base_url=base_url, api_key=api_key,
+                           max_retries=_max_retries()), model
 
     # 2. Azure OpenAI
     azure_endpoint = os.environ.get("AZURE_OPENAI_ENDPOINT", "").strip()
@@ -103,6 +123,7 @@ def make_chat_client(tier: str = "primary") -> tuple[AsyncOpenAI, str]:
             azure_endpoint=azure_endpoint,
             api_key=get_secret("AZURE_OPENAI_API_KEY"),
             api_version=os.environ.get("AZURE_OPENAI_API_VERSION", "2024-10-21"),
+            max_retries=_max_retries(),
         )
         model = _pick(cheap, "AZURE_OPENAI_DEPLOYMENT", "AZURE_OPENAI_DEPLOYMENT_CHEAP", "gpt-5.2")
         log.info("LLM provider: azure-openai endpoint=%s, tier=%s, deployment=%s",
@@ -114,7 +135,7 @@ def make_chat_client(tier: str = "primary") -> tuple[AsyncOpenAI, str]:
     if api_key:
         model = _pick(cheap, "OPENAI_MODEL", "OPENAI_MODEL_CHEAP", "gpt-5.2")
         log.info("LLM provider: public openai, tier=%s, model=%s", tier, model)
-        return AsyncOpenAI(api_key=api_key), model
+        return AsyncOpenAI(api_key=api_key, max_retries=_max_retries()), model
 
     raise RuntimeError(
         "No LLM provider configured. Set ONE of:\n"

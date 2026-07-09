@@ -1746,7 +1746,8 @@ def _build_unified_toc(content: str) -> str:
 # image runs against any provider.
 
 
-async def _generate_group(group_sections: list, data_subset: dict, ctx: dict, config: dict) -> str:
+async def _generate_group(group_sections: list, data_subset: dict, ctx: dict, config: dict,
+                          llm_slot: asyncio.Semaphore) -> str:
     if not group_sections:
         return ""
 
@@ -1770,16 +1771,21 @@ async def _generate_group(group_sections: list, data_subset: dict, ctx: dict, co
         report_year=ctx["report_year"],
     )
 
-    # Report narrative prose — non-verdict, cheap tier.
+    # Report narrative prose — non-verdict, cheap tier. The semaphore caps
+    # how many section-group prompts hit the deployment at once: five large
+    # prompts arriving in the same instant can exhaust the per-minute token
+    # window on their own (Azure admission-checks estimated tokens), which is
+    # how the July 2026 report-gen 429s happened even at 600K TPM.
     client, model = make_chat_client(tier="cheap")
-    response = await client.chat.completions.create(
-        model=model,
-        messages=[
-            {"role": "system", "content": prompt},
-            {"role": "user", "content": "Generate the assigned report sections now."},
-        ],
-        max_completion_tokens=16000,
-    )
+    async with llm_slot:
+        response = await client.chat.completions.create(
+            model=model,
+            messages=[
+                {"role": "system", "content": prompt},
+                {"role": "user", "content": "Generate the assigned report sections now."},
+            ],
+            max_completion_tokens=16000,
+        )
     return (response.choices[0].message.content or "").strip()
 
 
@@ -1938,7 +1944,17 @@ async def _run_report_agent(data: dict, config: dict) -> str:
     ]
     active_groups = [(secs, payload) for secs, payload in groups if secs]
 
-    tasks = [_generate_group(secs, payload, ctx, config) for secs, payload in active_groups]
+    # Semaphore is created here (not module level) so it binds to the event
+    # loop of this report run — each job runs under its own asyncio.run().
+    concurrency_raw = os.environ.get("REPORT_LLM_CONCURRENCY", "").strip()
+    try:
+        llm_concurrency = max(1, int(concurrency_raw)) if concurrency_raw else 2
+    except ValueError:
+        llm_concurrency = 2
+    llm_slot = asyncio.Semaphore(llm_concurrency)
+
+    tasks = [_generate_group(secs, payload, ctx, config, llm_slot)
+             for secs, payload in active_groups]
     parts = await asyncio.gather(*tasks)
 
     # Build appendix markdown if selected. Trick: include it during ToC
