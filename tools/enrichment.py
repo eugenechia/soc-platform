@@ -598,10 +598,14 @@ def _append_mitre_section(lines: list[str], mitre_result: dict | None) -> None:
     techniques = mitre_result.get("techniques") or []
     if not techniques:
         return
-    lines.append("MITRE ATT&CK Mapping:")
+    lines.append("MITRE ATT&CK — Attack TTPs:")
     for t in techniques:
         pct = int(round(t.get("confidence", 0) * 100))
         lines.append(f"  [{t['id']}] {t['tactic']} — {t['name']} ({pct}% confidence)")
+        rationale = t.get("rationale")
+        if rationale:
+            lines.append(f"    Why: {rationale}")
+        lines.append(f"    {_mitre_technique_url(t['id'])}")
     lines.append("")
 
 
@@ -912,6 +916,7 @@ def _build_comment(ioc_results: list[dict], overall_verdict: str, action_taken: 
             "  - SOCRadar:    No detections",
             "",
         ]
+        _append_mitre_section(lines, mitre_result)
         _append_whitelist_match_section(lines, whitelist_matches)
         _append_customer_knowledge_section(lines, rag_info)
         _append_sentinel_evidence_section(lines, kql_evidence)
@@ -919,7 +924,6 @@ def _build_comment(ioc_results: list[dict], overall_verdict: str, action_taken: 
         _append_pattern_section(lines, pattern)
         _append_cmdline_section(lines, cmdline_analysis)
         _append_code_explain_section(lines, code_explain)
-        _append_mitre_section(lines, mitre_result)
         _append_whitelist_conflict(lines, whitelist_conflict)
         lines += [
             f"VERDICT: {verdict_display}",
@@ -936,6 +940,10 @@ def _build_comment(ioc_results: list[dict], overall_verdict: str, action_taken: 
     lines.append(f"IOCs found: {ioc_count}")
     lines.append(f"(Extracted observables checked: {len(ioc_results)})")
     lines.append("")
+
+    # TTP update (2026-07-10): MITRE section first, mirroring the ADF layout —
+    # renders only on malicious verdicts now.
+    _append_mitre_section(lines, mitre_result)
 
     # Phase 5b (2026-06-15): per-IOC historical lookup budget. Each malicious
     # IOC may consume one JQL call; cap protects webhook latency. Same shape
@@ -1027,7 +1035,6 @@ def _build_comment(ioc_results: list[dict], overall_verdict: str, action_taken: 
     _append_insights_section(lines, ioc_results)
     _append_cmdline_section(lines, cmdline_analysis)
     _append_code_explain_section(lines, code_explain)
-    _append_mitre_section(lines, mitre_result)
     _append_whitelist_conflict(lines, whitelist_conflict)
     lines.append(f"VERDICT: {verdict_display}")
     lines.append(f"AUTO-TRIAGE: {action_taken}")
@@ -1269,6 +1276,12 @@ def _adf_code_explain_block(code_explain: dict | None) -> list[dict]:
     ]
 
 
+def _mitre_technique_url(technique_id: str) -> str:
+    """attack.mitre.org page for a technique ID — sub-technique dot becomes a
+    path segment: T1071.001 → /techniques/T1071/001/."""
+    return f"https://attack.mitre.org/techniques/{technique_id.replace('.', '/')}/"
+
+
 def _adf_mitre_block(mitre_result: dict | None) -> list[dict]:
     from tools import adf
     if not mitre_result:
@@ -1279,10 +1292,16 @@ def _adf_mitre_block(mitre_result: dict | None) -> list[dict]:
     rows = []
     for t in techniques:
         pct = int(round(t.get("confidence", 0) * 100))
-        rows.append([t["id"], t.get("tactic", "—"), t.get("name", "—"), f"{pct}%"])
+        rows.append([
+            adf.text(t["id"], link=_mitre_technique_url(t["id"])),
+            t.get("tactic", "—"),
+            t.get("name", "—"),
+            f"{pct}%",
+            t.get("rationale") or "—",
+        ])
     return [
-        adf.heading(3, "MITRE ATT&CK"),
-        adf.table(["ID", "Tactic", "Name", "Confidence"], rows),
+        adf.heading(3, "MITRE ATT&CK — Attack TTPs"),
+        adf.table(["ID", "Tactic", "Name", "Confidence", "Why"], rows),
     ]
 
 
@@ -1527,6 +1546,10 @@ def _build_comment_adf(ioc_results: list[dict], overall_verdict: str, action_tak
     blocks.extend(_adf_whitelist_conflict_block(whitelist_conflict))
     blocks.append(adf.heading(2, "L1 Triage Report (Automated)"))
 
+    # TTP update (2026-07-10): MITRE section moved from last to FIRST under the
+    # report heading — it now only renders on malicious verdicts, so it reads as
+    # "TRUE-POSITIVE → here's the attack technique picture".
+    blocks.extend(_adf_mitre_block(mitre_result))
     blocks.extend(_adf_ioc_block(ioc_results, ticket_key))
     blocks.extend(_adf_whitelist_match_block(whitelist_matches))
     blocks.extend(_adf_customer_knowledge_block(rag_info))
@@ -1536,7 +1559,6 @@ def _build_comment_adf(ioc_results: list[dict], overall_verdict: str, action_tak
     blocks.extend(_adf_insights_block(ioc_results))
     blocks.extend(_adf_cmdline_block(cmdline_analysis))
     blocks.extend(_adf_code_explain_block(code_explain))
-    blocks.extend(_adf_mitre_block(mitre_result))
 
     return adf.doc(*blocks)
 
@@ -1851,14 +1873,22 @@ def enrich_ticket(ticket_key: str, fields: dict,
     # Phase 2 (2026-06-10): MITRE ATT&CK mapping — runs after full reputation
     # picture is available so SOCRadar categories can seed the LLM prompt.
     # Wrapped in try/except: any failure is logged and silently skipped.
+    # TTP update (2026-07-10): gated on the malicious verdict — clean, unknown
+    # (all engines unreachable) and whitelist-overridden benign tickets skip the
+    # LLM call entirely. MITRE_MALICIOUS_ONLY=false restores run-on-everything.
     mitre_result = None
-    if os.environ.get("MITRE_MAPPING_ENABLED", "true").lower() != "false":
+    _mitre_malicious_only = os.environ.get("MITRE_MALICIOUS_ONLY", "true").lower() != "false"
+    if (os.environ.get("MITRE_MAPPING_ENABLED", "true").lower() != "false"
+            and (overall_verdict == "malicious" or not _mitre_malicious_only)):
         try:
             from tools import mitre_mapper
             mitre_result = mitre_mapper.map_mitre(ticket_key, fields, ioc_results)
         except Exception as _e:
             logger.warning("enrich_ticket(%s): MITRE mapping failed (%s) — skipping",
                            ticket_key, _e)
+    elif os.environ.get("MITRE_MAPPING_ENABLED", "true").lower() != "false":
+        logger.info("enrich_ticket(%s): MITRE mapping skipped — verdict is %s, "
+                    "not malicious (MITRE_MALICIOUS_ONLY)", ticket_key, overall_verdict)
 
     # Improvement #2 (2026-07-03): AI web-research insights for MALICIOUS IOCs.
     # For each IOC the vendors confirmed malicious, search the open web + have the

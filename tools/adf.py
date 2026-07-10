@@ -20,8 +20,9 @@ from __future__ import annotations
 _PANEL_TYPES = {"info", "note", "warning", "success", "error"}
 
 
-def text(s: str, *, bold: bool = False, italic: bool = False, code: bool = False) -> dict:
-    """Inline text node with optional marks (strong / em / code)."""
+def text(s: str, *, bold: bool = False, italic: bool = False, code: bool = False,
+         link: str | None = None) -> dict:
+    """Inline text node with optional marks (strong / em / code / link)."""
     node: dict = {"type": "text", "text": s if s else " "}
     marks = []
     if bold:
@@ -30,6 +31,8 @@ def text(s: str, *, bold: bool = False, italic: bool = False, code: bool = False
         marks.append({"type": "em"})
     if code:
         marks.append({"type": "code"})
+    if link:
+        marks.append({"type": "link", "attrs": {"href": link}})
     if marks:
         node["marks"] = marks
     return node

@@ -144,3 +144,19 @@ Phase 2 mapping is based solely on the ticket context available at triage time (
 - Appear in the structured AI Recommendation section — Phase 6
 
 See the [roadmap](L1-TRIAGE-REDESIGN-ROADMAP.md) for the full sequence.
+
+---
+
+## 10. Addendum — TTP update (2026-07-10)
+
+Analyst request: "when a malicious ticket comes in, add TTP for L1 triage." Three changes, all rendering/gating — `tools/mitre_mapper.py` logic untouched:
+
+1. **Malicious-only gating.** `map_mitre()` is now called only when `overall_verdict == "malicious"` (after the whitelist override, so benign-overridden tickets also skip). Clean and unknown tickets no longer pay the LLM call. New env `MITRE_MALICIOUS_ONLY` (default `true`); set `false` to restore Phase 2's run-on-every-ticket behavior without a redeploy. `MITRE_MAPPING_ENABLED` remains the master killswitch.
+
+2. **Richer rendering.** The section is retitled "MITRE ATT&CK — Attack TTPs". The ADF table gains a "Why" column showing the per-technique `rationale` (captured since Phase 2, previously discarded at render time), and technique IDs link to their attack.mitre.org page. The plain-text fallback renders the same rationale + URL under each technique line.
+
+3. **Prominent placement.** The section moved from the very bottom of the comment to the FIRST section under the "L1 Triage Report (Automated)" heading — directly below the color-coded VERDICT panel — in both the ADF and text renderers.
+
+Deferred (recorded in KIV): feeding mapped TTPs into the LLM Triage prompt. Blocked on pipeline ordering — `triage_priority()` runs in the pre-enrichment foundation phase, before IOC reputation determines the verdict, so verdict-gated TTPs cannot exist yet at prompt-assembly time. Revisit only with a pipeline restructure.
+
+Rollback: git tag `pre-ttp-malicious-2026-07-10`, or config-only via `MITRE_MALICIOUS_ONLY=false` (gating) — the placement/rendering changes are code-level and need the image rollback.
