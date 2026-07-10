@@ -237,6 +237,50 @@ _PDF_STYLES = """
   }
   tr:nth-child(even) td { background: #f7f9ff; }
 
+  /* Appendix 2.1 incident-details table (7 columns) overflowed the page:
+     with `table-layout: auto`, `max-width: 100%` cannot shrink a table whose
+     MINIMUM content width exceeds the page — and `overflow-wrap: break-word`
+     does not reduce min-content width for unbreakable words. Jira category
+     values are concatenated CamelCase with no break opportunities (e.g.
+     "DefenseEvasionInitialAccessExecutionLateralMovement"), so the table's
+     min width exceeded 17cm and the flex-centering wrapper clipped it off
+     BOTH page edges (July 2026 Logicalis report).
+
+     Scoped fix, every piece load-bearing in WeasyPrint (v69):
+     - `table-layout: fixed` + hardcoded ABSOLUTE column widths. Percentage
+       column widths must NOT be used here: WeasyPrint's fixed algorithm
+       inflates the table with them instead of partitioning the width
+       (measured: 100%-width table rendered 748px in a 643px content area).
+     - `box-sizing: border-box` on cells, so the specified column widths
+       absorb padding/borders; without it WeasyPrint sums content widths and
+       overflows the specified table width by ~1cm even with cm columns.
+     - `overflow-wrap: anywhere` — unlike `break-word` it reduces min-content
+       width, letting unbreakable values wrap inside their column. Scoped to
+       this table only; the global no-mid-string-break decision for IDs
+       elsewhere is unchanged, and the 2.4cm ID column fits
+       "LOGICALIS-XXXXX" on one line at 8.5pt.
+     Columns sum to 17cm = A4 21cm minus 2cm side margins. */
+  table.incident-details {
+    table-layout: fixed;
+    width: 17cm;
+  }
+  table.incident-details th,
+  table.incident-details td {
+    overflow-wrap: anywhere;
+    box-sizing: border-box;
+    padding: 4px 5px;
+  }
+  /* ID and Date columns are sized so "LOGICALIS-XXXXX" and "D/M/YYYY" fit
+     on one line at 8.5pt — narrower and they break mid-string, which reads
+     as data corruption. Long words in the other columns wrap in place. */
+  table.incident-details th:nth-child(1) { width: 3.0cm; }  /* Incident ID */
+  table.incident-details th:nth-child(2) { width: 2.1cm; }  /* Date */
+  table.incident-details th:nth-child(3) { width: 3.9cm; }  /* Incident Subject */
+  table.incident-details th:nth-child(4) { width: 2.9cm; }  /* Category */
+  table.incident-details th:nth-child(5) { width: 1.7cm; }  /* Severity */
+  table.incident-details th:nth-child(6) { width: 1.8cm; }  /* Status */
+  table.incident-details th:nth-child(7) { width: 1.6cm; }  /* TP/FP/BP */
+
   blockquote {
     border-left: 4px solid #f59e0b;
     background: #fffbeb;

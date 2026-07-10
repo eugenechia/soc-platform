@@ -188,12 +188,19 @@ def _render_incident_details_html(incidents: list) -> str:
 
     def _category(rec: dict) -> str:
         cat = (rec.get("category") or "").strip()
-        if cat:
-            return cat
-        labels = rec.get("labels") or []
-        if isinstance(labels, list):
-            return ", ".join(str(l) for l in labels[:3])
-        return str(labels)
+        if not cat:
+            labels = rec.get("labels") or []
+            if isinstance(labels, list):
+                cat = ", ".join(str(l) for l in labels[:3])
+            else:
+                cat = str(labels)
+        # Jira categories arrive as concatenated CamelCase with no break
+        # opportunities ("DefenseEvasionInitialAccessExecutionLateralMovement"),
+        # which forces the PDF column wide / wraps mid-word. A zero-width
+        # space at each lower→upper boundary keeps the displayed value
+        # verbatim while giving the renderer clean word-boundary breaks.
+        import re
+        return re.sub(r"(?<=[a-z])(?=[A-Z])", "​", cat)
 
     def _esc(value) -> str:
         return _html.escape(str(value or "").strip())
