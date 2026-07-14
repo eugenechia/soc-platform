@@ -39,6 +39,13 @@ docs/
 samples/
 README.md
 
+# Local archives / backups / scratch venvs — never ship, and they bloat the
+# ACR build context past the point where the build agent can download it
+# (157 MB context caused "failed to download context", 2026-07-14)
+Archive/
+.venv-diagrams/
+.offsite-backups/
+
 # Build artifacts of prior runs
 *.log
 .tmp/
