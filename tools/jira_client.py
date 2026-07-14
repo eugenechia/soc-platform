@@ -640,25 +640,113 @@ def _fetch_jira_by_type(issue_type: str, project_key: str,
             f'AND created < "{chunk_end}" '
             f'ORDER BY created DESC'
         )
-        result = jira_search(jql, max_results=100, next_page_token=None,
-                             project_spec=project_spec)
-        if "error" in result:
-            if "HTTP 400" in result.get("error", "") or "HTTP 404" in result.get("error", ""):
-                logger.warning(f"Issue type '{issue_type}' not found in project {project_key}")
-                return {"items": [], "stats": {}, "unavailable": True}
-            logger.error(f"Jira fetch failed for {issue_type}: {result}")
-            return {"items": [], "stats": {}, "error": result["error"], "unavailable": False}
+        next_token = None
+        while len(all_issues) < 5000:
+            result = jira_search(jql, max_results=100, next_page_token=next_token,
+                                 project_spec=project_spec)
+            if "error" in result:
+                if "HTTP 400" in result.get("error", "") or "HTTP 404" in result.get("error", ""):
+                    logger.warning(f"Issue type '{issue_type}' not found in project {project_key}")
+                    return {"items": [], "stats": {}, "unavailable": True}
+                logger.error(f"Jira fetch failed for {issue_type}: {result}")
+                return {"items": [], "stats": {}, "error": result["error"], "unavailable": False}
 
-        for issue in result.get("issues", []):
-            key = issue.get("key")
-            if key and key not in seen_keys:
-                seen_keys.add(key)
-                all_issues.append(issue)
+            issues = result.get("issues", [])
+            for issue in issues:
+                key = issue.get("key")
+                if key and key not in seen_keys:
+                    seen_keys.add(key)
+                    all_issues.append(issue)
+
+            next_token = result.get("nextPageToken")
+            if not issues or not next_token or result.get("isLast") is True:
+                break
 
     logger.info("_fetch_jira_by_type(%s/%s): total=%d", project_key, issue_type, len(all_issues))
     items = [_normalize_issue(i) for i in all_issues]
     stats = _compute_stats(items)
     return {"items": items, "stats": stats, "unavailable": False}
+
+
+# Aliases tried (in order) when the configured issue type name does not exist
+# in the target project. JSM cloud sites name the system types
+# "[System] Change" / "[System] Service request", while the admin-UI default
+# says "Change" / "Service Request" — names that are often valid site-wide, so
+# the JQL returned 0 rows with no error and the report printed a false zero
+# (NTCJ, July 2026). Resolution happens against the project's real type list;
+# the "[System] " prefix is ignored when comparing, so most JSM projects match
+# without needing an alias at all.
+_CHANGE_REQUEST_ALIASES = ["Change", "Change Request", "RFC", "Change Management"]
+_SERVICE_REQUEST_ALIASES = ["Service Request", "Service Desk Request"]
+
+# Cache of {(base_url, project_key): [type names]}. Project type sets change
+# rarely and one report run needs the list twice per project (SR + CR).
+# Failed lookups are not cached so a transient error self-heals.
+_project_issue_types_cache: dict = {}
+
+
+def _get_project_issue_type_names(project_key: str,
+                                  project_spec: dict | None = None) -> list[str] | None:
+    """Names of the issue types available in a project, or None when the
+    createmeta endpoint cannot be reached (permissions, network, old server)."""
+    base_url, headers = _resolve_jira_auth(project_spec)
+    cache_key = (base_url, project_key)
+    if cache_key in _project_issue_types_cache:
+        return _project_issue_types_cache[cache_key]
+    try:
+        r = httpx.get(
+            f"{base_url}/rest/api/3/issue/createmeta/{project_key}/issuetypes",
+            headers=headers, params={"maxResults": 200}, timeout=30,
+        )
+        if r.status_code >= 400:
+            logger.warning("createmeta issuetypes HTTP %s for %s: %s",
+                           r.status_code, project_key, r.text[:300])
+            return None
+        data = r.json()
+        raw = data.get("issueTypes") or data.get("values") or []
+        names = [t.get("name", "") for t in raw if t.get("name")]
+    except Exception as e:
+        logger.warning("createmeta issuetypes failed for %s: %s", project_key, e)
+        return None
+    _project_issue_types_cache[cache_key] = names
+    return names
+
+
+def _normalize_type_name(name: str) -> str:
+    n = name.strip().lower()
+    if n.startswith("[system]"):
+        n = n[len("[system]"):].strip()
+    return n
+
+
+def _resolve_issue_type_for_project(configured: str, aliases: list[str],
+                                    project_key: str,
+                                    project_spec: dict | None = None) -> str | None:
+    """Map a configured issue type name onto the name the project actually uses.
+
+    Returns the project's canonical name (exact-casing) on a match, the
+    configured name unchanged when the project's type list cannot be fetched
+    (so behaviour degrades to the pre-validation JQL), or None when the type
+    genuinely does not exist in the project — the caller marks the section
+    unavailable so the report shows the "not configured" placeholder instead
+    of a false zero."""
+    names = _get_project_issue_type_names(project_key, project_spec)
+    if names is None:
+        return configured
+    lookup: dict[str, str] = {}
+    for n in names:
+        lookup.setdefault(n.strip().lower(), n)
+        lookup.setdefault(_normalize_type_name(n), n)
+    for candidate in [configured, *aliases]:
+        hit = lookup.get(candidate.strip().lower()) or lookup.get(_normalize_type_name(candidate))
+        if hit:
+            if hit != configured:
+                logger.info("Issue type '%s' resolved to '%s' for project %s",
+                            configured, hit, project_key)
+            return hit
+    logger.warning("Issue type '%s' (aliases %s) not found in project %s — available types: %s",
+                   configured, aliases, project_key, names)
+    return None
 
 
 def fetch_service_requests(project_key: str, start_date: str, end_date: str,
@@ -668,9 +756,17 @@ def fetch_service_requests(project_key: str, start_date: str, end_date: str,
 
     The issue_type defaults to the canonical Atlassian/JSM name "Service Request",
     but customers whose Jira project uses a different label (e.g.
-    "Service Desk Request") can override this per customer in the admin UI."""
+    "Service Desk Request") can override this per customer in the admin UI.
+    The configured name is validated against the project's real issue types
+    (with "[System] "-prefix-insensitive matching and alias fallback) so a
+    name mismatch yields unavailable=True rather than a silent zero."""
     try:
-        return _fetch_jira_by_type(issue_type or "Service Request", project_key,
+        resolved = _resolve_issue_type_for_project(
+            issue_type or "Service Request", _SERVICE_REQUEST_ALIASES,
+            project_key, project_spec)
+        if resolved is None:
+            return {"items": [], "stats": {}, "unavailable": True}
+        return _fetch_jira_by_type(resolved, project_key,
                                    start_date, end_date, project_spec=project_spec)
     except Exception as e:
         logger.warning(f"fetch_service_requests exception: {e}")
@@ -684,9 +780,17 @@ def fetch_change_requests(project_key: str, start_date: str, end_date: str,
 
     The issue_type defaults to "Change" (the JSM canonical name); per-customer
     overrides are supported for projects using alternatives like "RFC" or
-    "Change Management"."""
+    "Change Management". The configured name is validated against the
+    project's real issue types (with "[System] "-prefix-insensitive matching
+    and alias fallback) so a name mismatch yields unavailable=True rather
+    than a silent zero."""
     try:
-        return _fetch_jira_by_type(issue_type or "Change", project_key,
+        resolved = _resolve_issue_type_for_project(
+            issue_type or "Change", _CHANGE_REQUEST_ALIASES,
+            project_key, project_spec)
+        if resolved is None:
+            return {"items": [], "stats": {}, "unavailable": True}
+        return _fetch_jira_by_type(resolved, project_key,
                                    start_date, end_date, project_spec=project_spec)
     except Exception as e:
         logger.warning(f"fetch_change_requests exception: {e}")
