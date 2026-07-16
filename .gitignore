@@ -11,3 +11,4 @@ credentials.json
 .venv/
 .venv-diagrams/
 Archive/
+.offsite-backups/
