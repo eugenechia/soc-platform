@@ -1,0 +1,282 @@
+import {makeScene2D, Rect, Txt, Line, Node} from '@motion-canvas/2d';
+import {
+  all,
+  waitFor,
+  easeInOutCubic,
+  easeOutCubic,
+  easeOutBack,
+} from '@motion-canvas/core';
+
+/**
+ * L1 Triage — End to End.
+ *
+ * A "growing diagram": the pipeline builds one component at a time, each in a
+ * box with a connecting arrow and a side description, while the camera follows
+ * downward. A final zoom-out reveals the whole pipeline.
+ *
+ * The flow and ordering mirror the real SOC-Triage code (webhook -> stabilize
+ * -> dedup -> Phase 1 routing -> enrichment fan-in -> verdict -> comment),
+ * verified against routes/webhook.py and tools/enrichment.py.
+ *
+ * --- HOW TO TUNE ---
+ *   PACE        global speed multiplier (raise to slow everything down)
+ *   palette C   colours
+ *   STAGES      the storyboard: title / description / colour / optional flag
+ *   Each STAGES row's y is auto-assigned down the spine (see VSTEP).
+ */
+
+export default makeScene2D(function* (view) {
+  // ----------------------------------------------------------------- palette
+  const C = {
+    bg: '#0b1221',
+    card: '#16243b',
+    cardOpt: '#111d30',
+    text: '#e8eef7',
+    sub: '#93a6c4',
+    link: '#5a6f90',
+    azure: '#38bdf8',
+    jira: '#5b8def',
+    ai: '#c084fc',
+    intel: '#f5b53d',
+    good: '#34d399',
+    bad: '#f87171',
+    muted: '#7488a6',
+  };
+  const FONT = 'Inter, "Segoe UI", system-ui, sans-serif';
+
+  // -------------------------------------------------------------- pacing/size
+  const PACE = 1; // global speed multiplier (1 = default, 1.5 = 50% slower)
+  const D_CAM = 0.5 * PACE;
+  const D_ARROW = 0.28 * PACE;
+  const D_CARD = 0.36 * PACE;
+  const D_CALL = 0.34 * PACE;
+  const GAP = 0.22 * PACE; // pause between components
+
+  const SX = -220; // spine x (boxes sit left of centre, callouts to the right)
+  const W = 380; // spine card width
+  const H = 96; // spine card height
+  const VSTEP = 190; // vertical spacing between spine components
+  const BR_W = 320; // branch card width
+  const BR_H = 72; // branch card height
+
+  // --------------------------------------------------------------- storyboard
+  // kind: 'spine' (main flow) | 'branch' (off-flow, e.g. dedup short-circuit)
+  // optional: true => killswitch-gated (dashed border)
+  const STAGES: Array<{
+    id: string;
+    title: string;
+    desc: string | null;
+    accent: string;
+    optional?: boolean;
+    from?: string;
+    kind?: 'spine' | 'branch';
+  }> = [
+    {id: 'src', title: 'Source Incident', accent: C.muted,
+      desc: 'Suspicious activity in the customer environment'},
+    {id: 'sentinel', title: 'Microsoft Sentinel', accent: C.azure, from: 'src',
+      desc: 'An analytics rule fires and raises an incident'},
+    {id: 'logic', title: 'Azure Logic Apps', accent: C.azure, from: 'sentinel',
+      desc: 'Opens a Jira ticket — then keeps populating entity fields (IPs, hosts, hashes) for ~20–30s'},
+    {id: 'jira', title: 'Jira Ticket Created', accent: C.jira, from: 'logic',
+      desc: 'issue_created webhook fires to the L1 Triage service'},
+    {id: 'svc', title: 'L1 Triage Service', accent: C.ai, from: 'jira',
+      desc: 'Returns HTTP 200 instantly; enrichment runs on a background thread'},
+    {id: 'poll', title: 'Field Stabilization', accent: C.azure, from: 'svc',
+      desc: 'Polls Jira for up to ~60s until Sentinel’s entity fields have landed'},
+    {id: 'dedup', title: 'Deduplication', accent: C.intel, from: 'poll',
+      desc: 'Has this same alert fired in the last 24h?   ·   DEDUP_WEBHOOK_ENABLED'},
+    {id: 'dupstop', title: 'Duplicate → close & stop', accent: C.bad,
+      from: 'dedup', kind: 'branch', desc: null},
+    {id: 'routing', title: 'Early Routing — Phase 1', accent: C.ai, from: 'dedup',
+      desc: 'Runs before enrichment:   ① map severity → priority    ② auto-assign to GSOC    ③ LLM priority override (confidence ≥ 0.7)'},
+    {id: 'ioc', title: 'IOC Extraction', accent: C.intel, from: 'routing',
+      desc: 'IPs, domains, URLs, hashes — from Sentinel fields + regex; filters private IPs & allowlists'},
+    {id: 'rep', title: 'Reputation Lookup', accent: C.intel, from: 'ioc',
+      desc: 'Per IOC →  VirusTotal · AbuseIPDB (IPs) · SOCRadar  →  aggregate verdict'},
+    {id: 'rag', title: 'Confluence RAG — Customer KB', accent: C.ai, from: 'rep',
+      optional: true,
+      desc: 'Vector-search the customer’s Confluence pages for context   ·   RAG_LOOKUP_ENABLED'},
+    {id: 'wl', title: 'Whitelist Match', accent: C.intel, from: 'rag',
+      desc: 'Literal substring check vs customer whitelist tables — catches what vector RAG misses'},
+    {id: 'kql', title: 'Sentinel Evidence (KQL)', accent: C.azure, from: 'wl',
+      optional: true,
+      desc: 'AI-generated KQL pulls supporting logs from the workspace   ·   KQL_EXPANSION_ENABLED'},
+    {id: 'hist', title: 'Historical Correlation', accent: C.muted, from: 'kql',
+      desc: 'Counts similar alerts in the past 24h → FP / TP / Unknown'},
+    {id: 'mitre', title: 'MITRE ATT&CK Mapping', accent: C.ai, from: 'hist',
+      desc: 'Maps the alert to up to 3 ranked techniques   ·   MITRE_MAPPING_ENABLED'},
+    {id: 'verdict', title: 'Verdict & Confidence Scorecard', accent: C.good,
+      from: 'mitre',
+      desc: 'Overall verdict + confidence  ·  routes malicious → L1 Lead, clean/unknown → L2  ·  adds triage label'},
+    {id: 'rec', title: 'Recommended Next Action', accent: C.ai, from: 'verdict',
+      optional: true,
+      desc: 'LLM writes one actionable line for the analyst (≤280 chars)   ·   RECOMMENDATION_SYNTHESIS_ENABLED'},
+    {id: 'comment', title: 'Comment to Jira', accent: C.jira, from: 'rec',
+      desc: 'Assembled ADF comment (falls back to plain text) is written back to the ticket'},
+    {id: 'capture', title: 'L2 Decision Capture', accent: C.sub, from: 'comment',
+      optional: true,
+      desc: 'Separate issue_updated loop — the analyst’s final label is logged for model tuning   ·   DECISION_CAPTURE_ENABLED'},
+  ];
+
+  // ------------------------------------------------- assign positions (y down)
+  type Stage = (typeof STAGES)[number] & {
+    x: number; y: number; card?: Rect; callout?: Txt; arrow?: Line;
+  };
+  const byId: Record<string, Stage> = {};
+  let spineY = 0;
+  for (const raw of STAGES) {
+    const s = raw as Stage;
+    if (s.kind === 'branch') {
+      // sits left of its parent, on the same row
+      const parent = byId[s.from!];
+      s.x = -720;
+      s.y = parent.y;
+    } else {
+      s.x = SX;
+      s.y = spineY;
+      spineY += VSTEP;
+    }
+    byId[s.id] = s;
+  }
+  const lastY = spineY - VSTEP;
+
+  // ----------------------------------------------------------------- scaffold
+  view.add(new Rect({width: 1920, height: 1080, fill: C.bg}));
+
+  // camera rig: everything that scrolls lives under `cam`
+  const cam = new Node({position: [0, -120]});
+  const links = new Node({}); // arrows (behind)
+  const nodes = new Node({}); // cards (in front)
+  cam.add(links);
+  cam.add(nodes);
+  view.add(cam);
+
+  // fixed overlay (title / legend / caption) — does not scroll
+  const title = new Txt({
+    text: 'L1 Triage — End to End', x: -905, y: -468, offset: [-1, 0],
+    fontFamily: FONT, fontSize: 42, fontWeight: 700, fill: C.text, opacity: 0,
+  });
+  const subtitle = new Txt({
+    text: 'How a Sentinel alert becomes a triaged, enriched Jira ticket',
+    x: -903, y: -424, offset: [-1, 0],
+    fontFamily: FONT, fontSize: 22, fill: C.sub, opacity: 0,
+  });
+  const legend = new Txt({
+    text: '╌╌  dashed border = optional step (killswitch-gated)',
+    x: -905, y: 476, offset: [-1, 0],
+    fontFamily: FONT, fontSize: 20, fill: C.sub, opacity: 0,
+  });
+  const caption = new Txt({
+    text: 'The complete L1 triage pipeline',
+    x: 0, y: 480, fontFamily: FONT, fontSize: 26, fill: C.text, opacity: 0,
+  });
+  view.add(title);
+  view.add(subtitle);
+  view.add(legend);
+  view.add(caption);
+
+  // -------------------------------------------------------------- build cards
+  const buildCard = (s: Stage) => {
+    const isBranch = s.kind === 'branch';
+    const w = isBranch ? BR_W : W;
+    const h = isBranch ? BR_H : H;
+
+    const card = new Rect({
+      x: s.x, y: s.y, width: w, height: h, radius: 12,
+      fill: s.optional ? C.cardOpt : C.card,
+      stroke: s.accent, lineWidth: 2.5,
+      lineDash: s.optional ? [9, 7] : [],
+      opacity: 0, scale: 0.9,
+      shadowColor: '#00000077', shadowBlur: 18, shadowOffsetY: 6,
+    });
+    card.add(
+      new Txt({
+        text: s.title, fontFamily: FONT,
+        fontSize: isBranch ? 21 : 25, fontWeight: 600,
+        fill: isBranch ? C.bad : C.text,
+        width: w - 28, textWrap: true, textAlign: 'center', lineHeight: 30,
+      }),
+    );
+    nodes.add(card);
+    s.card = card;
+
+    if (s.desc) {
+      const call = new Txt({
+        text: s.desc, fontFamily: FONT, fontSize: 21, fill: C.sub,
+        x: s.x + w / 2 + 34, y: s.y, offset: [-1, 0],
+        width: 600, textWrap: true, textAlign: 'left', lineHeight: 30,
+        opacity: 0,
+      });
+      nodes.add(call);
+      s.callout = call;
+    }
+  };
+
+  const buildArrow = (s: Stage) => {
+    if (!s.from) return;
+    const p = byId[s.from];
+    let start: [number, number];
+    let end: [number, number];
+    let col: string;
+    if (s.kind === 'branch') {
+      start = [p.x - W / 2, p.y]; // parent left edge
+      end = [s.x + BR_W / 2, s.y]; // branch right edge
+      col = C.bad;
+    } else {
+      start = [p.x, p.y + H / 2]; // parent bottom
+      end = [s.x, s.y - H / 2]; // child top
+      col = C.link;
+    }
+    const line = new Line({
+      points: [start, end], stroke: col, lineWidth: 3,
+      endArrow: true, arrowSize: 12, lineCap: 'round',
+      end: 0, opacity: 0.95,
+    });
+    links.add(line);
+    s.arrow = line;
+  };
+
+  for (const s of STAGES as Stage[]) {
+    buildArrow(s); // arrows first (render behind cards)
+  }
+  for (const s of STAGES as Stage[]) {
+    buildCard(s);
+  }
+
+  // ------------------------------------------------------------ reveal helper
+  function* reveal(s: Stage) {
+    if (s.arrow) {
+      yield* s.arrow.end(1, D_ARROW, easeOutCubic);
+    }
+    yield* all(
+      s.card!.opacity(1, D_CARD),
+      s.card!.scale(1, D_CARD, easeOutBack),
+      ...(s.callout ? [s.callout.opacity(1, D_CALL)] : []),
+    );
+  }
+
+  // -------------------------------------------------------------------- intro
+  yield* all(title.opacity(1, 0.6), subtitle.opacity(1, 0.6));
+  yield* waitFor(0.5 * PACE);
+  yield* legend.opacity(1, 0.4);
+
+  // --------------------------------------------------------------- build loop
+  for (const s of STAGES as Stage[]) {
+    yield* all(
+      cam.position.y(-120 - s.y, D_CAM, easeInOutCubic),
+      reveal(s),
+    );
+    yield* waitFor(GAP);
+  }
+
+  // ---------------------------------------------------------------- zoom-out
+  yield* waitFor(0.4 * PACE);
+  const fit = 1000 / (lastY + H + 120); // scale so the full spine fits ~1000px
+  const midY = lastY / 2;
+  yield* all(
+    cam.scale(fit, 1.5 * PACE, easeInOutCubic),
+    cam.position([30, 40 - midY * fit], 1.5 * PACE, easeInOutCubic),
+    caption.opacity(1, 1.0 * PACE),
+  );
+  yield* waitFor(3);
+});
