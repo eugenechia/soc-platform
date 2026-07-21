@@ -20,6 +20,9 @@ from datetime import datetime
 from dateutil.relativedelta import relativedelta
 import httpx
 
+from tools.device_breakdown import (
+    DEVICE_SAMPLE_CAP, summarize_devices, sort_unhealthy_first)
+
 logger = logging.getLogger(__name__)
 
 _LOG_ANALYTICS_SCOPE = "https://api.loganalytics.io/.default"
@@ -260,6 +263,16 @@ Heartbeat
             if health_rows:
                 sensor_health_source = "heartbeat"
 
+    # These three queries are uncapped, so aggregate the FULL row set here —
+    # sections 1.12/1.13 must count the whole fleet, never the bounded sample
+    # below. Doing this in Python costs no extra KQL round-trip.
+    _device_summary = summarize_devices(health_rows)
+    # Bound what travels into the LLM payload and the 1.13 table. Uncapped, a
+    # large fleet ships thousands of device rows into the prompt (the documented
+    # oversized-request / 429 failure mode). Unhealthy devices sort first, so
+    # the cap only ever discards healthy ones.
+    health_rows = sort_unhealthy_first(health_rows)[:DEVICE_SAMPLE_CAP]
+
     # 5a. Vulnerability severity breakdown.
     vuln_severity_rows = _safe_kql(token, """
 DeviceTvmSoftwareVulnerabilities
@@ -343,6 +356,8 @@ ThreatIntelligenceIndicator
         "total_assets_source": assets_source,
         "sensor_health": health_rows,
         "sensor_health_source": sensor_health_source,
+        "os_breakdown":     _device_summary["os_breakdown"],
+        "health_breakdown": _device_summary["health_breakdown"],
         "vulnerabilities": {
             "by_severity": vuln_severity_rows,
             "exposed_devices": vuln_devices_rows,
@@ -430,8 +445,16 @@ def _merge_workspace_results(results: list[dict]) -> dict:
         "top_alerts":          _sum_count_rows([r.get("top_alerts", []) for r in results], "AlertName"),
         "total_assets":        total_assets,
         "total_assets_source": best_source("total_assets_source"),
-        "sensor_health":       _concat_dedupe([r.get("sensor_health", []) for r in results], "DeviceName"),
+        # Re-cap after concatenating per-workspace samples; unhealthy-first so
+        # truncation only ever drops healthy devices.
+        "sensor_health":       sort_unhealthy_first(_concat_dedupe(
+            [r.get("sensor_health", []) for r in results], "DeviceName"))[:DEVICE_SAMPLE_CAP],
         "sensor_health_source": best_source("sensor_health_source"),
+        # Summed per key so 1.12/1.13 stay whole-fleet across workspaces.
+        "os_breakdown":        _sum_count_rows(
+            [r.get("os_breakdown", []) for r in results], "OSPlatform"),
+        "health_breakdown":    _sum_count_rows(
+            [r.get("health_breakdown", []) for r in results], "HealthStatus"),
         "vulnerabilities": {
             "by_severity":     _sum_count_rows(
                 [r.get("vulnerabilities", {}).get("by_severity", []) for r in results],

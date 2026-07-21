@@ -36,6 +36,7 @@ from tools.chart_generator import (
     generate_vulnerability_exposed_devices_chart,
 )
 from tools import sentinel_client, defender_client, splunk_client, socradar_rest as socradar_client, tavily_client
+from tools.device_breakdown import summarize_devices
 from tools.customers import get_customer
 from tools.customer_advisories import (
     load_threat_analytics_advisories,
@@ -804,11 +805,21 @@ Otherwise, write the section based on the value of sentinel.total_assets_source.
 - If total_assets_source is "heartbeat": State "N servers/VMs are reporting via Sentinel agent heartbeat for this period." Then add a separate paragraph: "**Note**: Endpoint Detection and Response (EDR) — Microsoft Defender for Endpoint or CrowdStrike — is not currently connected for this customer. The figure above reflects Sentinel agent presence (Heartbeat table) rather than EDR-managed endpoints. To populate this section with full EDR asset visibility, enable the Microsoft Defender XDR connector in Sentinel."
 - If total_assets_source is "none": State "Endpoint asset visibility is currently unavailable. Microsoft Defender for Endpoint (DeviceInfo), CrowdStrike (CrowdStrikeHosts), and Sentinel agent heartbeat (Heartbeat) all returned no data for this period. **Recommended action**: verify agent deployment to monitored systems, OR enable an EDR connector (Microsoft Defender XDR or CrowdStrike Falcon) in Sentinel."
 
+After that statement, add 1-2 sentences describing the fleet composition using `sentinel.os_breakdown` (whole-fleet counts per OS platform). Group the raw OS strings into families — Windows Client, Windows Server, Windows AVD, macOS, Linux, Android, iOS — and name the largest two or three with their counts. The counts MUST come from `os_breakdown`; they sum to `sentinel.total_assets`. Never count `sentinel.sensor_health` — that list is a capped sample, not the fleet.
+
 **### 1.13. Managed Assets by Sensor Health State** (if "sensor_health" is selected, REQUIRES SENTINEL)
 If Microsoft Sentinel is NOT connected, show the placeholder block.
+
+CRITICAL — two different data shapes, do not confuse them:
+- `sentinel.health_breakdown` — whole-fleet counts, `[{HealthStatus, Count}]`. ALL totals and percentages come from here.
+- `sentinel.sensor_health` — a CAPPED SAMPLE of individual devices, ordered so unhealthy devices appear first. Use it ONLY to list example devices. NEVER count its rows, and never describe it as the full fleet.
+
 Otherwise, render based on sentinel.sensor_health_source:
-- If sensor_health_source is "mde" or "crowdstrike": Table of devices with columns: Device Name | Last Update | OS Platform | Exposure Level | Health Status. Map fields directly from the data.
-- If sensor_health_source is "heartbeat": Render a table titled "**Sentinel Agent Heartbeat (EDR not connected)**" with columns: Computer | OS | Last Heartbeat | Status. Use DeviceName, OSPlatform, LastSeen (formatted YYYY-MM-DD HH:MM), and HealthStatus from the data. After the table, add: "**Note**: This table reflects Sentinel agent (Microsoft Monitoring Agent / Azure Monitor Agent) heartbeat status, not EDR sensor health. To enable EDR sensor health visibility, connect Microsoft Defender for Endpoint or CrowdStrike to this customer's Sentinel workspace."
+- If sensor_health_source is "mde" or "crowdstrike":
+  1. A markdown table titled "**Sensor health across all N devices**" (N = sum of Count in `health_breakdown`) with columns `Health State | Devices`, one row per entry in `health_breakdown`, ordered Active first then the rest by count descending.
+  2. Then 1-2 sentences of analysis: state how many devices are NOT in the Active state and what that means for coverage. If every device is Active, say so plainly.
+  3. Then, ONLY IF at least one device in `sensor_health` has a HealthStatus other than "Active", a second table titled "**Devices needing attention**" with columns `Device Name | Last Update | OS Platform | Exposure Level | Health Status`, listing ONLY those non-Active devices from `sensor_health`. Omit this table entirely when there are none. Do NOT list Active devices — a full device inventory does not belong in this report.
+- If sensor_health_source is "heartbeat": Render the same two blocks, but title the first "**Sentinel Agent Heartbeat (EDR not connected)**" and label the second table's columns Computer | OS | Last Heartbeat | Status, using DeviceName, OSPlatform, LastSeen (formatted YYYY-MM-DD HH:MM), and HealthStatus. After the tables, add: "**Note**: This table reflects Sentinel agent (Microsoft Monitoring Agent / Azure Monitor Agent) heartbeat status, not EDR sensor health. To enable EDR sensor health visibility, connect Microsoft Defender for Endpoint or CrowdStrike to this customer's Sentinel workspace."
 - If sensor_health_source is "none": State "Sensor health visibility is currently unavailable. Neither Microsoft Defender for Endpoint, CrowdStrike, nor Sentinel agent heartbeat returned device data for this period. **Recommended action**: verify Sentinel agent installation OR enable an EDR connector."
 
 **### 1.14. Vulnerability Details** (if "vulnerability_details" is selected, REQUIRES SENTINEL)
@@ -1607,6 +1618,11 @@ def _build_report_context(data: dict, config: dict) -> dict:
             "total_assets_source": sentinel.get("total_assets_source", "none"),
             "sensor_health": sentinel.get("sensor_health", []),
             "sensor_health_source": sentinel.get("sensor_health_source", "none"),
+            # Whole-fleet counts. `sensor_health` above is a bounded SAMPLE for
+            # the table — never count it to get a total (that bug shipped a
+            # 200-asset report for a 965-device fleet).
+            "os_breakdown": sentinel.get("os_breakdown", []),
+            "health_breakdown": sentinel.get("health_breakdown", []),
             "vulnerability_by_severity": sentinel.get("vulnerabilities", {}).get("by_severity", []),
             "vulnerability_exposed_devices": sentinel.get("vulnerabilities", {}).get("exposed_devices", []),
             "threat_analytics": sentinel.get("threat_analytics", []),
@@ -1624,6 +1640,12 @@ def _build_report_context(data: dict, config: dict) -> dict:
         if defender.get("sensor_health"):
             sentinel_data["sensor_health"]        = defender["sensor_health"]
             sentinel_data["sensor_health_source"] = "mde"
+        # Move the fleet counts with the sample they describe, so 1.12/1.13
+        # never narrate Defender devices using Sentinel's breakdown.
+        if defender.get("os_breakdown"):
+            sentinel_data["os_breakdown"] = defender["os_breakdown"]
+        if defender.get("health_breakdown"):
+            sentinel_data["health_breakdown"] = defender["health_breakdown"]
         _defender_vulns = defender.get("vulnerabilities") or {}
         if _defender_vulns.get("by_severity"):
             sentinel_data["vulnerability_by_severity"] = _defender_vulns["by_severity"]
@@ -2292,15 +2314,35 @@ def run_report_job(job_id: str, config: dict) -> None:
             defender = data.get("defender") or {}
             sensor_health = (defender.get("sensor_health")
                              or sentinel.get("sensor_health") or [])
-            if sensor_health:
+            # Charts read the whole-fleet AGGREGATES, never the device sample —
+            # counting the sample is what made 1.12 report 200 assets for a
+            # 965-device fleet, and made 1.13 show a 100%-healthy fleet.
+            # Re-derive from the sample only if a client returned no aggregate
+            # (degraded, and understated — but better than an empty section).
+            # Take the breakdown from whichever client supplied the devices, so
+            # the chart can never narrate one fleet using the other's counts.
+            _src = defender if (defender.get("sensor_health")
+                                or defender.get("os_breakdown")) else sentinel
+            os_breakdown = _src.get("os_breakdown") or []
+            health_breakdown = _src.get("health_breakdown") or []
+            if sensor_health and not (os_breakdown or health_breakdown):
+                log.warning(
+                    f"[{job_id[:8]}] No device breakdown returned; deriving 1.12/1.13 "
+                    f"from the {len(sensor_health)}-row sample — counts may understate "
+                    "the fleet.")
+                _fallback = summarize_devices(sensor_health)
+                os_breakdown = _fallback["os_breakdown"]
+                health_breakdown = _fallback["health_breakdown"]
+            if os_breakdown:
                 try:
-                    chart = generate_total_assets_chart(sensor_health)
+                    chart = generate_total_assets_chart(os_breakdown)
                     if chart:
                         charts["total_assets"] = chart
                 except Exception as e:
                     log.error(f"[{job_id[:8]}] Total assets chart failed: {e}")
+            if health_breakdown:
                 try:
-                    chart = generate_sensor_health_chart(sensor_health)
+                    chart = generate_sensor_health_chart(health_breakdown)
                     if chart:
                         charts["sensor_health"] = chart
                 except Exception as e:

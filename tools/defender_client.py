@@ -30,12 +30,47 @@ from concurrent.futures import ThreadPoolExecutor
 
 import httpx
 
+from tools.device_breakdown import DEVICE_SAMPLE_CAP, sort_unhealthy_first
 from tools.secrets import get_secret, get_kv_secret
 
 logger = logging.getLogger(__name__)
 
 _TOKEN_SCOPE = "https://api.security.microsoft.com/.default"
 _HUNTING_URL = "https://api.security.microsoft.com/api/advancedhunting/run"
+
+
+
+def _fold_breakdown(rows: list) -> tuple[list, list]:
+    """Fold ``[{OSPlatform, HealthStatus, Count}]`` from the aggregate hunt into
+    separate OS and health breakdowns, each ``[{<key>, "Count": n}]`` sorted
+    count-desc. Both cover every device in the tenant.
+    """
+    os_counts: dict = {}
+    health_counts: dict = {}
+    for row in rows or []:
+        count = int(row.get("Count") or 0)
+        os_counts[row.get("OSPlatform") or "Unknown"] = (
+            os_counts.get(row.get("OSPlatform") or "Unknown", 0) + count)
+        health_counts[row.get("HealthStatus") or "Unknown"] = (
+            health_counts.get(row.get("HealthStatus") or "Unknown", 0) + count)
+
+    def _rows(counts: dict, key: str) -> list:
+        return [{key: name, "Count": n}
+                for name, n in sorted(counts.items(), key=lambda kv: (-kv[1], kv[0]))]
+
+    return _rows(os_counts, "OSPlatform"), _rows(health_counts, "HealthStatus")
+
+
+def _sum_breakdowns(results: list, field: str, key: str) -> list:
+    """Sum one breakdown field across per-tenant results (Logicalis Asia runs
+    one Defender tenant per country, so fleet totals are the sum)."""
+    totals: dict = {}
+    for r in results:
+        for row in (r.get(field) or []):
+            name = row.get(key) or "Unknown"
+            totals[name] = totals.get(name, 0) + int(row.get("Count") or 0)
+    return [{key: name, "Count": n}
+            for name, n in sorted(totals.items(), key=lambda kv: (-kv[1], kv[0]))]
 
 
 def _get_access_token(tenant_id: str, client_id: str, client_secret: str) -> str:
@@ -131,7 +166,25 @@ DeviceInfo
     if rows:
         total_assets = int(rows[0].get("TotalDevices") or 0)
 
-    sensor_health = _safe_hunt(token, """
+    # Fleet composition, aggregated SERVER-SIDE over every device. This drives
+    # sections 1.12 and 1.13. It must never be derived by counting the sampled
+    # rows below: doing so made 1.12 report 200 assets for a 965-device fleet,
+    # and made 1.13 show a 100%-healthy fleet (the sample was sorted by health
+    # state, and "Active" sorts first). A few dozen rows, so no payload risk.
+    breakdown_rows = _safe_hunt(token, """
+DeviceInfo
+| summarize arg_max(Timestamp, *) by DeviceName
+| extend
+    HealthStatus = iff(isempty(SensorHealthState), "Unknown", SensorHealthState),
+    OSPlatform   = strcat(OSPlatform, iff(isnotempty(OSVersion), strcat(" ", OSVersion), ""))
+| summarize Count = count() by OSPlatform, HealthStatus
+""")
+    os_breakdown, health_breakdown = _fold_breakdown(breakdown_rows)
+
+    # Illustrative device SAMPLE for the 1.13 table and the LLM payload — not a
+    # population. Ordered so unhealthy devices come first: the cap then drops
+    # healthy devices only, and can never conceal a sensor needing attention.
+    sensor_health = _safe_hunt(token, f"""
 DeviceInfo
 | summarize arg_max(Timestamp, *) by DeviceName
 | project
@@ -141,8 +194,9 @@ DeviceInfo
     OSPlatform   = strcat(OSPlatform, iff(isnotempty(OSVersion), strcat(" ", OSVersion), "")),
     ExposureLevel,
     LastSeen     = Timestamp
-| order by HealthStatus asc
-| take 200
+| extend _Unhealthy = iff(HealthStatus == "Active", 1, 0)
+| top {DEVICE_SAMPLE_CAP} by _Unhealthy asc, HealthStatus asc
+| project-away _Unhealthy
 """)
 
     vuln_by_severity = _safe_hunt(token, """
@@ -160,6 +214,8 @@ DeviceTvmSoftwareVulnerabilities
     return {
         "total_assets":  total_assets,
         "sensor_health": sensor_health,
+        "os_breakdown":     os_breakdown,
+        "health_breakdown": health_breakdown,
         "vulnerabilities": {
             "by_severity":     vuln_by_severity,
             "exposed_devices": vuln_exposed,
@@ -170,7 +226,8 @@ DeviceTvmSoftwareVulnerabilities
 def _merge_tenant_results(results: list[dict]) -> dict:
     """Combine N per-tenant Defender results into one aggregated dict.
 
-    ``total_assets`` is summed; ``sensor_health`` and ``exposed_devices`` are
+    ``total_assets`` is summed; the OS/health breakdowns are summed per key so
+    fleet counts stay whole-fleet; ``sensor_health`` and ``exposed_devices`` are
     concat-deduped by DeviceName; ``by_severity`` is summed by severity.
     """
     if not results:
@@ -186,6 +243,9 @@ def _merge_tenant_results(results: list[dict]) -> dict:
             if name and name not in seen_devices:
                 seen_devices.add(name)
                 sensor_health.append(row)
+    # Concatenating N per-tenant samples would exceed the cap, so re-apply it —
+    # unhealthy-first, so the devices needing attention are the ones kept.
+    sensor_health = sort_unhealthy_first(sensor_health)[:DEVICE_SAMPLE_CAP]
 
     seen_exposed: set = set()
     exposed: list[dict] = []
@@ -211,6 +271,8 @@ def _merge_tenant_results(results: list[dict]) -> dict:
     return {
         "total_assets":  sum(r.get("total_assets", 0) for r in results),
         "sensor_health": sensor_health,
+        "os_breakdown":     _sum_breakdowns(results, "os_breakdown", "OSPlatform"),
+        "health_breakdown": _sum_breakdowns(results, "health_breakdown", "HealthStatus"),
         "vulnerabilities": {
             "by_severity":     by_severity,
             "exposed_devices": exposed,

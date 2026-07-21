@@ -299,55 +299,71 @@ def generate_sentinel_utilization_chart(daily_breakdown: list, end_date: str = "
     return _to_bytes(fig)
 
 
-def generate_total_assets_chart(sensor_health: list) -> bytes:
+# Group raw OSPlatform strings into top-level families. The MDE/Heartbeat data
+# ships values like "Windows11 10.0", "WindowsServer2022 10.0", "macOS 26.5",
+# "Linux 9.7", "iOS 26.5" — too granular for a pie wedge. Order matters: the
+# WVD/AVD checks must precede the generic "windows" prefix.
+def _family(raw: str) -> str:
+    low = (raw or "").strip().lower()
+    if low.startswith("windowsserver"):
+        return "Windows Server"
+    if low.startswith("windows10wvd") or low.startswith("windows11wvd"):
+        return "Windows AVD"
+    if low.startswith("windows"):
+        return "Windows Client"
+    if low.startswith("macos"):
+        return "macOS"
+    if low.startswith("linux"):
+        return "Linux"
+    if low.startswith("ios"):
+        return "iOS"
+    if low.startswith("android"):
+        return "Android"
+    return "Other"
+
+
+# A real fleet spans 7 families (Windows Client/Server/AVD, macOS, Linux,
+# Android, iOS). 8 wedges shows all of them and still guards a pathological
+# long tail; the old cap of 6 buried iOS and Windows AVD in "Other".
+_MAX_WEDGES = 8
+
+
+def _group_families(counts: dict) -> list[tuple[str, int]]:
+    """Family counts sorted desc, capped to _MAX_WEDGES with the tail lumped
+    into "Other". Always preserves the grand total."""
+    sorted_fams = sorted(counts.items(), key=lambda kv: (-kv[1], kv[0]))
+    if len(sorted_fams) <= _MAX_WEDGES:
+        return sorted_fams
+    head, tail = sorted_fams[:_MAX_WEDGES - 1], sorted_fams[_MAX_WEDGES - 1:]
+    other_total = sum(c for _, c in tail)
+    return head + ([("Other", other_total)] if other_total else [])
+
+
+def generate_total_assets_chart(os_breakdown: list) -> bytes:
     """Donut chart of monitored assets grouped by OS family.
 
-    Centre hole shows the total device count. The sample CAM report places
-    this under section 1.12 "Total Assets Under Monitoring".
+    Takes the AGGREGATED breakdown ``[{OSPlatform, Count}]`` computed over the
+    whole fleet by ``device_breakdown.summarize_devices`` — never a row sample.
+    Counting sampled rows here is what made section 1.12 report 200 assets for
+    a 965-device fleet. Centre hole shows the total.
     """
-    if not sensor_health:
+    if not os_breakdown:
         return b""
 
-    # Group raw OSPlatform strings into top-level families. The MDE/Heartbeat
-    # data ships values like "Windows11 10.0", "WindowsServer2022 10.0",
-    # "macOS 26.5", "Linux 9.7", "iOS 26.5" — too granular for a pie wedge.
-    def _family(raw: str) -> str:
-        s = (raw or "").strip()
-        low = s.lower()
-        if low.startswith("windowsserver"):
-            return "Windows Server"
-        if low.startswith("windows10wvd") or low.startswith("windows11wvd"):
-            return "Windows AVD"
-        if low.startswith("windows"):
-            return "Windows Client"
-        if low.startswith("macos"):
-            return "macOS"
-        if low.startswith("linux"):
-            return "Linux"
-        if low.startswith("ios"):
-            return "iOS"
-        if low.startswith("android"):
-            return "Android"
-        return "Other"
-
     counts: dict[str, int] = {}
-    for row in sensor_health:
+    for row in os_breakdown:
         fam = _family(row.get("OSPlatform") or row.get("os_platform") or "")
-        counts[fam] = counts.get(fam, 0) + 1
+        counts[fam] = counts.get(fam, 0) + int(row.get("Count") or 0)
 
-    # Sort families by count desc; cap to 6 wedges, lump rest into Other.
-    sorted_fams = sorted(counts.items(), key=lambda kv: kv[1], reverse=True)
-    if len(sorted_fams) > 6:
-        head, tail = sorted_fams[:5], sorted_fams[5:]
-        other_total = sum(c for _, c in tail) + counts.get("Other", 0)
-        sorted_fams = head + ([("Other", other_total)] if other_total else [])
-
+    sorted_fams = _group_families(counts)
     labels = [k for k, _ in sorted_fams]
     values = [v for _, v in sorted_fams]
     total  = sum(values)
 
     # Reuse the existing palette for visual consistency with other charts.
-    palette = [_BLUE, "#10B981", "#F59E0B", "#8B5CF6", "#DC2626", _GREY]
+    # One entry per possible wedge so no two families share a colour.
+    palette = [_BLUE, "#10B981", "#F59E0B", "#8B5CF6", "#DC2626",
+               "#0891B2", "#EC4899", _GREY]
     colors  = [palette[i % len(palette)] for i in range(len(labels))]
 
     fig, ax = plt.subplots(figsize=(6.5, 4.5))
@@ -369,12 +385,18 @@ def generate_total_assets_chart(sensor_health: list) -> bytes:
     return _to_bytes(fig)
 
 
-def generate_sensor_health_chart(sensor_health: list) -> bytes:
+def generate_sensor_health_chart(health_breakdown: list) -> bytes:
     """Pie chart of HealthStatus distribution across monitored devices.
+
+    Takes the AGGREGATED breakdown ``[{HealthStatus, Count}]`` covering the
+    whole fleet. It previously counted rows of a device sample that had been
+    truncated after sorting on HealthStatus — which selected only "Active"
+    devices and drew a 100%-healthy fleet, hiding the very sensors this
+    section exists to surface.
 
     Renders under section 1.13 "Managed Assets by Sensor Health State".
     """
-    if not sensor_health:
+    if not health_breakdown:
         return b""
 
     status_colors = {
@@ -386,18 +408,20 @@ def generate_sensor_health_chart(sensor_health: list) -> bytes:
     }
 
     counts: dict[str, int] = {}
-    for row in sensor_health:
+    for row in health_breakdown:
         raw = (row.get("HealthStatus") or row.get("health_status") or "Unknown").strip()
         # Defender XDR uses "ImpairedCommunication" — fold to "Impaired" for display.
         if raw.lower().startswith("impair"):
             label = "Impaired"
         elif raw.lower() in ("active", "inactive", "unknown"):
             label = raw.capitalize()
-        elif "no sensor" in raw.lower():
+        elif "nosensor" in raw.lower().replace(" ", ""):
+            # Defender ships "NoSensorData" (no spaces) — match either casing
+            # so the raw API string never reaches a customer-facing chart.
             label = "No sensor data"
         else:
             label = raw
-        counts[label] = counts.get(label, 0) + 1
+        counts[label] = counts.get(label, 0) + int(row.get("Count") or 0)
 
     # Order: Active first, then everything else, Unknown last.
     def _sort_key(item):
