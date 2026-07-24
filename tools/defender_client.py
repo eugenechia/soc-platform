@@ -195,7 +195,8 @@ DeviceInfo
     ExposureLevel,
     LastSeen     = Timestamp
 | extend _Unhealthy = iff(HealthStatus == "Active", 1, 0)
-| top {DEVICE_SAMPLE_CAP} by _Unhealthy asc, HealthStatus asc
+| sort by _Unhealthy asc, HealthStatus asc
+| take {DEVICE_SAMPLE_CAP}
 | project-away _Unhealthy
 """)
 
