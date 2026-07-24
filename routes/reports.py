@@ -811,7 +811,7 @@ After that statement, add 1-2 sentences describing the fleet composition using `
 If Microsoft Sentinel is NOT connected, show the placeholder block.
 
 CRITICAL — two different data shapes, do not confuse them:
-- `sentinel.health_breakdown` — whole-fleet counts, `[{HealthStatus, Count}]`. ALL totals and percentages come from here.
+- `sentinel.health_breakdown` — whole-fleet counts, `[{{HealthStatus, Count}}]`. ALL totals and percentages come from here.
 - `sentinel.sensor_health` — a CAPPED SAMPLE of individual devices, ordered so unhealthy devices appear first. Use it ONLY to list example devices. NEVER count its rows, and never describe it as the full fleet.
 
 Otherwise, render based on sentinel.sensor_health_source:
