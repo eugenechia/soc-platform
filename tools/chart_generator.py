@@ -239,33 +239,43 @@ def generate_quarterly_chart(monthly_stats: list[dict], quarter_label: str) -> b
     return _to_bytes(fig)
 
 
-def generate_sentinel_utilization_chart(daily_breakdown: list, end_date: str = "") -> bytes:
-    """Bar chart of monthly GB ingestion for the 3 months ending at end_date."""
-    if not daily_breakdown and not end_date:
-        return b""
+def _resolve_utilization_months(daily_breakdown: list, end_date: str = "",
+                                monthly_totals: dict | None = None):
+    """Pick the 3 chart months ending at ``end_date`` and their GB values.
 
+    Prefers the FROZEN per-month total in ``monthly_totals`` (the current
+    month's live total plus prior months captured from their own saved reports)
+    over the live ``daily_breakdown`` bucket. This is the fix for a completed
+    month silently shrinking between reports: a live trailing-3-month Usage
+    query drops days older than Sentinel's 90-day retention, which made a
+    finished April fall from 520 GB to ~328 GB once its first ten days aged out.
+    ``daily_breakdown`` is used only as a per-month fallback for a month that
+    has no frozen value yet (e.g. a newly-onboarded customer). Split out from
+    rendering so the frozen-vs-live selection is unit-testable.
+
+    Returns ``(months, values)``.
+    """
     from dateutil.parser import parse as _dateparse
 
-    monthly_gb: dict[str, float] = {}
-    for row in daily_breakdown:
+    monthly_live: dict[str, float] = {}
+    for row in daily_breakdown or []:
         tg = row.get("TimeGenerated", "")
         gb = float(row.get("TotalGB") or 0)
         if not tg:
             continue
         try:
-            dt = _dateparse(tg)
-            month_key = dt.strftime("%Y-%m")
-            monthly_gb[month_key] = round(monthly_gb.get(month_key, 0) + gb, 2)
+            month_key = _dateparse(tg).strftime("%Y-%m")
+            monthly_live[month_key] = round(monthly_live.get(month_key, 0) + gb, 2)
         except Exception:
             continue
+
+    frozen = monthly_totals or {}
 
     try:
         end_dt = datetime.strptime(end_date, "%Y-%m-%d")
     except Exception:
-        if monthly_gb:
-            end_dt = datetime.strptime(max(monthly_gb.keys()), "%Y-%m")
-        else:
-            end_dt = datetime.now()
+        _keys = list(monthly_live.keys()) + list(frozen.keys())
+        end_dt = datetime.strptime(max(_keys), "%Y-%m") if _keys else datetime.now()
 
     end_month = end_dt.replace(day=1)
     months = [
@@ -273,7 +283,25 @@ def generate_sentinel_utilization_chart(daily_breakdown: list, end_date: str = "
         for i in range(2, -1, -1)
     ]
 
-    values = [monthly_gb.get(m, 0) for m in months]
+    def _val(m: str) -> float:
+        fv = frozen.get(m)
+        return round(float(fv), 2) if isinstance(fv, (int, float)) else monthly_live.get(m, 0)
+
+    return months, [_val(m) for m in months]
+
+
+def generate_sentinel_utilization_chart(daily_breakdown: list, end_date: str = "",
+                                        monthly_totals: dict | None = None) -> bytes:
+    """Bar chart of monthly GB ingestion for the 3 months ending at end_date.
+
+    Values are chosen by :func:`_resolve_utilization_months` — frozen
+    ``monthly_totals`` preferred over the retention-truncated live
+    ``daily_breakdown`` so completed months don't change between reports.
+    """
+    if not daily_breakdown and not end_date and not monthly_totals:
+        return b""
+
+    months, values = _resolve_utilization_months(daily_breakdown, end_date, monthly_totals)
     display_labels = []
     for m in months:
         try:

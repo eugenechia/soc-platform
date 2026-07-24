@@ -123,6 +123,14 @@ def _fetch_workspace_data(workspace_spec: dict, start_date: str, end_date: str) 
     timespan = f"{start_date}T00:00:00Z/{end_date}T23:59:59Z"
 
     # 1. Monthly utilization — GB ingested per day for the report period.
+    # The billable-filtered query is authoritative. If it comes back empty we
+    # fall back to UNFILTERED Usage so the section isn't blank — but that total
+    # includes non-billable data and will read HIGHER than the billable figure,
+    # so we log it loudly and tag the result (`billable_only=False`). An empty
+    # billable result is usually a transient query error swallowed by _safe_kql,
+    # NOT a genuinely idle workspace, so a silent fallback here is exactly how a
+    # completed month's number could drift between reports.
+    billable_only = True
     utilization_rows = _safe_kql(token, """
 Usage
 | where IsBillable == true
@@ -130,6 +138,13 @@ Usage
 | order by TimeGenerated asc
 """, timespan, workspace_id)
     if not utilization_rows:
+        billable_only = False
+        logger.warning(
+            "Sentinel utilization: billable-filtered Usage returned no rows for "
+            "workspace %r (%s) — falling back to UNFILTERED Usage. total_gb may "
+            "include non-billable data and read higher than the billable figure.",
+            name, timespan,
+        )
         utilization_rows = _safe_kql(token, """
 Usage
 | summarize TotalGB = round(sum(Quantity) / 1024, 2) by bin(TimeGenerated, 1d)
@@ -155,6 +170,11 @@ Usage
 | order by TimeGenerated asc
 """, chart_timespan, workspace_id)
         if not monthly_rows:
+            logger.warning(
+                "Sentinel trailing-3-month utilization: billable-filtered Usage "
+                "returned no rows for workspace %r (%s) — falling back to "
+                "UNFILTERED Usage for the chart feed.", name, chart_timespan,
+            )
             monthly_rows = _safe_kql(token, """
 Usage
 | summarize TotalGB = round(sum(Quantity) / 1024, 2) by bin(TimeGenerated, 1d)
@@ -350,6 +370,9 @@ ThreatIntelligenceIndicator
             "avg_daily_gb": avg_daily_gb,
             "daily_breakdown": utilization_rows,
             "monthly_breakdown": monthly_rows,
+            # False = total_gb came from the UNFILTERED Usage fallback (billable
+            # query was empty) and may read higher than the billable figure.
+            "billable_only": billable_only,
         },
         "top_alerts": alerts_rows,
         "total_assets": total_assets,

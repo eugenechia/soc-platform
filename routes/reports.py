@@ -2277,18 +2277,23 @@ def run_report_job(job_id: str, config: dict) -> None:
 
         sentinel = data.get("sentinel")
         if sentinel:
-            # Past-3-months chart needs trailing 3-month data — daily_breakdown is
-            # scoped to the report period (single month) and would render Jan/Feb
-            # as 0 GB. monthly_breakdown is the dedicated chart-only feed from
-            # tools/sentinel_client.py:fetch_data.
+            # Past-3-months chart. `monthly_history` is the authoritative series
+            # (current month live + prior months FROZEN from their own saved
+            # reports); it is preferred per-month so a completed month never
+            # shrinks as its early days age past Sentinel's 90-day retention.
+            # `monthly_breakdown` (a live trailing-3-month daily query) is the
+            # fallback for any month with no frozen value yet, and daily_breakdown
+            # (scoped to the report period) the last resort.
+            _util = sentinel.get("utilization", {})
             chart_breakdown = (
-                sentinel.get("utilization", {}).get("monthly_breakdown")
-                or sentinel.get("utilization", {}).get("daily_breakdown")
+                _util.get("monthly_breakdown")
+                or _util.get("daily_breakdown")
                 or []
             )
             try:
                 chart = generate_sentinel_utilization_chart(
-                    chart_breakdown, end_date=config.get("end_date", "")
+                    chart_breakdown, end_date=config.get("end_date", ""),
+                    monthly_totals=_util.get("monthly_history"),
                 )
                 if chart:
                     charts["sentinel_utilization"] = chart
