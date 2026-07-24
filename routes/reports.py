@@ -382,6 +382,40 @@ def _render_pending_summary_html(derived: dict) -> str:
             '<p class="appendix-hint"><em>See Appendix for the full pending tickets list.</em></p>'
         )
 
+    # Entity breakdown (feedback #1). Deterministic table so the grand total
+    # reconciles exactly to Total Pending above and to the Appendix. 'Unknown'
+    # collects tickets whose summary carried no entity prefix.
+    import html as _html
+    entity_rows = aging.get("by_entity") or []
+    entity_html = ""
+    if entity_rows:
+        body_rows = "".join(
+            f"<tr><td>{_html.escape(str(r.get('entity', 'Unknown')))}</td>"
+            f"<td>{r.get('total', 0)}</td>"
+            f"<td>{r.get('lt_7d', 0)}</td>"
+            f"<td>{r.get('7_to_14d', 0)}</td>"
+            f"<td>{r.get('14_to_30d', 0)}</td>"
+            f"<td>{r.get('gt_30d', 0)}</td></tr>"
+            for r in entity_rows
+        )
+        entity_html = (
+            '<p class="pending-entity-heading"><strong>Pending Tickets by Entity</strong></p>'
+            '<table class="pending-entity">'
+            "<thead><tr><th>Entity</th><th>Total Pending</th>"
+            "<th>&lt; 7 days</th><th>7&ndash;14 days</th>"
+            "<th>14&ndash;30 days</th><th>&gt; 30 days</th></tr></thead>"
+            "<tbody>"
+            f"{body_rows}"
+            "<tr><td><strong>Grand Total</strong></td>"
+            f"<td><strong>{total}</strong></td>"
+            f"<td><strong>{aging.get('lt_7d', 0)}</strong></td>"
+            f"<td><strong>{aging.get('7_to_14d', 0)}</strong></td>"
+            f"<td><strong>{aging.get('14_to_30d', 0)}</strong></td>"
+            f"<td><strong>{aging.get('gt_30d', 0)}</strong></td></tr>"
+            "</tbody>"
+            "</table>"
+        )
+
     return (
         '<table class="pending-summary">'
         "<thead><tr><th>Aging Bucket</th><th>Count</th></tr></thead>"
@@ -394,6 +428,7 @@ def _render_pending_summary_html(derived: dict) -> str:
         f"<tr><td><strong>Oldest (days)</strong></td><td><strong>{aging.get('oldest_age_days', 0)}</strong></td></tr>"
         "</tbody>"
         "</table>"
+        f"{entity_html}"
         '<p class="appendix-hint"><em>See Appendix for the full pending tickets list.</em></p>'
     )
 

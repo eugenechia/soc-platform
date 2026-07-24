@@ -1,6 +1,7 @@
 import os
 import csv
 import json
+import re
 import base64
 import logging
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -341,6 +342,30 @@ def _compute_stats(incidents: list[dict]) -> dict:
 # layer without importing from the routes module.
 _CLOSED_STATUSES = {"closed", "resolved", "done", "complete", "completed"}
 
+# Logicalis enriches each incident summary with a regional-entity prefix in the
+# form "<CODE> | LOGICALIS-<n> | <SEVERITY> | <description>". The entity code is
+# the operating entity the ticket belongs to (LSG, LMY, LHK, LTW, PSI, LAU, LCN,
+# LVN, IZENO). It lives ONLY in the summary — no component/label/custom field
+# carries it — and the enrichment lags ticket creation, so freshly-created
+# tickets may not be prefixed yet. Requiring the "| LOGICALIS-" structure keeps
+# an ordinary summary (e.g. "File shared with ...") from false-matching.
+_ENTITY_PREFIX_RE = re.compile(r"^\s*([A-Za-z]{2,6})\s*\|\s*LOGICALIS-", re.IGNORECASE)
+_ENTITY_ALIASES = {"IZ": "IZENO"}
+
+
+def _entity_of(summary: str) -> str:
+    """Regional entity code parsed from a Logicalis incident summary.
+
+    Returns the normalised code (IZ -> IZENO) or ``"Unknown"`` when the summary
+    carries no valid entity prefix, so an entity breakdown always reconciles to
+    the full pending total instead of dropping unenriched tickets.
+    """
+    m = _ENTITY_PREFIX_RE.match(summary or "")
+    if not m:
+        return "Unknown"
+    code = m.group(1).upper()
+    return _ENTITY_ALIASES.get(code, code)
+
 # Severity ranking used to surface "top critical" incidents and to bucket MTTR.
 # Higher number = more severe. Unknown / blank severities sort last (0).
 _SEVERITY_RANK = {
@@ -494,21 +519,43 @@ def _compute_incident_derived_stats(incidents: list[dict], end_date: str) -> dic
         if (i.get("status") or "").strip().lower() not in _CLOSED_STATUSES
     ]
     aging_buckets = {"lt_7d": 0, "7_to_14d": 0, "14_to_30d": 0, "gt_30d": 0}
+    # Per-entity aging breakdown (feedback #1). Counts EVERY pending ticket so
+    # the grand total reconciles to len(pending): an undated ticket still adds
+    # to its entity's `total`, just not to an aging sub-bucket. 'Unknown' holds
+    # tickets whose summary carries no entity prefix.
+    by_entity: dict[str, dict] = {}
+    def _entity_row(name: str) -> dict:
+        return by_entity.setdefault(
+            name,
+            {"entity": name, "total": 0,
+             "lt_7d": 0, "7_to_14d": 0, "14_to_30d": 0, "gt_30d": 0},
+        )
     pending_with_age: list[tuple[int, dict]] = []
     for p in pending:
+        row = _entity_row(_entity_of(p.get("summary", "")))
+        row["total"] += 1
         created_dt = _parse_any_date(p.get("created", ""))
         if not created_dt:
             continue
         age_days = max(0, (end_dt - created_dt).days)
         if age_days < 7:
-            aging_buckets["lt_7d"] += 1
+            bucket = "lt_7d"
         elif age_days < 14:
-            aging_buckets["7_to_14d"] += 1
+            bucket = "7_to_14d"
         elif age_days < 30:
-            aging_buckets["14_to_30d"] += 1
+            bucket = "14_to_30d"
         else:
-            aging_buckets["gt_30d"] += 1
+            bucket = "gt_30d"
+        aging_buckets[bucket] += 1
+        row[bucket] += 1
         pending_with_age.append((age_days, p))
+
+    # Rank entities by pending volume; keep 'Unknown' last so it reads as a
+    # residual rather than a ranked entity.
+    entity_breakdown = sorted(
+        by_entity.values(),
+        key=lambda r: (r["entity"] == "Unknown", -r["total"], r["entity"]),
+    )
 
     pending_with_age.sort(key=lambda pair: pair[0], reverse=True)
     oldest_pending = [
@@ -526,6 +573,7 @@ def _compute_incident_derived_stats(incidents: list[dict], end_date: str) -> dic
         **aging_buckets,
         "total": len(pending),
         "oldest_age_days": pending_with_age[0][0] if pending_with_age else 0,
+        "by_entity": entity_breakdown,
     }
 
     # --- Top 5 critical incidents (by severity rank, then created date desc) ---
