@@ -58,6 +58,83 @@ logger = logging.getLogger(__name__)
 _jobs: dict[str, dict] = {}
 
 
+def _await_ticket_ready(job_id: str, ticket_key: str, schema, *,
+                        manual: bool, jobs: dict) -> dict | None:
+    """Fetch the Jira issue, returning the issue dict to enrich (or None).
+
+    Webhook path (manual=False): the ticket was just created and its entity
+    custom-fields (IP/host/hash/…) may still be populating, so poll every
+    WEBHOOK_FETCH_DELAY_SECONDS until they appear (then wait
+    WEBHOOK_FETCH_STABILIZATION_SECONDS for later waves and re-fetch), or until
+    WEBHOOK_FETCH_MAX_WAIT_SECONDS elapses.
+
+    Manual path (manual=True): an analyst is running triage on an EXISTING
+    ticket. Its entity fields either exist now or never will — polling only
+    stalls the run (up to the full max-wait when they are empty, the SCDM-745
+    "stuck for 4 minutes" bug). So fetch ONCE and proceed with whatever is on
+    the ticket.
+    """
+    jobs[job_id]["stage"] = "Fetching ticket from Jira"
+
+    if manual:
+        issue = fetch_issue_by_key(ticket_key)
+        logger.info(
+            "Enrichment %s: manual run — single fetch, no entity-field wait for %s",
+            job_id, ticket_key,
+        )
+        return issue if (issue and "fields" in issue) else None
+
+    poll_interval = int(os.environ.get("WEBHOOK_FETCH_DELAY_SECONDS", "5"))
+    max_wait = int(os.environ.get("WEBHOOK_FETCH_MAX_WAIT_SECONDS", "60"))
+    stabilization = int(os.environ.get("WEBHOOK_FETCH_STABILIZATION_SECONDS", "30"))
+    elapsed = 0
+    last_issue = None
+
+    while elapsed < max_wait:
+        time.sleep(poll_interval)
+        elapsed += poll_interval
+
+        issue = fetch_issue_by_key(ticket_key)
+        if not issue or "fields" not in issue:
+            logger.warning(
+                "Enrichment %s: poll %ds — fetch failed for %s, will retry",
+                job_id, elapsed, ticket_key,
+            )
+            continue
+
+        last_issue = issue
+        if has_entity_data(issue["fields"], schema):
+            logger.info(
+                "Enrichment %s: entity fields detected after %ds — sleeping %ds for stabilization",
+                job_id, elapsed, stabilization,
+            )
+            if stabilization > 0:
+                time.sleep(stabilization)
+            final = fetch_issue_by_key(ticket_key)
+            if final and "fields" in final:
+                last_issue = final
+                logger.info(
+                    "Enrichment %s: post-stabilization fetch complete — proceeding",
+                    job_id,
+                )
+            else:
+                logger.warning(
+                    "Enrichment %s: post-stabilization fetch failed — using pre-stabilization snapshot",
+                    job_id,
+                )
+            break
+        logger.info(
+            "Enrichment %s: poll %ds — entity fields still empty for %s",
+            job_id, elapsed, ticket_key,
+        )
+    else:
+        logger.warning(
+            "Enrichment %s: timeout after %ds — proceeding with whatever data is available for %s",
+            job_id, max_wait, ticket_key,
+        )
+    return last_issue
+
+
 def _run_enrichment(job_id: str, ticket_key: str, *,
                     jobs: dict | None = None,
                     manual: bool = False) -> None:
@@ -67,9 +144,9 @@ def _run_enrichment(job_id: str, ticket_key: str, *,
     jobs   — job-state dict to write status into (defaults to this module's
              webhook `_jobs`; the manual /triage runner passes its own dict so
              manual results stay behind an authenticated endpoint).
-    manual — analyst-initiated run on an EXISTING ticket: first fetch after 1s
-             with no stabilization wait (fields are already populated), and
-             dedup is skipped entirely so the pasted ticket can never be
+    manual — analyst-initiated run on an EXISTING ticket: fetch the ticket ONCE
+             and proceed (no entity-field polling — see _await_ticket_ready),
+             and dedup is skipped entirely so the pasted ticket can never be
              auto-closed as a duplicate.
     """
     jobs = jobs if jobs is not None else _jobs
@@ -87,60 +164,8 @@ def _run_enrichment(job_id: str, ticket_key: str, *,
             customer = None
         schema = resolve_jira_schema(customer, project_key)
 
-        poll_interval = int(os.environ.get("WEBHOOK_FETCH_DELAY_SECONDS", "5"))
-        max_wait = int(os.environ.get("WEBHOOK_FETCH_MAX_WAIT_SECONDS", "60"))
-        stabilization = int(os.environ.get("WEBHOOK_FETCH_STABILIZATION_SECONDS", "30"))
-        if manual:
-            # Existing ticket: entity fields are already populated and stable.
-            poll_interval = 1
-            stabilization = 0
-        elapsed = 0
-        last_issue = None
-
-        jobs[job_id]["stage"] = "Fetching ticket from Jira"
-
-        while elapsed < max_wait:
-            time.sleep(poll_interval)
-            elapsed += poll_interval
-
-            issue = fetch_issue_by_key(ticket_key)
-            if not issue or "fields" not in issue:
-                logger.warning(
-                    "Enrichment %s: poll %ds — fetch failed for %s, will retry",
-                    job_id, elapsed, ticket_key,
-                )
-                continue
-
-            last_issue = issue
-            if has_entity_data(issue["fields"], schema):
-                logger.info(
-                    "Enrichment %s: entity fields detected after %ds — sleeping %ds for stabilization",
-                    job_id, elapsed, stabilization,
-                )
-                if stabilization > 0:
-                    time.sleep(stabilization)
-                final = fetch_issue_by_key(ticket_key)
-                if final and "fields" in final:
-                    last_issue = final
-                    logger.info(
-                        "Enrichment %s: post-stabilization fetch complete — proceeding",
-                        job_id,
-                    )
-                else:
-                    logger.warning(
-                        "Enrichment %s: post-stabilization fetch failed — using pre-stabilization snapshot",
-                        job_id,
-                    )
-                break
-            logger.info(
-                "Enrichment %s: poll %ds — entity fields still empty for %s",
-                job_id, elapsed, ticket_key,
-            )
-        else:
-            logger.warning(
-                "Enrichment %s: timeout after %ds — proceeding with whatever data is available for %s",
-                job_id, max_wait, ticket_key,
-            )
+        last_issue = _await_ticket_ready(
+            job_id, ticket_key, schema, manual=manual, jobs=jobs)
 
         if last_issue is None or "fields" not in last_issue:
             msg = f"failed to fetch issue {ticket_key} from Jira API after {elapsed}s"

@@ -6,8 +6,9 @@ Design notes:
   Entra-authenticated and acting intentionally. A non-allowlisted project or a
   project with no customer record produces a warning, not a block.
 - Reuses routes.webhook._run_enrichment with manual=True: the pasted ticket is
-  NEVER dedup-closed, and the fetch loop skips the stabilization wait (the
-  ticket's fields already exist).
+  NEVER dedup-closed, and the fetch does a SINGLE read with no entity-field
+  polling — an existing ticket's fields either exist now or never will, so
+  waiting only stalls the run (was the ~4-minute "stuck" bug on bare tickets).
 - Jobs live in this module's own _manual_jobs dict, NOT webhook._jobs: the
   webhook job endpoint is login-exempt (/webhook/ prefix), so manual results
   must be polled through the authenticated endpoint below instead.
