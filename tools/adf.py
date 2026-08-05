@@ -48,7 +48,7 @@ def _coerce_block(node: dict | str) -> dict:
     # If already a block (paragraph/heading/table/etc.) pass through.
     if isinstance(node, dict) and node.get("type") in {
         "paragraph", "heading", "table", "panel", "bulletList",
-        "orderedList", "rule", "codeBlock",
+        "orderedList", "rule", "codeBlock", "expand",
     }:
         return node
     # Inline text → wrap in paragraph.
@@ -123,6 +123,25 @@ def bullet_list(*items: dict | str) -> dict:
         else:
             list_items.append({"type": "listItem", "content": [_coerce_block(it)]})
     return {"type": "bulletList", "content": list_items}
+
+
+def expand(title: str, *blocks: dict | str) -> dict:
+    """Collapsible container — renders as a click-to-open section in Jira Cloud.
+
+    Used by the compact enrichment comment so the verdict and recommendation
+    stay visible while the supporting detail (per-IOC reputation tables, alert
+    history, Confluence snippets) sits one click away.
+
+    Jira rejects an expand with empty content (HTTP 400), so we emit a single
+    empty paragraph rather than let a caller build an invalid node. Note that
+    ADF forbids nesting an expand inside another expand — inside table cells
+    the schema wants ``nestedExpand``, which we deliberately don't support
+    because the triage comment never needs it.
+    """
+    content = [_coerce_block(b) for b in blocks]
+    if not content:
+        content = [paragraph("")]
+    return {"type": "expand", "attrs": {"title": title}, "content": content}
 
 
 def rule() -> dict:

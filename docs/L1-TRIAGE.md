@@ -204,6 +204,56 @@ Fields are skipped silently when the underlying source returns empty values. No 
 
 **Timestamps** in the comment (currently just SOCRadar's `last seen`) render in Asia/Singapore time, e.g. `2026-06-08 19:58:45 SGT`. Source values that fail to parse are left raw rather than dropped.
 
+## Enrichment Comment — Verbosity (`COMMENT_VERBOSITY`)
+
+The comment is assembled from 14 independent sections added across phases 1-6, each rendering in full whenever its feature flag produced data. Nobody owned the assembled whole, and on a rich ticket it reached ~150-180 lines — long enough that analysts stopped reading it.
+
+`COMMENT_VERBOSITY` controls how much of that renders:
+
+| Value | Behaviour |
+|---|---|
+| `full` (default) | Pre-2026-08 layout, byte-for-byte unchanged. |
+| `compact` | Trimmed layout; on the ADF path, detail moves behind collapsible expanders. |
+
+Note this is **not** a prompt change. Every LLM free-text field feeding the comment is already word-capped at source (`recommendation.py` ~40 words, `cmdline_analysis.py` ~90, `ioc_insights.py` ~60, `mitre_mapper.py` 1 sentence). The length was structural, so the fix is in the renderers.
+
+### What `compact` changes
+
+| Section | `full` | `compact` |
+|---|---|---|
+| Per-observable block | ~12 lines for **every** observable | Full block only for malicious/suspicious; cleared ones collapse to `Cleared by all engines (3): a, b, c` |
+| IP Origin | 2 lines, labelled fields | 1 line: `United States · Microsoft Corporation · a.msedge.net (+1)` |
+| SOCRadar `top_findings` | up to 3, always | Malicious IOCs only, capped at 2 |
+| MITRE | 3 lines/technique incl. a bare URL line | 1 line/technique; the ADF path keeps the link on the technique ID |
+| Similar Alerts (24h) + Alert Pattern (30d) | two box-drawing trees, ~23 lines | Merged into one `Alert history` block, one line per window |
+| Entity correlation | every entity | only `historically_benign` entities (first 3) |
+| Confluence / whitelist snippets | 240 chars | 140 chars |
+| Sentinel per-query rationale | 200 chars | 120 chars |
+| Insights / code explanations | 2 lines per item | 1 line per item |
+| No-observable tickets | 3 × `No detections` lines | `No extractable observables — reputation engines not queried.` |
+
+That last one is a **behaviour correction, not just a trim**. The three lines described reputation engines clearing a ticket that was never queried, because no observable was ever extracted — misleading on exactly the tickets where an analyst most needs to know the automation found nothing to work with.
+
+### ADF layout under `compact`
+
+With `COMMENT_ADF_ENABLED=true`, the comment becomes a short always-visible header plus six collapsed expanders (`MITRE ATT&CK`, `Observables`, `Alert history`, `Customer knowledge & whitelist`, `Sentinel evidence`, `Command-line & code analysis`). The verdict panel gains a `KEY SIGNALS` line — flagged/total observables, top technique, historical FP rate, tuning candidacy — so an analyst can decide whether to open anything at all.
+
+**Never collapsed**, regardless of verbosity: the known-activity advisory, the verdict panel, and the whitelist-conflict warning. A reader who never clicks must still see them.
+
+### Measured reduction
+
+Synthetic ticket with every optional section populated:
+
+| Ticket shape | `full` | `compact` | Reduction |
+|---|---|---|---|
+| 3 of 6 observables flagged | 126 lines | 68 | 46% |
+| 1 of 6 flagged | 124 lines | 54 | 56% |
+| 0 of 6 flagged (typical benign) | 104 lines | 33 | 68% |
+
+### Rollback
+
+`COMMENT_VERBOSITY=full` restores the previous output exactly — verified byte-identical against the pre-change `_build_comment()` and `_build_comment_adf()` for both the rich and no-IOC cases. No redeploy needed, just the env var.
+
 ## Verifying the Pipeline Works
 
 ### From a new test ticket
