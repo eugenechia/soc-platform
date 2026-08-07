@@ -140,8 +140,9 @@ def generate_xlsx(data: dict) -> bytes:
 
         rows = [("Total escalated", escalated.get("total", 0)),
                 ("Escalation rate (%)", escalated.get("escalation_rate_pct"))]
-        for label, block in (("Severity", "by_severity"),
-                             ("Resolution", "by_close_justification"),
+        for label, block in (("Status", "by_status"),
+                             ("Priority", "by_priority"),
+                             ("Resolution", "by_resolution"),
                              ("Month", "monthly_trend")):
             for key, count in (escalated.get(block) or {}).items():
                 rows.append((f"{label}: {key}", count))

@@ -536,7 +536,7 @@ def api_customers_create():
         "logo": logo_path,
         "default_sections": default_sections or [
             "introduction", "incident_overview", "incident_severity",
-            "incident_status", "escalated_incidents", "incident_details",
+            "incident_status", "incident_details",
             "service_requests", "change_requests",
             "pending_tickets", "monitoring_scope",
             "trends_insights", "recommendations", "posture_improvements",

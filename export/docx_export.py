@@ -99,6 +99,39 @@ def _set_table_full_width_centered(table):
     tblPr.append(jc)
 
 
+def _add_cell_border(cell, side: str, color_hex: str, sz: str = "4"):
+    """Draw a border on one edge of a table cell.
+
+    The header rule has to be a CELL border, not a paragraph border. Paragraph
+    borders hug their own text, so the 8pt report-title cell and the 0.45"-tall
+    logo cell drew their underlines at two different heights — visibly stepped
+    on every page. A cell border sits on the row edge, which both cells share.
+    """
+    tcPr = cell._tc.get_or_add_tcPr()
+    borders = tcPr.find(qn("w:tcBorders"))
+    if borders is None:
+        borders = OxmlElement("w:tcBorders")
+        tcPr.append(borders)
+    for existing in borders.findall(qn(f"w:{side}")):
+        borders.remove(existing)
+    bdr = OxmlElement(f"w:{side}")
+    bdr.set(qn("w:val"), "single")
+    bdr.set(qn("w:sz"), sz)
+    bdr.set(qn("w:space"), "0")
+    bdr.set(qn("w:color"), color_hex)
+    borders.append(bdr)
+
+
+def _set_cell_vertical_alignment(cell, val: str = "bottom"):
+    """Anchor a cell's content to the top/center/bottom of its row."""
+    tcPr = cell._tc.get_or_add_tcPr()
+    for existing in tcPr.findall(qn("w:vAlign")):
+        tcPr.remove(existing)
+    vAlign = OxmlElement("w:vAlign")
+    vAlign.set(qn("w:val"), val)
+    tcPr.append(vAlign)
+
+
 def _add_para_border(para, side: str, color_hex: str, sz: str = "6"):
     pPr = para._p.get_or_add_pPr()
     pBdr = OxmlElement("w:pBdr")
@@ -200,14 +233,6 @@ def _add_cover_page(doc, customer_name: str, report_date: str,
         logo_para.alignment = WD_ALIGN_PARAGRAPH.CENTER
         logo_para.add_run().add_picture(logo_buf, height=Pt(48))
 
-    # Customer logo if available
-    if logo_path:
-        cust_buf = _load_image_as_png(logo_path)
-        if cust_buf:
-            cust_para = doc.add_paragraph()
-            cust_para.alignment = WD_ALIGN_PARAGRAPH.CENTER
-            cust_para.add_run().add_picture(cust_buf, height=Pt(48))
-
     doc.add_paragraph()
 
     # "Prepared by Logicalis for"
@@ -225,6 +250,19 @@ def _add_cover_page(doc, customer_name: str, report_date: str,
     run.font.size = Pt(26)
     run.font.bold = True
     run.font.color.rgb = _DARK
+
+    # Customer logo directly beneath the name. It used to render up beside the
+    # Logicalis logo, which read as a co-branded lockup rather than "prepared
+    # for this customer" — the SOC team was deleting it and re-pasting it here
+    # by hand. Height-capped only, so wide and square marks both keep their
+    # aspect ratio.
+    if logo_path:
+        cust_buf = _load_image_as_png(logo_path)
+        if cust_buf:
+            cust_para = doc.add_paragraph()
+            cust_para.alignment = WD_ALIGN_PARAGRAPH.CENTER
+            cust_para.paragraph_format.space_before = Pt(10)
+            cust_para.add_run().add_picture(cust_buf, height=Pt(54))
 
     doc.add_paragraph()
 
@@ -301,20 +339,27 @@ def _add_header_footer(doc, report_date: str, logicalis_logo: str = ""):
         left_cell.width = tbl.columns[0].width
         right_cell.width = tbl.columns[1].width
 
+        # Both cells bottom-anchored so the title text sits on the same
+        # baseline as the foot of the logo, and both rules land on the shared
+        # row edge \u2014 the two used to step apart by the logo's height.
+        for cell in (left_cell, right_cell):
+            _set_cell_vertical_alignment(cell, "bottom")
+            _add_cell_border(cell, "bottom", "CCCCCC", sz="4")
+
         left_para = left_cell.paragraphs[0]
         left_para.alignment = WD_ALIGN_PARAGRAPH.LEFT
+        left_para.paragraph_format.space_after = Pt(2)
         run = left_para.add_run(f"Logicalis GSOC Monthly Report \u2013 {report_month}")
         run.font.size = Pt(8)
         run.font.color.rgb = _GREY
-        _add_para_border(left_para, "bottom", "CCCCCC", sz="4")
 
         right_para = right_cell.paragraphs[0]
         right_para.alignment = WD_ALIGN_PARAGRAPH.RIGHT
+        right_para.paragraph_format.space_after = Pt(2)
         if logo_buf:
             # Reset stream pointer in case the buffer is reused across sections
             logo_buf.seek(0)
             right_para.add_run().add_picture(logo_buf, height=Inches(0.45))
-        _add_para_border(right_para, "bottom", "CCCCCC", sz="4")
 
         # Footer
         footer = section.footer
@@ -345,25 +390,29 @@ def _add_header_footer(doc, report_date: str, logicalis_logo: str = ""):
         run5._r.append(fld_char2)
 
 
-# Map chart names to section heading keywords for injection
+# Map chart names to the heading they are injected under. A value is either a
+# section number ("1.3") or a heading anchor id ("escalated-incident-summary").
+# The escalated charts key on an anchor because their block sits partway INTO
+# §1.5, after the summary table — anchoring them on the section number would
+# push all four above the table they are meant to follow.
 _CHART_SECTION_MAP = {
     "monthly_trend": "1.2",
     "severity": "1.3",
     "resolution": "1.4",
-    "escalated_severity": "1.5",
-    "escalated_resolution": "1.5",
-    "escalated_monthly_trend": "1.5",
-    "escalated_top_alerts": "1.5",
-    "sentinel_utilization": "1.11",
-    "sentinel_top_alerts": "1.12",
-    "total_assets": "1.13",
-    "sensor_health": "1.14",
-    "vulnerability_severity": "1.15",
-    "vulnerability_exposed_devices": "1.17",
+    "escalated_status": "escalated-incident-summary",
+    "escalated_priority": "escalated-incident-summary",
+    "escalated_resolution": "escalated-incident-summary",
+    "escalated_monthly_trend": "escalated-incident-summary",
+    "sentinel_utilization": "1.10",
+    "sentinel_top_alerts": "1.11",
+    "total_assets": "1.12",
+    "sensor_health": "1.13",
+    "vulnerability_severity": "1.14",
+    "vulnerability_exposed_devices": "1.16",
 }
 
 # Section numbers are matched on the heading's LEADING number, not as a
-# substring. Substring matching made "1.2" also match "1.21 Security Posture
+# substring. Substring matching made "1.2" also match "1.20 Security Posture
 # Improvements" — harmless only because 1.2 happens to appear first in the
 # document and the entry is deleted once consumed. Adding sections makes that
 # ordering luck fragile, so match exactly.
@@ -421,15 +470,15 @@ def generate_docx(markdown_content: str, customer_name: str, report_date: str,
             if section_id:
                 chart_inject.setdefault(section_id, []).append(png_bytes)
 
-    def _maybe_insert_charts(heading_text: str):
-        """Insert any charts that match this heading's section number."""
+    def _maybe_insert_charts(heading_text: str, anchor_id: str = ""):
+        """Insert any charts keyed to this heading's section number or anchor."""
         if not chart_inject:
             return
-        heading_number = _section_number_of(heading_text)
-        if not heading_number:
+        keys = {k for k in (_section_number_of(heading_text), anchor_id) if k}
+        if not keys:
             return
         for section_id, chart_list in list(chart_inject.items()):
-            if section_id == heading_number:
+            if section_id in keys:
                 for png_bytes in chart_list:
                     try:
                         img_buf = BytesIO(png_bytes)
@@ -474,7 +523,7 @@ def generate_docx(markdown_content: str, customer_name: str, report_date: str,
             if bookmark_id:
                 _add_bookmark(para, bookmark_id)
             # Insert charts after matching headings
-            _maybe_insert_charts(heading_text)
+            _maybe_insert_charts(heading_text, bookmark_id)
 
         elif name == "p":
             para = doc.add_paragraph()

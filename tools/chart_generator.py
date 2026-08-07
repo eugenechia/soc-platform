@@ -422,7 +422,7 @@ def generate_total_assets_chart(os_breakdown: list) -> bytes:
 
     Takes the AGGREGATED breakdown ``[{OSPlatform, Count}]`` computed over the
     whole fleet by ``device_breakdown.summarize_devices`` — never a row sample.
-    Counting sampled rows here is what made section 1.13 report 200 assets for
+    Counting sampled rows here is what made section 1.12 report 200 assets for
     a 965-device fleet. Centre hole shows the total.
     """
     if not os_breakdown:
@@ -472,7 +472,7 @@ def generate_sensor_health_chart(health_breakdown: list) -> bytes:
     devices and drew a 100%-healthy fleet, hiding the very sensors this
     section exists to surface.
 
-    Renders under section 1.14 "Managed Assets by Sensor Health State".
+    Renders under section 1.13 "Managed Assets by Sensor Health State".
     """
     if not health_breakdown:
         return b""
@@ -539,7 +539,7 @@ def generate_vulnerability_severity_chart(by_severity) -> bytes:
     Defender TVM hunt and the Sentinel fallback return slightly different
     shapes so we normalise here.
 
-    Renders under section 1.15 "Vulnerability Details".
+    Renders under section 1.14 "Vulnerability Details".
     """
     if not by_severity:
         return b""
@@ -604,7 +604,7 @@ def generate_vulnerability_exposed_devices_chart(devices: list) -> bytes:
     Accepts the Defender TVM hunt shape ({"DeviceName", "VulnCount"}) or
     the Sentinel fallback shape ({"device_name", "count"}).
 
-    Renders under section 1.17 "Monthly Vulnerability Exposed Devices".
+    Renders under section 1.16 "Monthly Vulnerability Exposed Devices".
     """
     if not devices:
         return b""
@@ -647,13 +647,51 @@ def generate_vulnerability_exposed_devices_chart(devices: list) -> bytes:
     return _to_bytes(fig)
 
 
+def generate_categorical_chart(counts: dict, title: str, color: str,
+                               ylabel: str = "Incidents") -> bytes:
+    """Vertical bar chart of an ordered {category: count} mapping.
+
+    Categories are drawn in the order supplied — the escalated breakdowns
+    arrive pre-ordered (priority ladder, resolution categories) and a chart
+    that re-sorted them would not match the axis order the SOC team reads.
+    Zero-valued categories are kept: in the escalated resolution chart a zero
+    False Positive bar is a real finding, not an empty slot.
+    """
+    if not counts:
+        return b""
+
+    labels = list(counts.keys())
+    values = [int(counts[k] or 0) for k in labels]
+
+    fig, ax = plt.subplots(figsize=(7, 3.5))
+    _setup_style(fig, ax)
+    bars = ax.bar(labels, values, color=color, width=0.55,
+                  edgecolor="white", linewidth=0.5)
+    offset = (max(values) * 0.02) if max(values) > 0 else 0.1
+    for bar, val in zip(bars, values):
+        ax.text(bar.get_x() + bar.get_width() / 2, bar.get_height() + offset,
+                str(val), ha="center", va="bottom", fontsize=10,
+                fontweight="bold", color=_DARK)
+    ax.set_title(title, fontsize=13, fontweight="bold", color=_DARK, pad=12)
+    ax.set_ylabel(ylabel, fontsize=10, color=_GREY)
+    ax.yaxis.set_major_locator(ticker.MaxNLocator(integer=True))
+    ax.set_ylim(0, max(values) * 1.18 + 1 if max(values) else 1)
+    fig.tight_layout()
+    return _to_bytes(fig)
+
+
 def generate_escalated_charts(escalated: dict, end_date: str = "",
                               monthly_trend_12m: dict | None = None) -> dict:
-    """The §1.5 charts: the four all-incident breakdowns, escalated only.
+    """The Escalated Incident Summary charts inside §1.5 Incident Ticket Summary.
+
+    Reproduces the three breakdowns the SOC team previously built by hand —
+    status (Pending/Closed), priority, and resolution — plus the 12-month
+    escalation trend. Rendered in the report's own matplotlib house style
+    rather than the hand-made deck's 3D look, so §1.5 matches §1.2-§1.4.
 
     Returns {} when ``escalated`` is unavailable — the escalation field could
-    not be resolved for the project — so the section renders "not configured"
-    instead of four empty charts that would read as "nothing was escalated".
+    not be resolved for the project — so the block is omitted entirely instead
+    of showing empty charts that would read as "nothing was escalated".
 
     ``monthly_trend_12m`` is the verified 12-month escalated series when
     available; the in-period ``escalated["monthly_trend"]`` is the fallback
@@ -664,38 +702,27 @@ def generate_escalated_charts(escalated: dict, end_date: str = "",
 
     charts: dict = {}
 
-    by_severity = escalated.get("by_severity") or {}
-    if by_severity:
+    for key, source, title in (
+        ("escalated_status", "by_status", "Escalated Incident Status"),
+        ("escalated_priority", "by_priority", "Escalated Incidents by Priority"),
+        ("escalated_resolution", "by_resolution", "Escalated Incident Resolution"),
+    ):
+        counts = escalated.get(source) or {}
+        if not counts:
+            continue
         try:
-            charts["escalated_severity"] = generate_severity_chart(
-                by_severity, title="Escalated Incidents by Severity")
+            charts[key] = generate_categorical_chart(counts, title, _ESCALATED)
         except Exception as e:
-            logger.error(f"Escalated severity chart failed: {e}")
-
-    try:
-        charts["escalated_resolution"] = generate_resolution_chart(
-            escalated.get("by_close_justification") or {},
-            title="Escalated Incident Resolution")
-    except Exception as e:
-        logger.error(f"Escalated resolution chart failed: {e}")
+            logger.error(f"Escalated {source} chart failed: {e}")
 
     trend = monthly_trend_12m or escalated.get("monthly_trend") or {}
     try:
         charts["escalated_monthly_trend"] = generate_monthly_trend_chart(
             trend, end_date,
-            title="Escalated Incidents – Past 12 Months",
+            title="Escalated Incidents \u2013 Past 12 Months",
             color=_ESCALATED, note_on_leading_zeros=True)
     except Exception as e:
         logger.error(f"Escalated monthly trend chart failed: {e}")
-
-    top_alerts = escalated.get("top_alerts") or {}
-    if top_alerts:
-        try:
-            charts["escalated_top_alerts"] = generate_top_alerts_chart(
-                top_alerts, title="Top Alerts – Escalated Incidents",
-                color=_ESCALATED)
-        except Exception as e:
-            logger.error(f"Escalated top alerts chart failed: {e}")
 
     return {k: v for k, v in charts.items() if v}
 

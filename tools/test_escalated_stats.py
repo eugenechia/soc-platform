@@ -26,18 +26,26 @@ def check(name, cond):
 
 
 def inc(key, severity="High", escalated=False, cj="True Positive",
-        created="2026-08-04T10:00:00.000+0800", labels=None, status="Closed"):
+        created="2026-08-04T10:00:00.000+0800", labels=None, status="Closed",
+        priority="High"):
     return {"key": key, "summary": f"{key} summary", "severity": severity,
-            "status": status, "priority": "High", "assignee": "analyst",
+            "status": status, "priority": priority, "assignee": "analyst",
             "created": created, "updated": created, "resolved": created,
             "close_justification": cj, "labels": labels or [],
             "incident_type": "", "escalated": escalated}
 
 
+# Priority deliberately diverges from severity (A-3 is High severity but Low
+# priority) so a breakdown that quietly read the wrong field would fail here.
+# "Pending with Customer" is the real SCDM status string — it is not literally
+# "Pending", which is exactly the trap the status bucketing has to survive.
 INCIDENTS = [
-    inc("A-1", "Critical", escalated=True, cj="True Positive", labels=["c2"]),
-    inc("A-2", "High", escalated=True, cj="True Positive", labels=["c2"]),
-    inc("A-3", "High", escalated=True, cj="False Positive", labels=["scan"]),
+    inc("A-1", "Critical", escalated=True, cj="True Positive", labels=["c2"],
+        priority="High"),
+    inc("A-2", "High", escalated=True, cj="True Positive", labels=["c2"],
+        priority="High"),
+    inc("A-3", "High", escalated=True, cj="", labels=["scan"],
+        priority="Low", status="Pending with Customer"),
     inc("A-4", "Medium", escalated=False, cj="Benign Positive", labels=["scan"]),
     inc("A-5", "Low", escalated=False, cj="Benign Positive", labels=["scan"]),
     inc("A-6", "Low", escalated=False, cj="", status="Open",
@@ -53,8 +61,8 @@ check("field unresolved -> total 0", unavail["total"] == 0)
 check("field unresolved -> rate is None, not 0.0",
       unavail["escalation_rate_pct"] is None)
 check("field unresolved -> every breakdown empty",
-      not unavail["by_severity"] and not unavail["by_close_justification"]
-      and not unavail["top_alerts"] and not unavail["monthly_trend"])
+      not unavail["by_status"] and not unavail["by_priority"]
+      and not unavail["by_resolution"] and not unavail["monthly_trend"])
 
 none_escalated = jc._compute_stats(
     [inc("B-1", escalated=False), inc("B-2", escalated=False)],
@@ -70,12 +78,26 @@ print("\n== escalated counters ==")
 esc = jc._compute_stats(INCIDENTS, escalation_available=True)["escalated"]
 check("total counts only escalated incidents", esc["total"] == 3)
 check("escalation rate is 3/6 = 50.0", esc["escalation_rate_pct"] == 50.0)
-check("by_severity restricted to escalated",
-      esc["by_severity"] == {"Critical": 1, "High": 2})
-check("by_close_justification restricted to escalated",
-      esc["by_close_justification"] == {"True Positive": 2, "False Positive": 1})
-check("top_alerts restricted to escalated",
-      esc["top_alerts"] == {"c2": 2, "scan": 1})
+check("by_status splits pending from closed",
+      esc["by_status"] == {"Pending": 1, "Closed": 2})
+check("by_status reconciles to total",
+      sum(esc["by_status"].values()) == esc["total"])
+check("by_priority counts PRIORITY, not severity",
+      esc["by_priority"] == {"High": 2, "Low": 1})
+check("by_priority reconciles to total",
+      sum(esc["by_priority"].values()) == esc["total"])
+check("by_priority follows the Highest->Lowest ladder",
+      list(esc["by_priority"]) == ["High", "Low"])
+check("by_resolution keeps a zero False Positive category",
+      esc["by_resolution"]["False Positive"] == 0)
+check("by_resolution counts justifications of CLOSED escalations only",
+      esc["by_resolution"]["True Positive"] == 2)
+check("by_resolution carries a Pending bucket",
+      esc["by_resolution"]["Pending"] == 1)
+check("by_resolution reconciles to total",
+      sum(esc["by_resolution"].values()) == esc["total"])
+check("by_close_justification excludes the Pending bucket",
+      "Pending" not in esc["by_close_justification"])
 check("monthly_trend restricted to escalated", esc["monthly_trend"] == {"2026-08": 3})
 
 full = jc._compute_stats(INCIDENTS, escalation_available=True)
@@ -84,8 +106,7 @@ check("all-incident by_severity unaffected",
       full["by_severity"] == {"Critical": 1, "High": 2, "Medium": 1, "Low": 2})
 
 check("blank close_justification excluded from escalated resolution counts",
-      "" not in esc["by_close_justification"]
-      and "Unspecified" not in esc["by_close_justification"])
+      "" not in esc["by_resolution"] and "Unspecified" not in esc["by_resolution"])
 
 zero_div = jc._compute_stats([], escalation_available=True)["escalated"]
 check("no incidents at all -> rate None, no ZeroDivisionError",
@@ -107,9 +128,12 @@ check("both projects resolved -> merged available", merged["available"] is True)
 check("escalated totals sum across projects", merged["total"] == 4)
 check("merged rate uses the combined incident total (4/7)",
       merged["escalation_rate_pct"] == 57.1)
-check("merged by_severity sums per key",
-      merged["by_severity"] == {"Critical": 2, "High": 2})
-check("merged top_alerts sums per label", merged["top_alerts"]["c2"] == 3)
+check("merged by_status sums per key",
+      merged["by_status"] == {"Pending": 1, "Closed": 3})
+check("merged by_priority sums and keeps ladder order",
+      list(merged["by_priority"]) == ["High", "Low"])
+check("merged by_resolution reconciles to merged total",
+      sum(merged["by_resolution"].values()) == merged["total"])
 
 p_c = project("CCC", [inc("D-1", escalated=False)], False)
 partial = jc._merge_project_results([p_a, p_c])["stats"]["escalated"]
@@ -163,9 +187,9 @@ check("unavailable -> no escalated charts at all",
 check("empty block -> no escalated charts", generate_escalated_charts({}) == {})
 
 charts = generate_escalated_charts(esc, end_date="2026-08-31")
-check("available -> severity/resolution/trend/top-alerts charts produced",
-      set(charts) == {"escalated_severity", "escalated_resolution",
-                      "escalated_monthly_trend", "escalated_top_alerts"})
+check("available -> status/priority/resolution/trend charts produced",
+      set(charts) == {"escalated_status", "escalated_priority",
+                      "escalated_resolution", "escalated_monthly_trend"})
 check("all escalated charts are non-empty PNGs",
       all(v.startswith(b"\x89PNG") for v in charts.values()))
 

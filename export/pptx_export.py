@@ -10,8 +10,8 @@ Slide structure:
   3. Incident Severity (chart)
   4. Incident Trend (12-month chart)
   5. Incident Status / Resolution (chart)
-  6-9. Escalated incident mirrors of slides 3-5 and Top Alerts — present only
-     when the Jira escalation field is configured for the customer
+  6-9. Escalated Incident Summary — status, priority, resolution and 12-month
+     trend. Present only when the Jira escalation field is configured.
  10. Top Alerts (chart + top-5 table)
  11. Pending Tickets (table, if data present)
  12. SOCRadar Threat Intelligence (if SOCRadar data present)
@@ -477,10 +477,10 @@ def generate_pptx(markdown_content: str, customer_name: str, report_date: str,
     # case, so the deck simply has no escalated slides rather than four empty
     # ones. See tools/chart_generator.py:generate_escalated_charts.
     for chart_key, slide_title in (
-        ("escalated_severity", "Escalated Incidents by Severity"),
-        ("escalated_monthly_trend", "12-Month Escalated Incident Trend"),
+        ("escalated_status", "Escalated Incident Status"),
+        ("escalated_priority", "Escalated Incidents by Priority"),
         ("escalated_resolution", "Escalated Incident Resolution"),
-        ("escalated_top_alerts", "Top Alerts — Escalated Incidents"),
+        ("escalated_monthly_trend", "12-Month Escalated Incident Trend"),
     ):
         if not charts.get(chart_key):
             continue
@@ -499,7 +499,7 @@ def generate_pptx(markdown_content: str, customer_name: str, report_date: str,
                       font_size=11, color=_GREY)
     alert_headers, alert_rows = _extract_table_rows(soup, "Top Alert", max_rows=5)
     if not alert_headers and not alert_rows:
-        alert_headers, alert_rows = _extract_table_rows(soup, "1.8", max_rows=5)
+        alert_headers, alert_rows = _extract_table_rows(soup, "1.7", max_rows=5)
     if alert_headers and alert_rows:
         _add_table_to_slide(slide, alert_headers[:3], [r[:3] for r in alert_rows],
                             _inches(5.9), _inches(1.2), _inches(3.9), _inches(4.5))
@@ -507,7 +507,7 @@ def generate_pptx(markdown_content: str, customer_name: str, report_date: str,
     # ── Slide 7: Pending Tickets ──────────────────────────────────────────────
     pending_headers, pending_rows = _extract_table_rows(soup, "Pending Ticket", max_rows=8)
     if not pending_headers:
-        pending_headers, pending_rows = _extract_table_rows(soup, "1.15", max_rows=8)
+        pending_headers, pending_rows = _extract_table_rows(soup, "1.14", max_rows=8)
     slide = _content_slide("Pending Tickets")
     if pending_headers and pending_rows:
         _add_table_to_slide(slide, pending_headers[:5], [r[:5] for r in pending_rows],

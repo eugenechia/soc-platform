@@ -345,10 +345,28 @@ def _escalation_rate(escalated_total: int, total: int) -> float | None:
     return round(escalated_total / total * 100.0, 1)
 
 
+# Jira priority ladder, most severe first. The escalated priority breakdown is
+# reported over PRIORITY, not severity — they are different fields and disagree
+# in practice (July 2026 SMU: 36 High by severity across all incidents, 32 High
+# by priority among the 92 escalated ones).
+_PRIORITY_ORDER = ("Highest", "High", "Medium", "Low", "Lowest")
+
+# Fixed resolution categories for the escalated breakdown, in the order the
+# hand-built report used them.
+_ESCALATED_RESOLUTIONS = ("True Positive", "Benign Positive", "False Positive")
+
+
 def _compute_escalated_stats(incidents: list[dict], available: bool) -> dict:
-    """Counters over escalated incidents only — the same four breakdowns the
-    report already renders for all incidents (§1.3, §1.4, §1.2 trend, top
-    alerts), restricted to tickets flagged as escalated.
+    """Counters over escalated incidents only, matching the breakdowns the SOC
+    team previously built by hand for the "Escalated Incident Summary" block:
+
+      * ``by_status``     — Pending vs Closed
+      * ``by_priority``   — Highest/High/Medium/Low/Lowest (Jira priority)
+      * ``by_resolution`` — True/Benign/False Positive plus a Pending bucket
+      * ``monthly_trend`` — escalations per month
+
+    ``by_status``, ``by_priority`` and ``by_resolution`` each reconcile to
+    ``total``, which is what made the hand-built charts checkable.
 
     ``available`` is False when the escalation field could not be resolved for
     the project. Every counter is then empty AND ``available`` is False, so the
@@ -358,16 +376,35 @@ def _compute_escalated_stats(incidents: list[dict], available: bool) -> dict:
     if not available:
         return {
             "available": False, "total": 0, "escalation_rate_pct": None,
-            "by_severity": {}, "by_close_justification": {},
-            "top_alerts": {}, "monthly_trend": {},
+            "by_status": {}, "by_priority": {}, "by_resolution": {},
+            "by_close_justification": {}, "monthly_trend": {},
         }
 
     escalated = [i for i in incidents if i.get("escalated")]
 
-    label_counts = Counter()
-    for i in escalated:
-        for label in i.get("labels") or []:
-            label_counts[label] += 1
+    def _is_pending(i: dict) -> bool:
+        return (i.get("status") or "").strip().lower() not in _CLOSED_STATUSES
+
+    pending = [i for i in escalated if _is_pending(i)]
+    closed = [i for i in escalated if not _is_pending(i)]
+
+    priority_counts = Counter(i.get("priority") or "Unspecified" for i in escalated)
+    # Keep the severity ladder's order, then any tenant-specific extras.
+    by_priority = {p: priority_counts[p] for p in _PRIORITY_ORDER if priority_counts.get(p)}
+    for p, c in priority_counts.items():
+        if p not in by_priority:
+            by_priority[p] = c
+
+    justifications = Counter(i["close_justification"] for i in closed
+                             if i.get("close_justification"))
+    # Fixed categories are always present (a 0 bar is meaningful here — it says
+    # none of the escalations turned out false), then any extra values the
+    # tenant uses, then Pending so the four bars sum to `total`.
+    by_resolution = {k: justifications.get(k, 0) for k in _ESCALATED_RESOLUTIONS}
+    for k, c in justifications.items():
+        if k not in by_resolution:
+            by_resolution[k] = c
+    by_resolution["Pending"] = len(pending)
 
     monthly_trend = Counter()
     for i in escalated:
@@ -379,13 +416,12 @@ def _compute_escalated_stats(incidents: list[dict], available: bool) -> dict:
         "available": True,
         "total": len(escalated),
         "escalation_rate_pct": _escalation_rate(len(escalated), len(incidents)),
-        "by_severity": dict(Counter(i.get("severity") or "Unspecified"
-                                    for i in escalated)),
-        "by_close_justification": dict(Counter(
-            i["close_justification"] for i in escalated
-            if i.get("close_justification")
-        )),
-        "top_alerts": dict(label_counts.most_common(10)),
+        "by_status": {"Pending": len(pending), "Closed": len(closed)},
+        "by_priority": by_priority,
+        "by_resolution": by_resolution,
+        # Closed-only justification counts, without the Pending bucket — kept
+        # separate so prose can cite "of the N closed escalations" accurately.
+        "by_close_justification": dict(justifications),
         "monthly_trend": dict(sorted(monthly_trend.items())),
     }
 
@@ -1122,6 +1158,17 @@ def _sum_count_dicts(dicts: list[dict]) -> dict:
     return out
 
 
+def _order_by(counts: dict, order: tuple) -> dict:
+    """Re-key ``counts`` into ``order``, appending any unlisted keys after.
+    Summing across projects loses the per-project ordering, so the merged
+    breakdown is re-sorted to keep the chart axes stable."""
+    out = {k: counts[k] for k in order if k in counts}
+    for k, v in counts.items():
+        if k not in out:
+            out[k] = v
+    return out
+
+
 def _merge_escalated_stats(results: list[dict], total_incidents: int) -> dict:
     """Combine per-project escalated blocks into one.
 
@@ -1148,12 +1195,15 @@ def _merge_escalated_stats(results: list[dict], total_incidents: int) -> dict:
         "total": escalated_total,
         "escalation_rate_pct": _escalation_rate(escalated_total, total_incidents),
     }
-    for key in ("by_severity", "by_close_justification", "top_alerts", "monthly_trend"):
+    for key in ("by_status", "by_priority", "by_resolution",
+                "by_close_justification", "monthly_trend"):
         summed = _sum_count_dicts([b.get(key) or {} for b in blocks])
-        if key == "top_alerts":
-            summed = dict(sorted(summed.items(), key=lambda kv: kv[1], reverse=True)[:10])
-        elif key == "monthly_trend":
+        if key == "monthly_trend":
             summed = dict(sorted(summed.items()))
+        elif key == "by_priority":
+            summed = _order_by(summed, _PRIORITY_ORDER)
+        elif key == "by_resolution":
+            summed = _order_by(summed, _ESCALATED_RESOLUTIONS + ("Pending",))
         merged[key] = summed
 
     names = sorted({b.get("field_name") for b in blocks if b.get("field_name")})

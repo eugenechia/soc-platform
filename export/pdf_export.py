@@ -138,7 +138,18 @@ _PDF_STYLES = """
     font-size: 26pt;
     font-weight: 700;
     color: #1a1a2e;
-    margin-bottom: 48px;
+    margin-bottom: 16px;
+  }
+  /* Customer mark under the customer name. Height-capped with max-width so a
+     wide wordmark shrinks to fit rather than spilling past the page, and a
+     square mark is not stretched. */
+  .cover-customer-logo {
+    margin-bottom: 40px;
+  }
+  .cover-customer-logo img {
+    height: 72px;
+    max-width: 60%;
+    object-fit: contain;
   }
   .cover-issued {
     font-size: 11pt;
@@ -320,24 +331,27 @@ _CHART_SECTION_MAP = {
     "monthly_trend": "1.2",
     "severity": "1.3",
     "resolution": "1.4",
-    "escalated_severity": "1.5",
-    "escalated_resolution": "1.5",
-    "escalated_monthly_trend": "1.5",
-    "escalated_top_alerts": "1.5",
-    "sentinel_utilization": "1.11",
-    "sentinel_top_alerts": "1.12",
-    "total_assets": "1.13",
-    "sensor_health": "1.14",
-    "vulnerability_severity": "1.15",
-    "vulnerability_exposed_devices": "1.17",
+    # Keyed on an anchor id, not a section number: the escalated block sits
+    # partway into §1.5, after the summary table.
+    "escalated_status": "escalated-incident-summary",
+    "escalated_priority": "escalated-incident-summary",
+    "escalated_resolution": "escalated-incident-summary",
+    "escalated_monthly_trend": "escalated-incident-summary",
+    "sentinel_utilization": "1.10",
+    "sentinel_top_alerts": "1.11",
+    "total_assets": "1.12",
+    "sensor_health": "1.13",
+    "vulnerability_severity": "1.14",
+    "vulnerability_exposed_devices": "1.16",
 }
 
 
-_HEADING_RE = re.compile(r"<h([23])[^>]*>(.*?)</h\1>", re.IGNORECASE | re.DOTALL)
+_HEADING_RE = re.compile(r"<h([234])[^>]*>(.*?)</h\1>", re.IGNORECASE | re.DOTALL)
 _TAG_RE = re.compile(r"<[^>]+>")
+_ANCHOR_ID_RE = re.compile(r'<a\s+[^>]*id="([^"]+)"', re.IGNORECASE)
 # Section numbers are matched on the heading's LEADING number, not as a
 # substring anywhere in the heading. Substring matching made "1.2" also match
-# "1.21 Security Posture Improvements"; only document order saved it. Keep in
+# "1.20 Security Posture Improvements"; only document order saved it. Keep in
 # sync with export/docx_export.py:_section_number_of.
 _SECTION_NUM_RE = re.compile(r"^\s*(\d+\.\d+)")
 
@@ -373,8 +387,11 @@ def _inject_charts_into_html(html: str, charts: dict) -> str:
     pieces: list[str] = []
     cursor = 0
     for match in _HEADING_RE.finditer(html):
-        section_id = _section_number_of(match.group(2))
-        pngs = by_section.pop(section_id, None) if section_id else None
+        heading_html = match.group(2)
+        anchor = _ANCHOR_ID_RE.search(heading_html)
+        keys = [k for k in (_section_number_of(heading_html),
+                            anchor.group(1) if anchor else "") if k]
+        pngs = next((by_section.pop(k) for k in keys if k in by_section), None)
         if not pngs:
             continue
         pieces.append(html[cursor:match.end()])
@@ -477,12 +494,21 @@ def generate_pdf(markdown_content: str, customer_name: str, report_date: str,
         _suffix = {1: "st", 2: "nd", 3: "rd"}.get(_day % 10, "th")
     issue_date = f"{_day}{_suffix} {_today.strftime('%B %Y')}"
 
-    # Build cover page logos
+    # Cover branding: the Logicalis mark sits at the top on its own; the
+    # customer's mark goes directly beneath the customer name, under "Prepared
+    # by Logicalis for". Pairing the two logos side by side at the top read as
+    # a co-branded lockup, so the SOC team was moving the customer logo down by
+    # hand. Keep in step with export/docx_export.py:_add_cover_page.
     logos_html = ""
     if logicalis_logo_uri:
         logos_html += f'<img src="{logicalis_logo_uri}" alt="Logicalis">'
+
+    customer_logo_html = ""
     if customer_logo_uri:
-        logos_html += f'<img src="{customer_logo_uri}" alt="{customer_name}">'
+        customer_logo_html = (
+            f'<div class="cover-customer-logo">'
+            f'<img src="{customer_logo_uri}" alt="{customer_name}"></div>'
+        )
 
     styles = (
         _PDF_STYLES
@@ -500,6 +526,7 @@ def generate_pdf(markdown_content: str, customer_name: str, report_date: str,
     <div class="cover-logos">{logos_html}</div>
     <div class="cover-title">Prepared by Logicalis for</div>
     <div class="cover-customer">{customer_name}</div>
+    {customer_logo_html}
     <div class="cover-divider"></div>
     <div class="cover-title">Logicalis Managed Security Services</div>
     <div class="cover-report-title">GSOC Monthly Report &mdash; {report_month}</div>

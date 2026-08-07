@@ -753,18 +753,11 @@
     function renderSections() {
       const grid = document.getElementById('sectionGrid');
       grid.innerHTML = '';
-      // Existing customer records predate 1.5 Escalated Incidents, so their
-      // saved default_sections cannot contain it. Fold it in for every customer
-      // whose defaults already include the incident stats it re-cuts —
-      // otherwise the section would ship dark until each record is re-saved.
-      const defaults = selectedCustomer
-        ? (selectedCustomer.default_sections || []).includes('incident_status')
-            && !(selectedCustomer.default_sections || []).includes('escalated_incidents')
-          ? [...selectedCustomer.default_sections, 'escalated_incidents']
-          : selectedCustomer.default_sections
-        : [
+      // The Escalated Incident Summary has no section toggle of its own — it
+      // is part of 1.5 Incident Ticket Summary (`incident_details`).
+      const defaults = selectedCustomer ? selectedCustomer.default_sections : [
         'introduction', 'incident_overview', 'incident_severity',
-        'incident_status', 'escalated_incidents', 'incident_details',
+        'incident_status', 'incident_details',
         'service_requests', 'change_requests',
         'pending_tickets', 'monitoring_scope',
         'trends_insights', 'recommendations', 'posture_improvements',
