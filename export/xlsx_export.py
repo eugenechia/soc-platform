@@ -128,6 +128,31 @@ def generate_xlsx(data: dict) -> bytes:
         _style_body_rows(ws_trend, 2, 1 + len(monthly), 2)
     _auto_column_width(ws_trend, 2)
 
+    # Sheet 5: Escalated Incidents — omitted entirely when the escalation field
+    # is not configured, so an absent sheet means "not tracked" rather than
+    # "nothing escalated" (which is a sheet of zeros).
+    escalated = stats.get("escalated") or {}
+    if escalated.get("available"):
+        ws_esc = wb.create_sheet("Escalated Incidents")
+        ws_esc.cell(row=1, column=1, value="Metric")
+        ws_esc.cell(row=1, column=2, value="Value")
+        _style_header_row(ws_esc, 1, 2)
+
+        rows = [("Total escalated", escalated.get("total", 0)),
+                ("Escalation rate (%)", escalated.get("escalation_rate_pct"))]
+        for label, block in (("Status", "by_status"),
+                             ("Priority", "by_priority"),
+                             ("Resolution", "by_resolution"),
+                             ("Month", "monthly_trend")):
+            for key, count in (escalated.get(block) or {}).items():
+                rows.append((f"{label}: {key}", count))
+
+        for i, (label, value) in enumerate(rows, start=2):
+            ws_esc.cell(row=i, column=1, value=label)
+            ws_esc.cell(row=i, column=2, value=value)
+        _style_body_rows(ws_esc, 2, 1 + len(rows), 2)
+        _auto_column_width(ws_esc, 2)
+
     output = BytesIO()
     wb.save(output)
     output.seek(0)

@@ -1,4 +1,5 @@
 import os
+import re
 import base64
 import logging
 from datetime import datetime
@@ -137,7 +138,18 @@ _PDF_STYLES = """
     font-size: 26pt;
     font-weight: 700;
     color: #1a1a2e;
-    margin-bottom: 48px;
+    margin-bottom: 16px;
+  }
+  /* Customer mark, shown INSTEAD of the customer name when a logo is on file.
+     Height-capped with max-width so a wide wordmark shrinks to fit rather
+     than spilling past the page, and a square mark is not stretched. */
+  .cover-customer-logo {
+    margin-bottom: 44px;
+  }
+  .cover-customer-logo img {
+    height: 80px;
+    max-width: 60%;
+    object-fit: contain;
   }
   .cover-issued {
     font-size: 11pt;
@@ -319,6 +331,12 @@ _CHART_SECTION_MAP = {
     "monthly_trend": "1.2",
     "severity": "1.3",
     "resolution": "1.4",
+    # Keyed on an anchor id, not a section number: the escalated block sits
+    # partway into §1.5, after the summary table.
+    "escalated_status": "escalated-incident-summary",
+    "escalated_priority": "escalated-incident-summary",
+    "escalated_resolution": "escalated-incident-summary",
+    "escalated_monthly_trend": "escalated-incident-summary",
     "sentinel_utilization": "1.10",
     "sentinel_top_alerts": "1.11",
     "total_assets": "1.12",
@@ -328,34 +346,59 @@ _CHART_SECTION_MAP = {
 }
 
 
+_HEADING_RE = re.compile(r"<h([234])[^>]*>(.*?)</h\1>", re.IGNORECASE | re.DOTALL)
+_TAG_RE = re.compile(r"<[^>]+>")
+_ANCHOR_ID_RE = re.compile(r'<a\s+[^>]*id="([^"]+)"', re.IGNORECASE)
+# Section numbers are matched on the heading's LEADING number, not as a
+# substring anywhere in the heading. Substring matching made "1.2" also match
+# "1.20 Security Posture Improvements"; only document order saved it. Keep in
+# sync with export/docx_export.py:_section_number_of.
+_SECTION_NUM_RE = re.compile(r"^\s*(\d+\.\d+)")
+
+
+def _section_number_of(heading_html: str) -> str:
+    """The leading section number of a heading, e.g. "1.5" from
+    ``<a id="..."></a>1.5. Escalated Incidents``. "" when there is none."""
+    m = _SECTION_NUM_RE.match(_TAG_RE.sub("", heading_html or ""))
+    return m.group(1) if m else ""
+
+
 def _inject_charts_into_html(html: str, charts: dict) -> str:
-    """Insert chart images after matching section headings in the HTML."""
+    """Insert chart images after matching section headings in the HTML.
+
+    Charts belonging to the same section are inserted together, in the order
+    ``charts`` supplies them. Inserting them one at a time (each immediately
+    after the heading) would emit them in reverse — which did not matter while
+    every section had at most one chart, but §1.5 has four.
+    """
     if not charts:
         return html
 
+    by_section: dict[str, list[bytes]] = {}
     for chart_name, png_bytes in charts.items():
         if not png_bytes:
             continue
         section_id = _CHART_SECTION_MAP.get(chart_name)
-        if not section_id:
+        if section_id:
+            by_section.setdefault(section_id, []).append(png_bytes)
+    if not by_section:
+        return html
+
+    pieces: list[str] = []
+    cursor = 0
+    for match in _HEADING_RE.finditer(html):
+        heading_html = match.group(2)
+        anchor = _ANCHOR_ID_RE.search(heading_html)
+        keys = [k for k in (_section_number_of(heading_html),
+                            anchor.group(1) if anchor else "") if k]
+        pngs = next((by_section.pop(k) for k in keys if k in by_section), None)
+        if not pngs:
             continue
-
-        img_tag = _build_chart_img_tag(png_bytes)
-
-        # Find the heading containing the section number and insert chart after it
-        # Match heading content that may contain inline HTML (e.g. <a id="...">)
-        # but must not span across multiple headings
-        import re
-        pattern = re.compile(
-            rf'(<h([23])[^>]*>(?:(?!</h\2>).)*?{re.escape(section_id)}(?:(?!</h\2>).)*?</h\2>)',
-            re.IGNORECASE | re.DOTALL
-        )
-        match = pattern.search(html)
-        if match:
-            insert_pos = match.end()
-            html = html[:insert_pos] + img_tag + html[insert_pos:]
-
-    return html
+        pieces.append(html[cursor:match.end()])
+        pieces.extend(_build_chart_img_tag(p) for p in pngs)
+        cursor = match.end()
+    pieces.append(html[cursor:])
+    return "".join(pieces)
 
 
 def _wrap_tables_for_centering(html: str) -> str:
@@ -451,12 +494,23 @@ def generate_pdf(markdown_content: str, customer_name: str, report_date: str,
         _suffix = {1: "st", 2: "nd", 3: "rd"}.get(_day % 10, "th")
     issue_date = f"{_day}{_suffix} {_today.strftime('%B %Y')}"
 
-    # Build cover page logos
+    # Cover branding: the Logicalis mark sits at the top on its own. Under
+    # "Prepared by Logicalis for", the customer's LOGO replaces the customer
+    # name when one is on file; the name is the fallback for customers with no
+    # logo uploaded. Pairing the two logos side by side at the top read as a
+    # co-branded lockup, so the SOC team was moving the customer logo down by
+    # hand. Keep in step with export/docx_export.py:_add_cover_page.
     logos_html = ""
     if logicalis_logo_uri:
         logos_html += f'<img src="{logicalis_logo_uri}" alt="Logicalis">'
+
     if customer_logo_uri:
-        logos_html += f'<img src="{customer_logo_uri}" alt="{customer_name}">'
+        customer_identity_html = (
+            f'<div class="cover-customer-logo">'
+            f'<img src="{customer_logo_uri}" alt="{customer_name}"></div>'
+        )
+    else:
+        customer_identity_html = f'<div class="cover-customer">{customer_name}</div>'
 
     styles = (
         _PDF_STYLES
@@ -473,7 +527,7 @@ def generate_pdf(markdown_content: str, customer_name: str, report_date: str,
   <div class="cover-page">
     <div class="cover-logos">{logos_html}</div>
     <div class="cover-title">Prepared by Logicalis for</div>
-    <div class="cover-customer">{customer_name}</div>
+    {customer_identity_html}
     <div class="cover-divider"></div>
     <div class="cover-title">Logicalis Managed Security Services</div>
     <div class="cover-report-title">GSOC Monthly Report &mdash; {report_month}</div>

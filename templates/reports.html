@@ -753,6 +753,8 @@
     function renderSections() {
       const grid = document.getElementById('sectionGrid');
       grid.innerHTML = '';
+      // The Escalated Incident Summary has no section toggle of its own — it
+      // is part of 1.5 Incident Ticket Summary (`incident_details`).
       const defaults = selectedCustomer ? selectedCustomer.default_sections : [
         'introduction', 'incident_overview', 'incident_severity',
         'incident_status', 'incident_details',

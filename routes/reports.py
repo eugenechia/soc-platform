@@ -148,6 +148,10 @@ PENDING_TICKETS_TOKEN = "<!--PENDING_TICKETS_TABLE-->"
 INCIDENT_SUMMARY_TOKEN = "<!--INCIDENT_SUMMARY_TABLE-->"
 PENDING_SUMMARY_TOKEN = "<!--PENDING_SUMMARY_TABLE-->"
 
+# The Escalated Incident Summary that closes §1.5 has no token of its own — it
+# is appended to INCIDENT_SUMMARY_TOKEN's substitution, so the LLM cannot drop
+# it. See _render_escalated_summary_html.
+
 # Same pattern for the SOCRadar Company Alarms table. This one previously
 # shipped the pre-rendered HTML INSIDE the LLM payload (socradar group AND the
 # industry/meta group, which embeds socradar_data wholesale) with a "reproduce
@@ -363,6 +367,69 @@ def _render_incident_summary_html(stats: dict) -> str:
         "</tbody>"
         "</table>"
         '<p class="appendix-hint"><em>See Appendix for the full incident ticket list.</em></p>'
+    )
+
+
+def _render_escalated_summary_html(stats: dict, customer_name: str = "") -> str:
+    """Pre-render the "Escalated Incident Summary" block that closes §1.5.
+
+    Automates what the SOC team previously pasted in by hand each month. The
+    charts (status / priority / resolution / 12-month trend) are injected by the
+    exporters against this block's ``escalated-incident-summary`` anchor, so the
+    heading MUST carry that id — see export/docx_export.py:_CHART_SECTION_MAP.
+
+    Rendered in Python rather than by the LLM because every figure here is an
+    exact count that also has to reconcile against the charts beside it.
+
+    When the escalation field cannot be resolved for the customer, this renders
+    a VISIBLE "pending integration" note rather than nothing. Returning an
+    empty string made an unconfigured field indistinguishable from the feature
+    not being deployed — the section simply looked untouched, with no way for
+    an operator to tell which. The note matches how §1.10-§1.17 report a
+    disconnected source. tools/jira_escalation.py logs which field it resolved,
+    and the Stats page shows it per customer.
+    """
+    import html as _html
+
+    escalated = (stats or {}).get("escalated") or {}
+    heading = ('<h4><a id="escalated-incident-summary"></a>'
+               "Escalated Incident Summary</h4>")
+
+    if not escalated.get("available"):
+        return (
+            heading
+            + "<blockquote><p><strong>Data Source Pending Integration</strong> — "
+              "the Jira escalation field is not configured for this project, so "
+              "escalated incident statistics could not be compiled for this "
+              "period.</p></blockquote>"
+        )
+
+    total = int(stats.get("total") or 0)
+    esc_total = int(escalated.get("total") or 0)
+    team = _html.escape((customer_name or "").strip()) or "the customer"
+
+    if not esc_total:
+        return (
+            heading
+            + f"<p>A total of {total} alerts were triggered during the reporting "
+              "period. No incidents required escalation to the "
+              f"{team} team.</p>"
+        )
+
+    rate = escalated.get("escalation_rate_pct")
+    rate_txt = f" ({rate}% of total alerts)" if isinstance(rate, (int, float)) else ""
+    by_status = escalated.get("by_status") or {}
+    pending = int(by_status.get("Pending") or 0)
+    closed = int(by_status.get("Closed") or 0)
+
+    return (
+        heading
+        + f"<p>A total of {total} alerts were triggered during the reporting "
+          f"period. GSOC successfully triaged and escalated {esc_total} "
+          f"potential incident{'' if esc_total == 1 else 's'}{rate_txt} to the "
+          f"{team} team. Of these, {closed} "
+          f"{'has' if closed == 1 else 'have'} been closed and {pending} "
+          f"{'remains' if pending == 1 else 'remain'} pending.</p>"
     )
 
 
@@ -802,6 +869,8 @@ Output exactly these two things, in this exact order, and nothing else for this 
 
 1. The heading line: `### <a id="15-incident-ticket-summary"></a>1.5. Incident Ticket Summary`
 2. The literal token `<!--INCIDENT_SUMMARY_TABLE-->` on its own line. Output it character-for-character — including the `<!--` and `-->` — exactly as shown.
+
+This token also carries the "Escalated Incident Summary" block that closes the section — its heading, counts, and charts are all built in Python. Do NOT write an escalated heading, an escalated sentence, or any escalated figures yourself, and do NOT mention escalation counts anywhere else in this section.
 
 Do NOT emit any markdown table, narrative paragraph, MTTR commentary, MoM commentary, or top-N list for this section. Do NOT output the `<!--INCIDENT_DETAILS_TABLE-->` token here — it belongs in the Appendix. The detailed narrative analysis lives in §1.18 Trends & Insights.
 
@@ -1580,6 +1649,11 @@ def _build_report_context(data: dict, config: dict) -> dict:
         "top_alerts": _stats.get("top_alerts", {}),
         "monthly_trend": _monthly_trend,
         "assignee_distribution": _stats.get("assignee_distribution", {}),
+        # §1.5 Escalated Incidents. `available` False means the escalation
+        # field could not be resolved for this project — the prompt renders a
+        # "pending integration" placeholder rather than a zero, which would be
+        # indistinguishable from "nothing was escalated".
+        "escalated": _stats.get("escalated") or {"available": False},
         # Derived metrics computed in tools.jira_client._compute_incident_derived_stats:
         # mom_delta, mttr, pending_aging, top_critical_incidents, oldest_pending.
         # The system prompt instructs the LLM to source all trend/aging numbers
@@ -1833,6 +1907,8 @@ def _build_report_context(data: dict, config: dict) -> dict:
         ),
         "incident_summary_html_table": _render_incident_summary_html(_stats),
         "pending_summary_html_table": _render_pending_summary_html(_stats.get("derived", {}) or {}),
+        "escalated_summary_html": _render_escalated_summary_html(
+            _stats, config.get("customer_name", "")),
     }
 
 
@@ -2110,7 +2186,13 @@ async def _run_report_agent(data: dict, config: dict) -> str:
     if PENDING_TICKETS_TOKEN in assembled:
         assembled = assembled.replace(PENDING_TICKETS_TOKEN, pending_html)
 
-    incident_summary_html = ctx.get("incident_summary_html_table") or ""
+    # The Escalated Incident Summary rides along with the §1.5 summary table
+    # rather than owning a second token. It always follows that table, and
+    # hanging it off a token of its own would give the LLM one more marker it
+    # could silently omit — which would drop the block from the report with no
+    # error. Empty string when the escalation field is not configured.
+    incident_summary_html = ((ctx.get("incident_summary_html_table") or "")
+                             + (ctx.get("escalated_summary_html") or ""))
     if INCIDENT_SUMMARY_TOKEN in assembled:
         assembled = assembled.replace(INCIDENT_SUMMARY_TOKEN, incident_summary_html)
 
@@ -2305,7 +2387,14 @@ def run_report_job(job_id: str, config: dict) -> None:
         charts = {}
         if data.get("stats"):
             try:
-                charts = generate_all_charts(data["stats"], end_date=config.get("end_date", ""))
+                charts = generate_all_charts(
+                    data["stats"], end_date=config.get("end_date", ""),
+                    # The 12-month escalated series comes from the same per-month
+                    # Jira queries as the total, so it spans the full window;
+                    # stats["escalated"]["monthly_trend"] only covers the report
+                    # period and is the fallback inside generate_all_charts.
+                    escalated_trend_12m=data.get("monthly_trend_12m_escalated"),
+                )
                 log.info(f"[{job_id[:8]}] Generated {len(charts)} charts")
             except Exception as e:
                 log.error(f"[{job_id[:8]}] Chart generation failed: {e}")

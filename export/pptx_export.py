@@ -1,7 +1,7 @@
 """
 PowerPoint (PPTX) executive deck export for SOC-Report.
 
-Generates a condensed 8-10 slide presentation suitable for management briefings.
+Generates a condensed 8-14 slide presentation suitable for management briefings.
 Uses python-pptx; no PowerPoint template file required (fully programmatic).
 
 Slide structure:
@@ -10,11 +10,13 @@ Slide structure:
   3. Incident Severity (chart)
   4. Incident Trend (12-month chart)
   5. Incident Status / Resolution (chart)
-  6. Top Alerts (chart + top-5 table)
-  7. Pending Tickets (table, if data present)
-  8. SOCRadar Threat Intelligence (if SOCRadar data present)
-  9. Recommendations (table)
- 10. Monitoring Scope + Confidentiality
+  6-9. Escalated Incident Summary — status, priority, resolution and 12-month
+     trend. Present only when the Jira escalation field is configured.
+ 10. Top Alerts (chart + top-5 table)
+ 11. Pending Tickets (table, if data present)
+ 12. SOCRadar Threat Intelligence (if SOCRadar data present)
+ 13. Recommendations (table)
+ 14. Monitoring Scope + Confidentiality
 """
 
 import os
@@ -468,7 +470,25 @@ def generate_pptx(markdown_content: str, customer_name: str, report_date: str,
                       _inches(1), _inches(3), _inches(8), _inches(1),
                       font_size=12, color=_GREY)
 
-    # ── Slide 6: Top Alerts ───────────────────────────────────────────────────
+    # ── Escalated incident slides ─────────────────────────────────────────────
+    # Mirror the four all-incident chart slides above, restricted to escalated
+    # incidents. Skipped entirely when the escalation field is not configured
+    # for the customer — generate_escalated_charts returns nothing in that
+    # case, so the deck simply has no escalated slides rather than four empty
+    # ones. See tools/chart_generator.py:generate_escalated_charts.
+    for chart_key, slide_title in (
+        ("escalated_status", "Escalated Incident Status"),
+        ("escalated_priority", "Escalated Incidents by Priority"),
+        ("escalated_resolution", "Escalated Incident Resolution"),
+        ("escalated_monthly_trend", "12-Month Escalated Incident Trend"),
+    ):
+        if not charts.get(chart_key):
+            continue
+        slide = _content_slide(slide_title)
+        _embed_chart(slide, charts[chart_key],
+                     _inches(0.5), _inches(1.0), _inches(9))
+
+    # ── Slide: Top Alerts ─────────────────────────────────────────────────────
     slide = _content_slide("Top Alerts Triggered")
     if charts.get("top_alerts"):
         _embed_chart(slide, charts["top_alerts"],
