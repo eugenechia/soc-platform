@@ -141,6 +141,32 @@ def _customer_projects(cust: dict) -> list[str]:
     return keys
 
 
+def _escalation_field_label(cust: dict, projects: list[str]) -> str:
+    """How report section 1.5 will resolve this customer's escalation field.
+
+    Surfaced on the Stats page because the field is auto-discovered by name
+    when no explicit override is set — an operator needs to be able to see
+    WHICH field was picked, since a wrongly-matched field would silently
+    publish a wrong escalation count in a customer-facing report. Returns a
+    short human-readable label; never raises.
+    """
+    if not projects:
+        return "no Jira project"
+    try:
+        from tools.jira_escalation import resolve_escalation_field
+        specs = {str(p.get("project_key", "")).strip(): p
+                 for p in (cust.get("jira_projects") or [])}
+        labels = []
+        for pk in projects:
+            res = resolve_escalation_field(pk, specs.get(pk))
+            labels.append(f"{res['field_name']} ({res['source']})" if res
+                          else "not configured")
+        return " · ".join(sorted(set(labels)))
+    except Exception:
+        logger.exception("stats: escalation field resolution failed")
+        return "unknown"
+
+
 def _customer_readiness() -> tuple[list[dict], int]:
     """Return (rows, sentinel_customer_count)."""
     try:
@@ -187,6 +213,7 @@ def _customer_readiness() -> tuple[list[dict], int]:
         rows.append({
             "name": c.get("name") or c.get("id") or "—",
             "projects": projects,
+            "escalation_field": _escalation_field_label(c, projects),
             "tier": tier,
             "on_allowlist": triaged,
             "has_sentinel": has_sentinel,

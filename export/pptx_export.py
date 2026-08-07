@@ -1,7 +1,7 @@
 """
 PowerPoint (PPTX) executive deck export for SOC-Report.
 
-Generates a condensed 8-10 slide presentation suitable for management briefings.
+Generates a condensed 8-14 slide presentation suitable for management briefings.
 Uses python-pptx; no PowerPoint template file required (fully programmatic).
 
 Slide structure:
@@ -10,11 +10,13 @@ Slide structure:
   3. Incident Severity (chart)
   4. Incident Trend (12-month chart)
   5. Incident Status / Resolution (chart)
-  6. Top Alerts (chart + top-5 table)
-  7. Pending Tickets (table, if data present)
-  8. SOCRadar Threat Intelligence (if SOCRadar data present)
-  9. Recommendations (table)
- 10. Monitoring Scope + Confidentiality
+  6-9. Escalated incident mirrors of slides 3-5 and Top Alerts — present only
+     when the Jira escalation field is configured for the customer
+ 10. Top Alerts (chart + top-5 table)
+ 11. Pending Tickets (table, if data present)
+ 12. SOCRadar Threat Intelligence (if SOCRadar data present)
+ 13. Recommendations (table)
+ 14. Monitoring Scope + Confidentiality
 """
 
 import os
@@ -468,7 +470,25 @@ def generate_pptx(markdown_content: str, customer_name: str, report_date: str,
                       _inches(1), _inches(3), _inches(8), _inches(1),
                       font_size=12, color=_GREY)
 
-    # ── Slide 6: Top Alerts ───────────────────────────────────────────────────
+    # ── Escalated incident slides ─────────────────────────────────────────────
+    # Mirror the four all-incident chart slides above, restricted to escalated
+    # incidents. Skipped entirely when the escalation field is not configured
+    # for the customer — generate_escalated_charts returns nothing in that
+    # case, so the deck simply has no escalated slides rather than four empty
+    # ones. See tools/chart_generator.py:generate_escalated_charts.
+    for chart_key, slide_title in (
+        ("escalated_severity", "Escalated Incidents by Severity"),
+        ("escalated_monthly_trend", "12-Month Escalated Incident Trend"),
+        ("escalated_resolution", "Escalated Incident Resolution"),
+        ("escalated_top_alerts", "Top Alerts — Escalated Incidents"),
+    ):
+        if not charts.get(chart_key):
+            continue
+        slide = _content_slide(slide_title)
+        _embed_chart(slide, charts[chart_key],
+                     _inches(0.5), _inches(1.0), _inches(9))
+
+    # ── Slide: Top Alerts ─────────────────────────────────────────────────────
     slide = _content_slide("Top Alerts Triggered")
     if charts.get("top_alerts"):
         _embed_chart(slide, charts["top_alerts"],
@@ -479,7 +499,7 @@ def generate_pptx(markdown_content: str, customer_name: str, report_date: str,
                       font_size=11, color=_GREY)
     alert_headers, alert_rows = _extract_table_rows(soup, "Top Alert", max_rows=5)
     if not alert_headers and not alert_rows:
-        alert_headers, alert_rows = _extract_table_rows(soup, "1.7", max_rows=5)
+        alert_headers, alert_rows = _extract_table_rows(soup, "1.8", max_rows=5)
     if alert_headers and alert_rows:
         _add_table_to_slide(slide, alert_headers[:3], [r[:3] for r in alert_rows],
                             _inches(5.9), _inches(1.2), _inches(3.9), _inches(4.5))
@@ -487,7 +507,7 @@ def generate_pptx(markdown_content: str, customer_name: str, report_date: str,
     # ── Slide 7: Pending Tickets ──────────────────────────────────────────────
     pending_headers, pending_rows = _extract_table_rows(soup, "Pending Ticket", max_rows=8)
     if not pending_headers:
-        pending_headers, pending_rows = _extract_table_rows(soup, "1.14", max_rows=8)
+        pending_headers, pending_rows = _extract_table_rows(soup, "1.15", max_rows=8)
     slide = _content_slide("Pending Tickets")
     if pending_headers and pending_rows:
         _add_table_to_slide(slide, pending_headers[:5], [r[:5] for r in pending_rows],

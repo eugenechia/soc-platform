@@ -75,6 +75,19 @@ _FIELDS = (
 )
 
 
+def _fields_param(extra_fields: str = "") -> str:
+    """The ``fields`` query param, optionally widened by one custom field.
+
+    The escalation flag's field ID is resolved per project at call time (see
+    tools/jira_escalation.py), so it cannot live in the ``_FIELDS`` constant.
+    Appending it here keeps every other caller's payload byte-identical.
+    """
+    extra = (extra_fields or "").strip().strip(",")
+    if not extra or extra in _FIELDS.split(","):
+        return _FIELDS
+    return f"{_FIELDS},{extra}"
+
+
 def fetch_issue_by_key(issue_key: str, fields: str = "*all") -> dict | None:
     """Fetch a single Jira issue by key. Returns the parsed JSON (with `fields`
     populated) or None on any error. Used by the L1 Triage webhook handler to
@@ -101,11 +114,11 @@ def fetch_issue_by_key(issue_key: str, fields: str = "*all") -> dict | None:
 
 
 def jira_search(jql: str, max_results: int = 100, next_page_token: str | None = None,
-                project_spec: dict | None = None) -> dict:
+                project_spec: dict | None = None, extra_fields: str = "") -> dict:
     params = {
         "jql": jql,
         "maxResults": max_results,
-        "fields": _FIELDS,
+        "fields": _fields_param(extra_fields),
     }
     if next_page_token:
         params["nextPageToken"] = next_page_token
@@ -206,7 +219,15 @@ def severity_to_priority(severity: str) -> str | None:
     return _SEVERITY_TO_PRIORITY.get(severity.strip().lower())
 
 
-def _normalize_issue(issue: dict) -> dict:
+def _normalize_issue(issue: dict, escalation: dict | None = None) -> dict:
+    """Flatten a raw Jira issue into the report's incident shape.
+
+    ``escalation`` is the resolution dict from
+    :func:`tools.jira_escalation.resolve_escalation_field`, or None when the
+    field could not be resolved for this project. When None, ``escalated`` is
+    always False and the caller marks the escalated stats block unavailable —
+    so an unresolved field never masquerades as "zero escalations".
+    """
     fields = issue.get("fields", {})
     status = fields.get("status", {})
     priority = fields.get("priority", {})
@@ -218,8 +239,15 @@ def _normalize_issue(issue: dict) -> dict:
 
     raw_severity = (fields.get("customfield_10038") or {}).get("value", "") or (priority.get("name", "") if priority else "")
 
+    escalated = False
+    if escalation:
+        from tools.jira_escalation import is_escalated
+        escalated = is_escalated(fields.get(escalation["field_id"]),
+                                 escalation.get("positive_values") or ())
+
     return {
         "key": issue.get("key", ""),
+        "escalated": escalated,
         "summary": fields.get("summary", ""),
         "status": status.get("name", "") if status else "",
         "priority": priority.get("name", "") if priority else "",
@@ -236,13 +264,14 @@ def _normalize_issue(issue: dict) -> dict:
     }
 
 
-def _fetch_all_pages(jql: str, project_spec: dict | None = None) -> list:
+def _fetch_all_pages(jql: str, project_spec: dict | None = None,
+                     extra_fields: str = "") -> list:
     """Fetch all pages for a JQL query using cursor pagination."""
     all_issues = []
     next_token = None
     while len(all_issues) < 5000:
         result = jira_search(jql, max_results=100, next_page_token=next_token,
-                             project_spec=project_spec)
+                             project_spec=project_spec, extra_fields=extra_fields)
         if "error" in result:
             logger.error(f"Jira fetch error: {result}")
             break
@@ -275,6 +304,10 @@ def fetch_incidents_for_report(project_key: str, start_date: str, end_date: str,
     seen_keys = set()
     all_issues = []
 
+    from tools.jira_escalation import resolve_escalation_field
+    escalation = resolve_escalation_field(project_key, project_spec)
+    extra_fields = escalation["field_id"] if escalation else ""
+
     for chunk_start, chunk_end in _date_chunks(start_date, end_date):
         jql = (
             f'{_incident_jql_filter(project_key, incident_issue_type)} '
@@ -282,21 +315,82 @@ def fetch_incidents_for_report(project_key: str, start_date: str, end_date: str,
             f'AND created < "{chunk_end}" '
             f'ORDER BY created DESC'
         )
-        issues = _fetch_all_pages(jql, project_spec=project_spec)
+        issues = _fetch_all_pages(jql, project_spec=project_spec,
+                                  extra_fields=extra_fields)
         for issue in issues:
             key = issue.get("key")
             if key and key not in seen_keys:
                 seen_keys.add(key)
                 all_issues.append(issue)
 
-    logger.info("fetch_incidents_for_report(%s): total=%d", project_key, len(all_issues))
-    incidents = [_normalize_issue(i) for i in all_issues]
-    stats = _compute_stats(incidents)
+    logger.info("fetch_incidents_for_report(%s): total=%d escalation_field=%s",
+                project_key, len(all_issues),
+                f"{escalation['field_name']} ({escalation['field_id']}, via "
+                f"{escalation['source']})" if escalation else "unresolved")
+    incidents = [_normalize_issue(i, escalation) for i in all_issues]
+    stats = _compute_stats(incidents, escalation_available=bool(escalation))
     stats["derived"] = _compute_incident_derived_stats(incidents, end_date)
+    if escalation:
+        stats["escalated"]["field_name"] = escalation["field_name"]
+        stats["escalated"]["field_id"] = escalation["field_id"]
+        stats["escalated"]["field_source"] = escalation["source"]
     return {"incidents": incidents, "stats": stats}
 
 
-def _compute_stats(incidents: list[dict]) -> dict:
+def _escalation_rate(escalated_total: int, total: int) -> float | None:
+    """Escalated incidents as a percentage of all incidents, or None when
+    there are no incidents to divide by."""
+    if not total:
+        return None
+    return round(escalated_total / total * 100.0, 1)
+
+
+def _compute_escalated_stats(incidents: list[dict], available: bool) -> dict:
+    """Counters over escalated incidents only — the same four breakdowns the
+    report already renders for all incidents (§1.3, §1.4, §1.2 trend, top
+    alerts), restricted to tickets flagged as escalated.
+
+    ``available`` is False when the escalation field could not be resolved for
+    the project. Every counter is then empty AND ``available`` is False, so the
+    report renders "not configured" rather than a chart full of zeros that
+    would read as "nothing was escalated this month".
+    """
+    if not available:
+        return {
+            "available": False, "total": 0, "escalation_rate_pct": None,
+            "by_severity": {}, "by_close_justification": {},
+            "top_alerts": {}, "monthly_trend": {},
+        }
+
+    escalated = [i for i in incidents if i.get("escalated")]
+
+    label_counts = Counter()
+    for i in escalated:
+        for label in i.get("labels") or []:
+            label_counts[label] += 1
+
+    monthly_trend = Counter()
+    for i in escalated:
+        dt = _parse_any_date(i.get("created", ""))
+        if dt:
+            monthly_trend[dt.strftime("%Y-%m")] += 1
+
+    return {
+        "available": True,
+        "total": len(escalated),
+        "escalation_rate_pct": _escalation_rate(len(escalated), len(incidents)),
+        "by_severity": dict(Counter(i.get("severity") or "Unspecified"
+                                    for i in escalated)),
+        "by_close_justification": dict(Counter(
+            i["close_justification"] for i in escalated
+            if i.get("close_justification")
+        )),
+        "top_alerts": dict(label_counts.most_common(10)),
+        "monthly_trend": dict(sorted(monthly_trend.items())),
+    }
+
+
+def _compute_stats(incidents: list[dict], escalation_available: bool = False) -> dict:
     total = len(incidents)
     by_severity = dict(Counter(i["severity"] or "Unspecified" for i in incidents))
     by_status = dict(Counter(i["status"] for i in incidents))
@@ -334,6 +428,7 @@ def _compute_stats(incidents: list[dict]) -> dict:
         "top_alerts": top_alerts,
         "monthly_trend": monthly_trend,
         "assignee_distribution": assignee_counts,
+        "escalated": _compute_escalated_stats(incidents, escalation_available),
     }
 
 
@@ -615,6 +710,15 @@ def _parse_csv_date(date_str: str) -> datetime | None:
     return None
 
 
+def _csv_is_escalated(row: dict, column: str | None) -> bool:
+    """Escalation flag for one CSV row. False when the export has no such
+    column — matched by the same value vocabulary as the live Jira path."""
+    if not column:
+        return False
+    from tools.jira_escalation import is_escalated
+    return is_escalated(row.get(column, ""))
+
+
 def fetch_incidents_from_csv(project_key: str, start_date: str, end_date: str,
                              csv_path: str | None = None) -> dict:
     if not csv_path:
@@ -636,6 +740,16 @@ def fetch_incidents_from_csv(project_key: str, start_date: str, end_date: str,
     incidents = []
     with open(csv_path, "r", encoding="utf-8-sig") as f:
         reader = csv.DictReader(f)
+        # A Jira CSV export names the column after the field, e.g.
+        # "Custom field (Escalated Incident)". Detect it once from the header
+        # so the sample-data path exercises the escalated sections too; when
+        # the export predates the field, the block degrades to unavailable.
+        escalation_col = next(
+            (c for c in (reader.fieldnames or [])
+             if c.lower().startswith("custom field (")
+             and "escalat" in c.lower()),
+            None,
+        )
         for row in reader:
             if row.get("Project key", "") != project_key and project_key:
                 continue
@@ -666,10 +780,15 @@ def fetch_incidents_from_csv(project_key: str, start_date: str, end_date: str,
                 "close_justification": row.get("Custom field (Close Justification)", ""),
                 "resolution_summary": row.get("Custom field (Resolution Summary)", ""),
                 "tactics_list": tactics,
+                "escalated": _csv_is_escalated(row, escalation_col),
             })
 
-    stats = _compute_stats(incidents)
+    stats = _compute_stats(incidents, escalation_available=bool(escalation_col))
     stats["derived"] = _compute_incident_derived_stats(incidents, end_date)
+    if escalation_col:
+        stats["escalated"]["field_name"] = escalation_col
+        stats["escalated"]["field_id"] = escalation_col
+        stats["escalated"]["field_source"] = "csv"
     return {"incidents": incidents, "stats": stats}
 
 
@@ -853,14 +972,23 @@ _MONTHLY_FETCH_SAFETY_BOUND = 200_000
 
 def _fetch_month_count(project_key: str, month_start: str, month_end: str,
                        issue_type: str = DEFAULT_INCIDENT_ISSUE_TYPE,
-                       project_spec: dict | None = None) -> int:
-    """Return the count of incidents for a single month window using cursor pagination.
+                       project_spec: dict | None = None,
+                       escalation: dict | None = None) -> tuple[int, int]:
+    """Return ``(total, escalated)`` incident counts for a single month window.
 
     Uses full pagination — the loop terminates naturally on `isLast` /
     missing nextPageToken / empty page. The safety bound only protects
     against an upstream API bug that would otherwise spin forever; if it is
     ever hit on real data, that is a data-integrity incident, not a normal
     truncation, and is logged at WARNING.
+
+    When ``escalation`` is supplied its field is requested alongside ``created``
+    and the escalated subset is tallied from the SAME paginated pass. That is
+    deliberate: filtering escalated incidents with a second JQL query per month
+    would double this function's 12-queries-per-project cost for no extra
+    accuracy. It also means the escalated series inherits the total series'
+    verification — they are counted from one identical result set, so if the
+    total for a month is complete, so is its escalated subset.
     """
     jql = (
         f'{_incident_jql_filter(project_key, issue_type)} '
@@ -870,10 +998,14 @@ def _fetch_month_count(project_key: str, month_start: str, month_end: str,
     )
     logger.info("_fetch_month_count JQL: %s", jql)
     base_url, headers = _resolve_jira_auth(project_spec)
+    fields = "created"
+    if escalation:
+        fields = f"created,{escalation['field_id']}"
     count = 0
+    escalated_count = 0
     next_token = None
     while count < _MONTHLY_FETCH_SAFETY_BOUND:
-        params: dict = {"jql": jql, "maxResults": 100, "fields": "created"}
+        params: dict = {"jql": jql, "maxResults": 100, "fields": fields}
         if next_token:
             params["nextPageToken"] = next_token
         r = httpx.get(
@@ -889,6 +1021,14 @@ def _fetch_month_count(project_key: str, month_start: str, month_end: str,
         data = r.json()
         issues = data.get("issues", [])
         count += len(issues)
+        if escalation:
+            from tools.jira_escalation import is_escalated
+            positives = escalation.get("positive_values") or ()
+            escalated_count += sum(
+                1 for i in issues
+                if is_escalated((i.get("fields") or {}).get(escalation["field_id"]),
+                                positives)
+            )
         next_token = data.get("nextPageToken")
         if not issues or not next_token or data.get("isLast") is True:
             break
@@ -898,8 +1038,9 @@ def _fetch_month_count(project_key: str, month_start: str, month_end: str,
             "This is unexpected; investigate JIRA volume or pagination behaviour.",
             _MONTHLY_FETCH_SAFETY_BOUND, month_start,
         )
-    logger.info("_fetch_month_count %s: %d issues", month_start, count)
-    return count
+    logger.info("_fetch_month_count %s: %d issues (%d escalated)",
+                month_start, count, escalated_count)
+    return count, escalated_count
 
 
 def fetch_monthly_counts_12m(project_key: str, end_date: str,
@@ -911,6 +1052,11 @@ def fetch_monthly_counts_12m(project_key: str, end_date: str,
     cannot cause the cursor to exhaust the page budget and starve earlier months.
     Each month is an independent paginated query — the same JQL filter used by
     fetch_incidents_for_report ensures consistency with the report data.
+
+    Returns ``{"total": {YYYY-MM: int}, "escalated": {YYYY-MM: int} | None}``.
+    ``escalated`` is None when the escalation field could not be resolved for
+    this project — distinct from a dict of zeros, which would mean the field
+    resolved and genuinely nothing was escalated.
     """
     from dateutil.relativedelta import relativedelta
 
@@ -918,23 +1064,31 @@ def fetch_monthly_counts_12m(project_key: str, end_date: str,
         end_dt = datetime.strptime(end_date, "%Y-%m-%d")
     except ValueError:
         logger.warning("fetch_monthly_counts_12m: invalid end_date %s", end_date)
-        return {}
+        return {"total": {}, "escalated": None}
 
     end_month = end_dt.replace(day=1)
 
+    from tools.jira_escalation import resolve_escalation_field
+    escalation = resolve_escalation_field(project_key, project_spec)
+
     monthly_counts: dict[str, int] = {}
+    escalated_counts: dict[str, int] = {}
     for i in range(11, -1, -1):
         m = end_month - relativedelta(months=i)
         month_key = m.strftime("%Y-%m")
         month_start = m.strftime("%Y-%m-%d")
         month_end = (m + relativedelta(months=1)).strftime("%Y-%m-%d")
-        count = _fetch_month_count(project_key, month_start, month_end,
-                                   issue_type=incident_issue_type,
-                                   project_spec=project_spec)
+        count, escalated = _fetch_month_count(project_key, month_start, month_end,
+                                              issue_type=incident_issue_type,
+                                              project_spec=project_spec,
+                                              escalation=escalation)
         monthly_counts[month_key] = count
-        logger.info("fetch_monthly_counts_12m(%s): %s = %d", project_key, month_key, count)
+        escalated_counts[month_key] = escalated
+        logger.info("fetch_monthly_counts_12m(%s): %s = %d (%d escalated)",
+                    project_key, month_key, count, escalated)
 
-    return monthly_counts
+    return {"total": monthly_counts,
+            "escalated": escalated_counts if escalation else None}
 
 
 # ── Multi-project orchestrator ───────────────────────────────────────────────
@@ -966,6 +1120,46 @@ def _sum_count_dicts(dicts: list[dict]) -> dict:
             except (TypeError, ValueError):
                 continue
     return out
+
+
+def _merge_escalated_stats(results: list[dict], total_incidents: int) -> dict:
+    """Combine per-project escalated blocks into one.
+
+    Marked available only when EVERY project resolved its escalation field. A
+    customer whose second Jira project lacks the field would otherwise get a
+    total that silently omits that project's escalations — a wrong number in a
+    client-facing report is worse than an honest "not configured".
+    """
+    blocks = [(r.get("stats") or {}).get("escalated") or {} for r in results]
+    unavailable = [r.get("project_key") or r.get("project_name") or "?"
+                   for r, b in zip(results, blocks) if not b.get("available")]
+    if unavailable:
+        logger.warning(
+            "escalated stats unavailable for project(s) %s — suppressing the "
+            "escalated section for this customer rather than reporting a "
+            "partial total across %d project(s)",
+            ", ".join(unavailable), len(results),
+        )
+        return _compute_escalated_stats([], available=False)
+
+    escalated_total = sum(int(b.get("total") or 0) for b in blocks)
+    merged = {
+        "available": True,
+        "total": escalated_total,
+        "escalation_rate_pct": _escalation_rate(escalated_total, total_incidents),
+    }
+    for key in ("by_severity", "by_close_justification", "top_alerts", "monthly_trend"):
+        summed = _sum_count_dicts([b.get(key) or {} for b in blocks])
+        if key == "top_alerts":
+            summed = dict(sorted(summed.items(), key=lambda kv: kv[1], reverse=True)[:10])
+        elif key == "monthly_trend":
+            summed = dict(sorted(summed.items()))
+        merged[key] = summed
+
+    names = sorted({b.get("field_name") for b in blocks if b.get("field_name")})
+    if names:
+        merged["field_name"] = " / ".join(names)
+    return merged
 
 
 def _merge_project_results(results: list[dict]) -> dict:
@@ -1015,6 +1209,8 @@ def _merge_project_results(results: list[dict]) -> dict:
             merged = dict(sorted(merged.items()))
         merged_stats[key] = merged
 
+    merged_stats["escalated"] = _merge_escalated_stats(results, total_incidents)
+
     # --- service requests / change requests ----------------------------------
     def _merge_ticket_bucket(bucket_key: str) -> dict | None:
         buckets = [r.get(bucket_key) for r in results if r.get(bucket_key) is not None]
@@ -1041,6 +1237,14 @@ def _merge_project_results(results: list[dict]) -> dict:
     if trend_dicts:
         merged_monthly_trend_12m = dict(sorted(_sum_count_dicts(trend_dicts).items()))
 
+    # The escalated 12-month series merges only when EVERY project resolved the
+    # escalation field. A partial merge would silently undercount a multi-project
+    # customer — better to show "not configured" than a wrong number.
+    esc_trend_dicts = [r.get("monthly_trend_12m_escalated") for r in results]
+    merged_escalated_12m: dict | None = None
+    if trend_dicts and all(isinstance(d, dict) for d in esc_trend_dicts):
+        merged_escalated_12m = dict(sorted(_sum_count_dicts(esc_trend_dicts).items()))
+
     out: dict = {
         "incidents": merged_incidents,
         "stats": merged_stats,
@@ -1057,6 +1261,8 @@ def _merge_project_results(results: list[dict]) -> dict:
         out["change_requests"] = merged_change_requests
     if merged_monthly_trend_12m is not None:
         out["monthly_trend_12m"] = merged_monthly_trend_12m
+    if merged_escalated_12m is not None:
+        out["monthly_trend_12m_escalated"] = merged_escalated_12m
     return out
 
 
@@ -1110,11 +1316,17 @@ def _fetch_project_data(project_spec: dict, customer_record: dict,
             issue_type=cr_issue_type, project_spec=project_spec,
         )
     if not csv_path and proj_key and not skip_monthly_trend:
-        out["monthly_trend_12m"] = fetch_monthly_counts_12m(
+        counts_12m = fetch_monthly_counts_12m(
             proj_key, end_date,
             incident_issue_type=incident_issue_type,
             project_spec=project_spec,
         )
+        # `monthly_trend_12m` keeps its historical flat {YYYY-MM: int} shape —
+        # routes/reports.py gates report generation on verifying it, and the
+        # escalated series is intentionally not part of that contract.
+        out["monthly_trend_12m"] = counts_12m.get("total") or {}
+        if counts_12m.get("escalated") is not None:
+            out["monthly_trend_12m_escalated"] = counts_12m["escalated"]
 
     return out
 

@@ -1,4 +1,5 @@
 import os
+import re
 import logging
 from io import BytesIO
 from datetime import datetime
@@ -349,13 +350,31 @@ _CHART_SECTION_MAP = {
     "monthly_trend": "1.2",
     "severity": "1.3",
     "resolution": "1.4",
-    "sentinel_utilization": "1.10",
-    "sentinel_top_alerts": "1.11",
-    "total_assets": "1.12",
-    "sensor_health": "1.13",
-    "vulnerability_severity": "1.14",
-    "vulnerability_exposed_devices": "1.16",
+    "escalated_severity": "1.5",
+    "escalated_resolution": "1.5",
+    "escalated_monthly_trend": "1.5",
+    "escalated_top_alerts": "1.5",
+    "sentinel_utilization": "1.11",
+    "sentinel_top_alerts": "1.12",
+    "total_assets": "1.13",
+    "sensor_health": "1.14",
+    "vulnerability_severity": "1.15",
+    "vulnerability_exposed_devices": "1.17",
 }
+
+# Section numbers are matched on the heading's LEADING number, not as a
+# substring. Substring matching made "1.2" also match "1.21 Security Posture
+# Improvements" — harmless only because 1.2 happens to appear first in the
+# document and the entry is deleted once consumed. Adding sections makes that
+# ordering luck fragile, so match exactly.
+_SECTION_NUM_RE = re.compile(r"^\s*(\d+\.\d+)")
+
+
+def _section_number_of(heading_text: str) -> str:
+    """The leading section number of a heading, e.g. "1.5" from
+    "1.5. Escalated Incidents". Empty string when the heading has none."""
+    m = _SECTION_NUM_RE.match(heading_text or "")
+    return m.group(1) if m else ""
 
 
 def generate_docx(markdown_content: str, customer_name: str, report_date: str,
@@ -406,8 +425,11 @@ def generate_docx(markdown_content: str, customer_name: str, report_date: str,
         """Insert any charts that match this heading's section number."""
         if not chart_inject:
             return
+        heading_number = _section_number_of(heading_text)
+        if not heading_number:
+            return
         for section_id, chart_list in list(chart_inject.items()):
-            if section_id in heading_text:
+            if section_id == heading_number:
                 for png_bytes in chart_list:
                     try:
                         img_buf = BytesIO(png_bytes)

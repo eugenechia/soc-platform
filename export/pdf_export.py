@@ -1,4 +1,5 @@
 import os
+import re
 import base64
 import logging
 from datetime import datetime
@@ -319,43 +320,68 @@ _CHART_SECTION_MAP = {
     "monthly_trend": "1.2",
     "severity": "1.3",
     "resolution": "1.4",
-    "sentinel_utilization": "1.10",
-    "sentinel_top_alerts": "1.11",
-    "total_assets": "1.12",
-    "sensor_health": "1.13",
-    "vulnerability_severity": "1.14",
-    "vulnerability_exposed_devices": "1.16",
+    "escalated_severity": "1.5",
+    "escalated_resolution": "1.5",
+    "escalated_monthly_trend": "1.5",
+    "escalated_top_alerts": "1.5",
+    "sentinel_utilization": "1.11",
+    "sentinel_top_alerts": "1.12",
+    "total_assets": "1.13",
+    "sensor_health": "1.14",
+    "vulnerability_severity": "1.15",
+    "vulnerability_exposed_devices": "1.17",
 }
 
 
+_HEADING_RE = re.compile(r"<h([23])[^>]*>(.*?)</h\1>", re.IGNORECASE | re.DOTALL)
+_TAG_RE = re.compile(r"<[^>]+>")
+# Section numbers are matched on the heading's LEADING number, not as a
+# substring anywhere in the heading. Substring matching made "1.2" also match
+# "1.21 Security Posture Improvements"; only document order saved it. Keep in
+# sync with export/docx_export.py:_section_number_of.
+_SECTION_NUM_RE = re.compile(r"^\s*(\d+\.\d+)")
+
+
+def _section_number_of(heading_html: str) -> str:
+    """The leading section number of a heading, e.g. "1.5" from
+    ``<a id="..."></a>1.5. Escalated Incidents``. "" when there is none."""
+    m = _SECTION_NUM_RE.match(_TAG_RE.sub("", heading_html or ""))
+    return m.group(1) if m else ""
+
+
 def _inject_charts_into_html(html: str, charts: dict) -> str:
-    """Insert chart images after matching section headings in the HTML."""
+    """Insert chart images after matching section headings in the HTML.
+
+    Charts belonging to the same section are inserted together, in the order
+    ``charts`` supplies them. Inserting them one at a time (each immediately
+    after the heading) would emit them in reverse — which did not matter while
+    every section had at most one chart, but §1.5 has four.
+    """
     if not charts:
         return html
 
+    by_section: dict[str, list[bytes]] = {}
     for chart_name, png_bytes in charts.items():
         if not png_bytes:
             continue
         section_id = _CHART_SECTION_MAP.get(chart_name)
-        if not section_id:
+        if section_id:
+            by_section.setdefault(section_id, []).append(png_bytes)
+    if not by_section:
+        return html
+
+    pieces: list[str] = []
+    cursor = 0
+    for match in _HEADING_RE.finditer(html):
+        section_id = _section_number_of(match.group(2))
+        pngs = by_section.pop(section_id, None) if section_id else None
+        if not pngs:
             continue
-
-        img_tag = _build_chart_img_tag(png_bytes)
-
-        # Find the heading containing the section number and insert chart after it
-        # Match heading content that may contain inline HTML (e.g. <a id="...">)
-        # but must not span across multiple headings
-        import re
-        pattern = re.compile(
-            rf'(<h([23])[^>]*>(?:(?!</h\2>).)*?{re.escape(section_id)}(?:(?!</h\2>).)*?</h\2>)',
-            re.IGNORECASE | re.DOTALL
-        )
-        match = pattern.search(html)
-        if match:
-            insert_pos = match.end()
-            html = html[:insert_pos] + img_tag + html[insert_pos:]
-
-    return html
+        pieces.append(html[cursor:match.end()])
+        pieces.extend(_build_chart_img_tag(p) for p in pngs)
+        cursor = match.end()
+    pieces.append(html[cursor:])
+    return "".join(pieces)
 
 
 def _wrap_tables_for_centering(html: str) -> str:

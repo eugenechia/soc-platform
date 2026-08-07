@@ -127,7 +127,7 @@ def _render_socradar_alarms_html(alarms: list) -> str:
 # brevity" warning.
 #
 # As of the 2026 restructure, the full incident details table now lives in the
-# Appendix (section 2.1) rather than in section 1.5. The token still works the
+# Appendix (section 2.1) rather than in section 1.6. The token still works the
 # same way — only the section it lands in has changed.
 INCIDENT_DETAILS_TOKEN = "<!--INCIDENT_DETAILS_TABLE-->"
 
@@ -140,7 +140,7 @@ INCIDENT_DETAILS_TOKEN = "<!--INCIDENT_DETAILS_TABLE-->"
 # Full pending tickets table lives in Appendix section 2.2 post-restructure.
 PENDING_TICKETS_TOKEN = "<!--PENDING_TICKETS_TABLE-->"
 
-# Summary tokens for sections 1.5 and 1.8 in the report body. These resolve
+# Summary tokens for sections 1.6 and 1.9 in the report body. These resolve
 # to small "executive-glance" tables — severity/status counters plus the top
 # 5 most critical / oldest pending tickets — instead of the full row list.
 # Full lists live in the Appendix; readers who want detail follow the
@@ -169,7 +169,7 @@ def _render_incident_details_html(incidents: list) -> str:
     in the prompt. Caller swaps INCIDENT_DETAILS_TOKEN for this string after
     the LLM has produced the section heading + intro.
 
-    Columns / formatting match the previous Section 1.5 prompt:
+    Columns / formatting match the previous Section 1.6 prompt:
       Incident ID | Date | Incident Subject | Category | Severity | Status | TP/FP/BP
     """
     if not incidents:
@@ -248,7 +248,7 @@ def _render_incident_details_html(incidents: list) -> str:
 def _render_pending_tickets_html(pending: list) -> str:
     """Pre-render the Pending Tickets table as HTML.
 
-    Columns match the previous Section 1.8 prompt:
+    Columns match the previous Section 1.9 prompt:
       Incident ID | Incident Subject | Severity | Created | Status
 
     Sorted by created date descending (most recent first).
@@ -315,7 +315,7 @@ def _render_pending_tickets_html(pending: list) -> str:
 
 
 def _render_incident_summary_html(stats: dict) -> str:
-    """Pre-render the Section 1.5 executive summary as a single at-a-glance table.
+    """Pre-render the Section 1.6 executive summary as a single at-a-glance table.
 
     Per client feedback (Jun 2026): execs want numbers in one table, no prose,
     no MTTR, no MoM, no top-5 list. One row for Total, one row per severity
@@ -367,7 +367,7 @@ def _render_incident_summary_html(stats: dict) -> str:
 
 
 def _render_pending_summary_html(derived: dict) -> str:
-    """Pre-render the Section 1.8 executive summary as a single aging table.
+    """Pre-render the Section 1.9 executive summary as a single aging table.
 
     Per client feedback (Jun 2026): execs want one at-a-glance table. No top-5
     oldest list, no narrative. Total + aging buckets + oldest-age value, period.
@@ -686,19 +686,20 @@ REPORT_SECTIONS = [
     {"id": "incident_overview", "label": "1.2 Incident Overview", "source": "jira"},
     {"id": "incident_severity", "label": "1.3 Incident Severity", "source": "jira"},
     {"id": "incident_status", "label": "1.4 Incident Status", "source": "jira"},
-    {"id": "incident_details", "label": "1.5 Incident Ticket Summary", "source": "jira"},
-    {"id": "service_requests", "label": "1.6 Service Requests Summary", "source": "jira"},
-    {"id": "change_requests", "label": "1.7 Change Requests Summary", "source": "jira"},
-    {"id": "pending_tickets", "label": "1.8 Pending Tickets Summary", "source": "jira"},
-    {"id": "monitoring_scope", "label": "1.9 GSOC Monitoring Scope", "source": "jira"},
-    {"id": "sentinel_utilization", "label": "1.10 Sentinel Monthly Utilization", "source": "sentinel"},
-    {"id": "top_alerts_sentinel", "label": "1.11 Top Alert Triggered on Sentinel", "source": "sentinel"},
-    {"id": "total_assets", "label": "1.12 Total Assets Under Monitoring", "source": "sentinel"},
-    {"id": "sensor_health", "label": "1.13 Managed Assets by Sensor Health State", "source": "sentinel"},
-    {"id": "vulnerability_details", "label": "1.14 Vulnerability Details", "source": "sentinel"},
-    {"id": "threat_analytics", "label": "1.15 Threat Analytics Hunting", "source": "sentinel"},
-    {"id": "vulnerability_devices", "label": "1.16 Monthly Vulnerability Exposed Devices", "source": "sentinel"},
-    {"id": "ioc_update", "label": "1.17 Indicators of Compromise (IOC) Update", "source": "sentinel"},
+    {"id": "escalated_incidents", "label": "1.5 Escalated Incidents", "source": "jira"},
+    {"id": "incident_details", "label": "1.6 Incident Ticket Summary", "source": "jira"},
+    {"id": "service_requests", "label": "1.7 Service Requests Summary", "source": "jira"},
+    {"id": "change_requests", "label": "1.8 Change Requests Summary", "source": "jira"},
+    {"id": "pending_tickets", "label": "1.9 Pending Tickets Summary", "source": "jira"},
+    {"id": "monitoring_scope", "label": "1.10 GSOC Monitoring Scope", "source": "jira"},
+    {"id": "sentinel_utilization", "label": "1.11 Sentinel Monthly Utilization", "source": "sentinel"},
+    {"id": "top_alerts_sentinel", "label": "1.12 Top Alert Triggered on Sentinel", "source": "sentinel"},
+    {"id": "total_assets", "label": "1.13 Total Assets Under Monitoring", "source": "sentinel"},
+    {"id": "sensor_health", "label": "1.14 Managed Assets by Sensor Health State", "source": "sentinel"},
+    {"id": "vulnerability_details", "label": "1.15 Vulnerability Details", "source": "sentinel"},
+    {"id": "threat_analytics", "label": "1.16 Threat Analytics Hunting", "source": "sentinel"},
+    {"id": "vulnerability_devices", "label": "1.17 Monthly Vulnerability Exposed Devices", "source": "sentinel"},
+    {"id": "ioc_update", "label": "1.18 Indicators of Compromise (IOC) Update", "source": "sentinel"},
     {"id": "splunk_event_volume", "label": "Splunk Event Volume", "source": "splunk"},
     {"id": "splunk_top_alerts", "label": "Top Alerts from Splunk", "source": "splunk"},
     {"id": "socradar_threat_intel", "label": "SOCRadar Threat Intelligence", "source": "socradar"},
@@ -707,9 +708,9 @@ REPORT_SECTIONS = [
     # All four use source "general" so they ship in a single composite payload
     # that includes Jira derived stats + Sentinel/Splunk/SOCRadar summaries —
     # needed for cross-source recommendations and Trends & Insights narrative.
-    {"id": "trends_insights", "label": "1.18 Trends & Insights", "source": "general"},
-    {"id": "recommendations", "label": "1.19 GSOC Recommendation Summary", "source": "general"},
-    {"id": "posture_improvements", "label": "1.20 Security Posture Improvements", "source": "general"},
+    {"id": "trends_insights", "label": "1.19 Trends & Insights", "source": "general"},
+    {"id": "recommendations", "label": "1.20 GSOC Recommendation Summary", "source": "general"},
+    {"id": "posture_improvements", "label": "1.21 Security Posture Improvements", "source": "general"},
     # ── Appendix: detailed lists deferred from the executive sections above ──
     {"id": "appendix", "label": "2. Appendix", "source": "general"},
 ]
@@ -739,7 +740,7 @@ CRITICAL RULES:
 - Use markdown formatting throughout
 - Include specific numbers, dates, and details from the provided data
 - Do NOT fabricate or hallucinate data - use only what is provided
-- **NUMBERS RULE**: When citing derived metrics (month-over-month deltas, percent change, three-month averages, mean time to resolution, ticket aging buckets), you MUST take the exact value from the pre-computed `derived` block in the data. Do NOT compute, estimate, or round these yourself. Field paths depend on which sections you are generating: for Jira-source sections (1.1–1.9), look at `derived.*` at the JSON root; for the meta-analysis sections (1.18 Trends & Insights, 1.19 Recommendations, 2. Appendix), look at `jira.derived.*` and `sentinel.utilization_mom_delta`.
+- **NUMBERS RULE**: When citing derived metrics (month-over-month deltas, percent change, three-month averages, mean time to resolution, ticket aging buckets), you MUST take the exact value from the pre-computed `derived` block in the data. Do NOT compute, estimate, or round these yourself. Field paths depend on which sections you are generating: for Jira-source sections (1.1–1.10), look at `derived.*` at the JSON root; for the meta-analysis sections (1.19 Trends & Insights, 1.20 Recommendations, 2. Appendix), look at `jira.derived.*` and `sentinel.utilization_mom_delta`.
 - **CLIENT-FACING LANGUAGE RULE**: This is a customer-facing security report. NEVER expose internal JSON field names, code-style identifiers, or programmer terminology in your output. FORBIDDEN: writing things like `jira.derived.mom_delta.insufficient_data is true`, `(resolved_count: 0)`, `customer_advisories.threat_analytics`, or any backtick-wrapped field name. REQUIRED: rephrase in plain English. When a derived field signals insufficient data, write "Insufficient historical data is available to perform a month-over-month comparison this period" — NOT "jira.derived.mom_delta.insufficient_data is true". When `mttr.insufficient_data` is true, write "No resolved incidents were recorded in the dataset for this period" — NOT mentioning the field name. Treat field names as private implementation detail; the reader only sees prose.
 - For an assigned section whose data source is NOT connected (marked as UNAVAILABLE below), generate a placeholder block exactly like this:
   > **Data Source Pending Integration** — This section requires data from [source name] which is not yet connected. Data will be populated once the integration is configured.
@@ -795,17 +796,39 @@ Write 2-4 paragraphs covering:
   - Incident resolution rate (percentage closed = `(total - pending) / total * 100`).
   - True vs Benign Positive breakdown and what it says about detection-rule fidelity.
 
-**### 1.5. Incident Ticket Summary** (if "incident_details" is selected)
+**### 1.5. Escalated Incidents** (if "escalated_incidents" is selected)
+This section re-cuts the incident statistics above over ESCALATED incidents only — the subset flagged as escalated in Jira. Every number comes from the `escalated` block in the data.
+
+FIRST, check `escalated.available`:
+- If it is false, the escalation flag is not configured for this customer's Jira project. Output ONLY the heading and this placeholder, then stop:
+  > **Data Source Pending Integration** — Escalated incident tracking is not currently configured for this Jira project. This section will be populated once the escalation field is available.
+- If it is true, continue with the full section below.
+
+Use the heading: `### <a id="15-escalated-incidents"></a>1.5. Escalated Incidents`
+
+Write:
+- An opening paragraph stating the total escalated incidents (`escalated.total`) out of `total_incidents` for the period, and the escalation rate (`escalated.escalation_rate_pct`, already a percentage — cite it verbatim, do NOT recompute). Explain in one sentence what escalation means operationally: these are the incidents GSOC judged to require customer action or higher-tier response rather than closure at L1.
+- A severity breakdown of escalated incidents from `escalated.by_severity`, listing each severity present with its count. Comment on whether escalations skew toward higher severities — which is the expected and healthy pattern — or whether low-severity escalations are common, which suggests triage criteria need tightening.
+- A resolution breakdown from `escalated.by_close_justification` (True Positive / False Positive / Benign Positive, plus any pending remainder). The True Positive share of escalations is the key quality signal: a high share means escalation judgement is sound, a low share means incidents are being escalated that L1 could have closed.
+- If `escalated.top_alerts` is non-empty, name the top 2-3 alert types driving escalations with their counts.
+- A short "Key Insights:" block: what the escalation rate and its severity mix say about detection tuning and analyst workload.
+
+RULES for this section:
+- If `escalated.total` is 0 while `escalated.available` is true, write "No incidents were escalated during this reporting period." and add one sentence of context on what that indicates. Do NOT show the Data Source Pending placeholder — the difference matters.
+- Cite `escalated.escalation_rate_pct` verbatim. Never compute your own percentage.
+- Do NOT list individual escalated ticket IDs here; this is a statistics section.
+
+**### 1.6. Incident Ticket Summary** (if "incident_details" is selected)
 EXECUTIVE AT-A-GLANCE SECTION — no prose, no analysis, no narrative. Just the heading and the pre-rendered summary table, nothing else. The summary table is built in Python and substituted by the report assembly step; it shows Total Incidents and a per-severity count breakdown (Critical / High / Medium / Low / Informational / Lowest, only severities present in the data).
 
 Output exactly these two things, in this exact order, and nothing else for this section:
 
-1. The heading line: `### <a id="15-incident-ticket-summary"></a>1.5. Incident Ticket Summary`
+1. The heading line: `### <a id="16-incident-ticket-summary"></a>1.6. Incident Ticket Summary`
 2. The literal token `<!--INCIDENT_SUMMARY_TABLE-->` on its own line. Output it character-for-character — including the `<!--` and `-->` — exactly as shown.
 
-Do NOT emit any markdown table, narrative paragraph, MTTR commentary, MoM commentary, or top-N list for this section. Do NOT output the `<!--INCIDENT_DETAILS_TABLE-->` token here — it belongs in the Appendix. The detailed narrative analysis lives in §1.18 Trends & Insights.
+Do NOT emit any markdown table, narrative paragraph, MTTR commentary, MoM commentary, or top-N list for this section. Do NOT output the `<!--INCIDENT_DETAILS_TABLE-->` token here — it belongs in the Appendix. The detailed narrative analysis lives in §1.19 Trends & Insights.
 
-**### 1.6. Service Requests Summary** (if "service_requests" is selected)
+**### 1.7. Service Requests Summary** (if "service_requests" is selected)
 If service_requests.unavailable is true, show the placeholder block noting the issue type is not configured in this Jira project.
 Otherwise:
 - State total Service Requests raised during the period
@@ -813,7 +836,7 @@ Otherwise:
 - Include all items; if empty show "No service requests raised during this period."
 - Provide a 1-paragraph summary of request trends (most common priority, most common status)
 
-**### 1.7. Change Requests Summary** (if "change_requests" is selected)
+**### 1.8. Change Requests Summary** (if "change_requests" is selected)
 If change_requests.unavailable is true, show the placeholder block noting the issue type is not configured in this Jira project.
 Otherwise:
 - State total Change Requests raised during the period
@@ -821,18 +844,18 @@ Otherwise:
 - Include all items; if empty show "No change requests raised during this period."
 - Provide a 1-paragraph summary noting change volume and any pending/open changes that require attention
 
-**### 1.10. Sentinel Monthly Utilization** (if "sentinel_utilization" is selected, REQUIRES SENTINEL)
+**### 1.11. Sentinel Monthly Utilization** (if "sentinel_utilization" is selected, REQUIRES SENTINEL)
 If Microsoft Sentinel is NOT connected, show the placeholder block. If connected but no data for the period, write a brief note stating no activity was recorded.
 Otherwise:
 - State the total ingestion for the period (in GB) and the average daily ingestion (in GB/day).
 - Identify the top 3 spike days from utilization_top_spike_days (if non-empty) and write a one-sentence comment about them — what dates they occurred and the GB value.
 - Do NOT render any per-day table or list. The chart visualises the daily curve; a tabular daily breakdown would be redundant and noisy in the PDF.
 
-**### 1.11. Top Alert Triggered on Sentinel** (if "top_alerts_sentinel" is selected, REQUIRES SENTINEL)
+**### 1.12. Top Alert Triggered on Sentinel** (if "top_alerts_sentinel" is selected, REQUIRES SENTINEL)
 If Microsoft Sentinel is NOT connected, show the placeholder block. If connected but no data for the period, write a brief note stating no activity was recorded.
 Otherwise: Table showing top alerts with count, sorted by frequency.
 
-**### 1.12. Total Assets Under Monitoring** (if "total_assets" is selected, REQUIRES SENTINEL)
+**### 1.13. Total Assets Under Monitoring** (if "total_assets" is selected, REQUIRES SENTINEL)
 If Microsoft Sentinel is NOT connected, show the placeholder block.
 Otherwise, write the section based on the value of sentinel.total_assets_source. Substitute the actual integer from sentinel.total_assets where the text below says N:
 - If total_assets_source is "mde": State "N endpoints are under Microsoft Defender for Endpoint monitoring." with 1-2 sentences of analysis.
@@ -842,7 +865,7 @@ Otherwise, write the section based on the value of sentinel.total_assets_source.
 
 After that statement, add 1-2 sentences describing the fleet composition using `sentinel.os_breakdown` (whole-fleet counts per OS platform). Group the raw OS strings into families — Windows Client, Windows Server, Windows AVD, macOS, Linux, Android, iOS — and name the largest two or three with their counts. The counts MUST come from `os_breakdown`; they sum to `sentinel.total_assets`. Never count `sentinel.sensor_health` — that list is a capped sample, not the fleet.
 
-**### 1.13. Managed Assets by Sensor Health State** (if "sensor_health" is selected, REQUIRES SENTINEL)
+**### 1.14. Managed Assets by Sensor Health State** (if "sensor_health" is selected, REQUIRES SENTINEL)
 If Microsoft Sentinel is NOT connected, show the placeholder block.
 
 CRITICAL — two different data shapes, do not confuse them:
@@ -857,7 +880,7 @@ Otherwise, render based on sentinel.sensor_health_source:
 - If sensor_health_source is "heartbeat": Render the same two blocks, but title the first "**Sentinel Agent Heartbeat (EDR not connected)**" and label the second table's columns Computer | OS | Last Heartbeat | Status, using DeviceName, OSPlatform, LastSeen (formatted YYYY-MM-DD HH:MM), and HealthStatus. After the tables, add: "**Note**: This table reflects Sentinel agent (Microsoft Monitoring Agent / Azure Monitor Agent) heartbeat status, not EDR sensor health. To enable EDR sensor health visibility, connect Microsoft Defender for Endpoint or CrowdStrike to this customer's Sentinel workspace."
 - If sensor_health_source is "none": State "Sensor health visibility is currently unavailable. Neither Microsoft Defender for Endpoint, CrowdStrike, nor Sentinel agent heartbeat returned device data for this period. **Recommended action**: verify Sentinel agent installation OR enable an EDR connector."
 
-**### 1.14. Vulnerability Details** (if "vulnerability_details" is selected, REQUIRES SENTINEL)
+**### 1.15. Vulnerability Details** (if "vulnerability_details" is selected, REQUIRES SENTINEL)
 If Microsoft Sentinel is NOT connected, show the placeholder block.
 Otherwise, render based on whether `sentinel.vulnerability_by_severity` is populated:
 
@@ -885,7 +908,7 @@ Otherwise, render based on whether `sentinel.vulnerability_by_severity` is popul
 
 - **If empty**: State "Vulnerability intelligence is currently unavailable for this customer. This section is populated by Microsoft Defender for Endpoint with the Threat & Vulnerability Management (TVM) module — specifically the `DeviceTvmSoftwareVulnerabilities` table. TVM is not currently active for this customer's Sentinel workspace. **Recommended action**: enable Microsoft Defender XDR's TVM module to populate this section."
 
-**### 1.15. Threat Analytics Hunting** (if "threat_analytics" is selected, REQUIRES SENTINEL)
+**### 1.16. Threat Analytics Hunting** (if "threat_analytics" is selected, REQUIRES SENTINEL)
 If Microsoft Sentinel is NOT connected, show the placeholder block.
 
 Produce the section in two distinct parts, in this exact order:
@@ -921,13 +944,13 @@ Produce the section in two distinct parts, in this exact order:
 
 4. One short paragraph (2-3 sentences) commenting on what the indicator-type mix says about the active threat landscape — what's dominant and what it implies for detection coverage. Do NOT repeat the table content row-by-row in prose.
 
-**### 1.16. Monthly Vulnerability Exposed Devices** (if "vulnerability_devices" is selected, REQUIRES SENTINEL)
+**### 1.17. Monthly Vulnerability Exposed Devices** (if "vulnerability_devices" is selected, REQUIRES SENTINEL)
 If Microsoft Sentinel is NOT connected, show the placeholder block.
 Otherwise, render based on whether `sentinel.vulnerability_exposed_devices` is populated:
 - If populated: Statistics on exposed devices, recommendation to patch immediately.
 - If empty: State "Per-device vulnerability exposure data is currently unavailable. This section requires Microsoft Defender for Endpoint with the Threat & Vulnerability Management (TVM) module — specifically the `DeviceTvmSoftwareVulnerabilities` table. TVM is not currently active for this customer. **Recommended action**: enable Microsoft Defender XDR's TVM module to populate this section."
 
-**### 1.17. Indicators of Compromise (IOC) Update** (if "ioc_update" is selected, REQUIRES SENTINEL)
+**### 1.18. Indicators of Compromise (IOC) Update** (if "ioc_update" is selected, REQUIRES SENTINEL)
 If Microsoft Sentinel is NOT connected, show the placeholder block.
 
 Produce the section in two distinct parts, in this exact order:
@@ -952,7 +975,7 @@ Produce the section in two distinct parts, in this exact order:
 2. One short paragraph stating the total IOC count added to the TI repository during the period, drawn from the length of `sentinel.ioc_updates`.
 
 3. A markdown table with columns: `Date | Indicator Type | Value | Confidence | Tags`. Source rows from `sentinel.ioc_updates` (fields: `Id`, `ObservableKey`, `ObservableValue`, `Pattern`, `Tags`, `Confidence`, `TimeGenerated`).
-   - Map `ObservableKey` to a human-readable Indicator Type (same mapping as §1.15 above).
+   - Map `ObservableKey` to a human-readable Indicator Type (same mapping as §1.16 above).
    - `ObservableValue` is the actual indicator value (IP, URL, domain, hash, etc.).
    - `Confidence` is an integer 0-100; display as a percentage (e.g. "100%").
    - `Tags` is a comma-separated string; show the first 2-3 meaningful tags (skip internal ones like `p:default`, `ic:*`, `vic:*`, `gid:*`, `cid:*`).
@@ -966,24 +989,24 @@ Otherwise: Total event count ingested during the period, breakdown by index, and
 If Splunk is NOT connected (not listed in available data sources), show the placeholder block. If connected but no data for the period, write a brief note stating no activity was recorded.
 Otherwise: Table showing top Splunk correlation rules / notable events with count, sorted by frequency. Include severity breakdown if available.
 
-**### 1.8. Pending Tickets Summary** (if "pending_tickets" is selected)
+**### 1.9. Pending Tickets Summary** (if "pending_tickets" is selected)
 EXECUTIVE AT-A-GLANCE SECTION — no prose, no analysis. Just the heading and the pre-rendered aging table, nothing else. The aging table is built in Python and substituted by the report assembly step; it shows Total Pending plus counts in each bucket (&lt;7d / 7-14d / 14-30d / &gt;30d) and the oldest age in days.
 
 Output exactly these two things, in this exact order, and nothing else for this section:
 
-1. The heading line: `### <a id="18-pending-tickets-summary"></a>1.8. Pending Tickets Summary`
+1. The heading line: `### <a id="19-pending-tickets-summary"></a>1.9. Pending Tickets Summary`
 2. The literal token `<!--PENDING_SUMMARY_TABLE-->` on its own line. Output it character-for-character — including the `<!--` and `-->` — exactly as shown.
 
-Do NOT emit any markdown table, narrative paragraph, top-N list, or "next-action" commentary for this section. Do NOT output the `<!--PENDING_TICKETS_TABLE-->` token here — it belongs in the Appendix. Backlog analysis and bottleneck commentary live in §1.18 Trends & Insights.
+Do NOT emit any markdown table, narrative paragraph, top-N list, or "next-action" commentary for this section. Do NOT output the `<!--PENDING_TICKETS_TABLE-->` token here — it belongs in the Appendix. Backlog analysis and bottleneck commentary live in §1.19 Trends & Insights.
 
-**### 1.9. GSOC Monitoring Scope** (if "monitoring_scope" is selected)
+**### 1.10. GSOC Monitoring Scope** (if "monitoring_scope" is selected)
 Write: "Below are the log sources that are onboarded to Microsoft Sentinel SIEM currently for GSOC monitoring."
 Then list common log sources as bullet points. If specific log source data is not available, list typical enterprise sources:
 - Azure Activity, Azure Firewall, Microsoft 365, Microsoft Defender for Cloud Apps, Microsoft Defender for Endpoint, Microsoft Defender for Identity, Microsoft Defender XDR, Microsoft Entra ID, etc.
 
-**### 1.19. GSOC Recommendation Summary** (if "recommendations" is selected)
+**### 1.20. GSOC Recommendation Summary** (if "recommendations" is selected)
 
-Use the heading: `### <a id="119-gsoc-recommendation-summary"></a>1.19. GSOC Recommendation Summary`
+Use the heading: `### <a id="120-gsoc-recommendation-summary"></a>1.20. GSOC Recommendation Summary`
 
 Generate AT LEAST 5 SPECIFIC, ACTIONABLE recommendations. Each recommendation MUST cite a concrete metric from the data — generic advice is forbidden. The data root for this section contains: `jira`, `sentinel`, `splunk`, `socradar`, `industry_intel`. Reference field paths accordingly.
 
@@ -1040,9 +1063,9 @@ Otherwise, write a current threat intelligence briefing for the {customer_indust
 
 If industry_intel.web_intel contains open-source intelligence, synthesise it throughout — do not fabricate threat actors or CVEs that are not supported by the data provided. If web_intel is absent and threat_actors is empty, write that no current threat intelligence was available for this sector during the period.
 
-**### 1.18. Trends & Insights** (if "trends_insights" is selected)
+**### 1.19. Trends & Insights** (if "trends_insights" is selected)
 
-Use the heading: `### <a id="118-trends-and-insights"></a>1.18. Trends & Insights`
+Use the heading: `### <a id="119-trends-and-insights"></a>1.19. Trends & Insights`
 
 This section is the AI's primary value-add: an analytical narrative grounded entirely in `stats.derived.*` fields and Sentinel/Splunk equivalents. Structure as follows:
 
@@ -1060,11 +1083,11 @@ Data root for this section: `jira`, `sentinel`, `splunk`, `socradar`, `industry_
 
 ABSOLUTE RULE for this section: every number you write must come from the data JSON. No estimates, no rounding, no "approximately". If a value is `null` or the parent has `insufficient_data: true`, say so explicitly.
 
-**### 1.20. Security Posture Improvements** (if "posture_improvements" is selected)
+**### 1.21. Security Posture Improvements** (if "posture_improvements" is selected)
 
-Use the heading: `### <a id="120-security-posture-improvements"></a>1.20. Security Posture Improvements`
+Use the heading: `### <a id="121-security-posture-improvements"></a>1.21. Security Posture Improvements`
 
-This section is FORWARD-LOOKING and THREAT-INFORMED. Unlike §1.19 (which is tactical and triggered by observed metrics), this section recommends defensive controls against the *active threat landscape* surrounding the customer. The goal is to help the client improve their security posture by mapping concrete defensive actions to the adversaries and techniques most likely to target them right now.
+This section is FORWARD-LOOKING and THREAT-INFORMED. Unlike §1.20 (which is tactical and triggered by observed metrics), this section recommends defensive controls against the *active threat landscape* surrounding the customer. The goal is to help the client improve their security posture by mapping concrete defensive actions to the adversaries and techniques most likely to target them right now.
 
 Data sources you MUST synthesize:
 - `socradar.threat_actors` — active actors flagged for this customer (name, origin, target industries, TTPs, status).
@@ -1082,7 +1105,7 @@ Structure the section as follows:
 
    - **Threat / Adversary**: the named threat actor, malware family, or attack technique (cite SOCRadar threat actor name, CVE ID, or MITRE technique). If recommending against a generic technique observed in `jira.top_alerts`, name the alert category.
    - **TTP or Technique**: the MITRE ATT&CK tactic or technique (e.g. "T1078 - Valid Accounts", "T1566 - Phishing", "Initial Access via Exploited Public-Facing Application"). If unknown, use the incident category from Jira labels.
-   - **Defensive Control Recommendation**: SPECIFIC, IMPLEMENTABLE control. Examples of the right level of specificity: "Enable MDE attack surface reduction rule 'Block executable content from email client'", "Deploy KQL hunting query for SOCRadar IOC IPs against `SigninLogs`", "Enforce conditional access policy requiring compliant device for privileged role activation", "Patch CVE-2024-XXXX on N exposed devices identified in §1.16". NOT generic advice like "improve email security" or "enhance monitoring".
+   - **Defensive Control Recommendation**: SPECIFIC, IMPLEMENTABLE control. Examples of the right level of specificity: "Enable MDE attack surface reduction rule 'Block executable content from email client'", "Deploy KQL hunting query for SOCRadar IOC IPs against `SigninLogs`", "Enforce conditional access policy requiring compliant device for privileged role activation", "Patch CVE-2024-XXXX on N exposed devices identified in §1.17". NOT generic advice like "improve email security" or "enhance monitoring".
    - **Customer Action**: concrete next step the customer must take (e.g. "Approve MDE ASR rule deployment", "Schedule patching window", "Review and approve new correlation rule").
    - **Priority**: Critical / High / Medium / Low — driven by exploit availability, observed activity in customer's tenant, and asset exposure.
 
@@ -1095,11 +1118,11 @@ Structure the section as follows:
    - If `sentinel.total_assets_source` is "heartbeat" or "none" (no EDR) → at least 1 row must recommend EDR onboarding.
    - If `sentinel.sensor_health_source` is "none" → at least 1 row must address agent visibility.
 
-5. **Closing paragraph** (1-2 sentences) — note that these recommendations supplement the tactical fixes in §1.19, and that GSOC can assist with implementation planning during the next review cycle.
+5. **Closing paragraph** (1-2 sentences) — note that these recommendations supplement the tactical fixes in §1.20, and that GSOC can assist with implementation planning during the next review cycle.
 
 ABSOLUTE RULES:
 - No generic recommendations ("improve security", "enhance training") — every row must name a specific control, query, rule, policy, or patch.
-- Do NOT repeat recommendations already covered in §1.19 Recommendations. §1.19 is about responding to observed metrics; §1.20 is about preempting external threats.
+- Do NOT repeat recommendations already covered in §1.20 Recommendations. §1.20 is about responding to observed metrics; §1.21 is about preempting external threats.
 - Do NOT fabricate threat actors, CVEs, or TTPs not present in the data. If you don't have enough external intel to write 5 recommendations, fill the gap with internal-pattern-driven recommendations (e.g., from `jira.top_alerts` categories) and clearly note the section is operating with limited external intelligence.
 - **COUNT-CITATION RULE**: If you write a parenthetical count next to a threat name (e.g. "Repeated Failed Login Attempts (259 alerts detected)"), the number MUST come verbatim from `sentinel.top_alerts[].Count` for the matched AlertName, OR from `jira.by_severity` / `jira.by_close_justification`. Match the AlertName exactly — no rough aggregation, no summing across alerts, no estimates. If you cannot find an exact matching count for a threat category, OMIT the parenthetical count entirely rather than approximate it.
 
@@ -1391,7 +1414,7 @@ def _collect_report_data(config: dict) -> dict:
         fetch_tasks["sentinel"] = lambda: sentinel_client.fetch_data(config, start_date, end_date)
         # Defender XDR runs alongside Sentinel — when DEFENDER_* creds exist,
         # it supersedes the Sentinel-side Heartbeat/TVM fallbacks for sections
-        # 1.12-1.16. When creds are missing the client returns {} and Sentinel
+        # 1.13-1.17. When creds are missing the client returns {} and Sentinel
         # data stands as-is.
         fetch_tasks["defender"] = lambda: defender_client.fetch_data(config, start_date, end_date)
     if config.get("use_splunk"):
@@ -1480,7 +1503,7 @@ def _collect_report_data(config: dict) -> dict:
             result["stats"] = {}
         result["stats"]["monthly_trend"] = verification["by_month"]
 
-    # Per-customer advisory feeds (§1.15 Threat Analytics + §1.17 IOC Update).
+    # Per-customer advisory feeds (§1.16 Threat Analytics + §1.18 IOC Update).
     # Local JSON, so loaded inline rather than via the threaded fetch_tasks block.
     _cust_name = config.get("customer_name", "")
     result["customer_advisories"] = {
@@ -1580,6 +1603,11 @@ def _build_report_context(data: dict, config: dict) -> dict:
         "top_alerts": _stats.get("top_alerts", {}),
         "monthly_trend": _monthly_trend,
         "assignee_distribution": _stats.get("assignee_distribution", {}),
+        # §1.5 Escalated Incidents. `available` False means the escalation
+        # field could not be resolved for this project — the prompt renders a
+        # "pending integration" placeholder rather than a zero, which would be
+        # indistinguishable from "nothing was escalated".
+        "escalated": _stats.get("escalated") or {"available": False},
         # Derived metrics computed in tools.jira_client._compute_incident_derived_stats:
         # mom_delta, mttr, pending_aging, top_critical_incidents, oldest_pending.
         # The system prompt instructs the LLM to source all trend/aging numbers
@@ -1628,7 +1656,7 @@ def _build_report_context(data: dict, config: dict) -> dict:
     if sentinel:
         # Pull only the top 3 spike days from the daily breakdown — the full
         # 28-31-row table is redundant with the chart and cluttered the PDF.
-        # See routes/reports.py prompt for section 1.10.
+        # See routes/reports.py prompt for section 1.11.
         _daily = sentinel.get("utilization", {}).get("daily_breakdown", []) or []
         _spike_days = sorted(
             ({"date": (r.get("TimeGenerated") or r.get("date") or "")[:10],
@@ -1675,7 +1703,7 @@ def _build_report_context(data: dict, config: dict) -> dict:
         if defender.get("sensor_health"):
             sentinel_data["sensor_health"]        = defender["sensor_health"]
             sentinel_data["sensor_health_source"] = "mde"
-        # Move the fleet counts with the sample they describe, so 1.12/1.13
+        # Move the fleet counts with the sample they describe, so 1.13/1.14
         # never narrate Defender devices using Sentinel's breakdown.
         if defender.get("os_breakdown"):
             sentinel_data["os_breakdown"] = defender["os_breakdown"]
@@ -1826,7 +1854,7 @@ def _build_report_context(data: dict, config: dict) -> dict:
         # input (a 1,400-row HTML table is ~250KB of text). The post-processor
         # in `_run_report_agent` substitutes these for their respective tokens.
         # Full tables now land in Appendix 2.1 / 2.2; summary tables land in
-        # sections 1.5 / 1.8 — both substitutions happen blind to placement.
+        # sections 1.6 / 1.9 — both substitutions happen blind to placement.
         "incident_details_html_table": _render_incident_details_html(_incident_records),
         "pending_tickets_html_table": _render_pending_tickets_html(
             jira_data["pending_tickets"]
@@ -1988,7 +2016,7 @@ async def _run_report_agent(data: dict, config: dict) -> str:
 
     # Force LLM section emission into canonical REPORT_SECTIONS order. Without
     # this, the customer's saved intra-group order leaks into the prompt and
-    # the LLM emits §1.19 before §1.18, "Industry Threat Landscape" between
+    # the LLM emits §1.20 before §1.19, "Industry Threat Landscape" between
     # the meta-analysis sections, etc. The customer's intra-group ordering is
     # honoured in the UI (which sections are ticked) but not in the report.
     _canonical_idx = {s["id"]: idx for idx, s in enumerate(REPORT_SECTIONS)}
@@ -2003,14 +2031,14 @@ async def _run_report_agent(data: dict, config: dict) -> str:
     industry_grp = _canonical_order([s for s in llm_sections if section_meta.get(s, {}).get("source") == "general"])
 
     # The raw incident_details / pending_tickets arrays never go to the LLM:
-    # §1.5 and §1.8 emit Python-substituted summary tokens, the Appendix tables
+    # §1.6 and §1.9 emit Python-substituted summary tokens, the Appendix tables
     # are rendered in Python from ctx, and every other Jira section works from
     # the aggregate/derived fields. A large customer-month (CLSA Jun 2026:
     # ~320K prompt tokens vs the model's 272K input cap) blows the context
     # window if they ship, so both LLM groups that carry jira data get the
     # counts-only copy.
     jira_payload = _strip_heavy_jira_arrays(ctx["jira_data"])
-    # Customer advisory feeds (§1.15 Threat Analytics, §1.17 IOC Update) ship
+    # Customer advisory feeds (§1.16 Threat Analytics, §1.18 IOC Update) ship
     # alongside the Sentinel payload because both sections are in the sentinel
     # source group. Empty lists are still passed — the prompt branches on
     # "is the list empty?" rather than "is the key present?".
@@ -2045,7 +2073,7 @@ async def _run_report_agent(data: dict, config: dict) -> str:
             "splunk": ctx["splunk_data"] or {"connected": False},
             "socradar": ctx["socradar_data"] or {"connected": False},
             # customer_advisories.cves is the canonical CVE list (SOCRadar's
-            # cve_intel endpoint is stubbed). §1.20 references it for the
+            # cve_intel endpoint is stubbed). §1.21 references it for the
             # "at least one CVE-cited recommendation" coverage rule.
             "customer_advisories": ctx["customer_advisories_data"],
         }
@@ -2305,7 +2333,14 @@ def run_report_job(job_id: str, config: dict) -> None:
         charts = {}
         if data.get("stats"):
             try:
-                charts = generate_all_charts(data["stats"], end_date=config.get("end_date", ""))
+                charts = generate_all_charts(
+                    data["stats"], end_date=config.get("end_date", ""),
+                    # The 12-month escalated series comes from the same per-month
+                    # Jira queries as the total, so it spans the full window;
+                    # stats["escalated"]["monthly_trend"] only covers the report
+                    # period and is the fallback inside generate_all_charts.
+                    escalated_trend_12m=data.get("monthly_trend_12m_escalated"),
+                )
                 log.info(f"[{job_id[:8]}] Generated {len(charts)} charts")
             except Exception as e:
                 log.error(f"[{job_id[:8]}] Chart generation failed: {e}")
@@ -2355,8 +2390,8 @@ def run_report_job(job_id: str, config: dict) -> None:
             sensor_health = (defender.get("sensor_health")
                              or sentinel.get("sensor_health") or [])
             # Charts read the whole-fleet AGGREGATES, never the device sample —
-            # counting the sample is what made 1.12 report 200 assets for a
-            # 965-device fleet, and made 1.13 show a 100%-healthy fleet.
+            # counting the sample is what made 1.13 report 200 assets for a
+            # 965-device fleet, and made 1.14 show a 100%-healthy fleet.
             # Re-derive from the sample only if a client returned no aggregate
             # (degraded, and understated — but better than an empty section).
             # Take the breakdown from whichever client supplied the devices, so
@@ -2367,7 +2402,7 @@ def run_report_job(job_id: str, config: dict) -> None:
             health_breakdown = _src.get("health_breakdown") or []
             if sensor_health and not (os_breakdown or health_breakdown):
                 log.warning(
-                    f"[{job_id[:8]}] No device breakdown returned; deriving 1.12/1.13 "
+                    f"[{job_id[:8]}] No device breakdown returned; deriving 1.13/1.14 "
                     f"from the {len(sensor_health)}-row sample — counts may understate "
                     "the fleet.")
                 _fallback = summarize_devices(sensor_health)

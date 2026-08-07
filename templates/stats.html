@@ -186,6 +186,7 @@
           <tr>
             <th>Customer</th><th>Project(s)</th><th>Status</th>
             <th>Sentinel</th><th>Confluence (RAG)</th><th>Entity Mapping</th>
+            <th>Escalation Field</th>
           </tr>
         </thead>
         <tbody>
@@ -198,10 +199,11 @@
             <td>{% if c.has_sentinel %}<span class="cell-yes">Yes ({{ c.sentinel_count }})</span>{% else %}<span class="cell-no">—</span>{% endif %}</td>
             <td>{% if c.confluence_pages %}<span class="cell-yes">{{ c.confluence_pages }} page{{ 's' if c.confluence_pages != 1 else '' }}</span>{% else %}<span class="cell-no">—</span>{% endif %}</td>
             <td>{% if c.mapping_flag %}<span class="cell-warn" title="{{ c.mapping_flag.detail }}">Check ({{ c.mapping_flag.count }})</span>{% else %}<span class="cell-yes">OK</span>{% endif %}</td>
+            <td>{% if c.escalation_field and 'not configured' not in c.escalation_field and c.escalation_field != 'unknown' %}<span class="cell-yes" title="Report section 1.5 Escalated Incidents reads this field">{{ c.escalation_field }}</span>{% else %}<span class="cell-no" title="Report section 1.5 Escalated Incidents will render as pending integration">{{ c.escalation_field or '—' }}</span>{% endif %}</td>
           </tr>
           {% endfor %}
           {% if not stats.customers %}
-          <tr><td colspan="6" class="cell-no" style="text-align:center;padding:24px;">No customers found.</td></tr>
+          <tr><td colspan="7" class="cell-no" style="text-align:center;padding:24px;">No customers found.</td></tr>
           {% endif %}
         </tbody>
       </table>

@@ -22,6 +22,12 @@ _DARK = "#1A1A2E"
 _GREY = "#64748B"
 _BG = "#FAFBFD"
 
+# Escalated-incident charts mirror the all-incident ones section for section.
+# They get their own accent so a reader skimming the PDF cannot mistake an
+# escalated chart for its all-incidents twin — the two are otherwise identical
+# in shape, axis, and title structure.
+_ESCALATED = "#B45309"
+
 _SEVERITY_COLORS = {
     "Critical Severity": "#DC2626",
     "High Severity": "#F97316",
@@ -58,11 +64,16 @@ def _to_bytes(fig) -> bytes:
     return buf.read()
 
 
-def generate_severity_chart(by_severity: dict) -> bytes:
+def generate_severity_chart(by_severity: dict,
+                            title: str = "Incident Severity") -> bytes:
     """Bar chart of incidents by severity level.
 
     Uses labels: Informational, Low Severity, Medium Severity, High Severity,
     Critical Severity — matching the sample report format.
+
+    ``title`` is parameterised so §1.5 can render the same chart restricted to
+    escalated incidents. Severity keeps its per-severity colour scale in both
+    variants — recolouring it would break the shared severity legend.
     """
     # Map raw severity values to display labels
     label_map = {
@@ -97,7 +108,7 @@ def generate_severity_chart(by_severity: dict) -> bytes:
     for bar, val in zip(bars, values):
         ax.text(bar.get_x() + bar.get_width() / 2, bar.get_height() + 0.3,
                 str(val), ha="center", va="bottom", fontsize=10, fontweight="bold", color=_DARK)
-    ax.set_title("Incident Severity", fontsize=13, fontweight="bold", color=_DARK, pad=12)
+    ax.set_title(title, fontsize=13, fontweight="bold", color=_DARK, pad=12)
     ax.set_ylabel("Count", fontsize=10, color=_GREY)
     ax.yaxis.set_major_locator(ticker.MaxNLocator(integer=True))
     plt.xticks(fontsize=8)
@@ -105,11 +116,13 @@ def generate_severity_chart(by_severity: dict) -> bytes:
     return _to_bytes(fig)
 
 
-def generate_resolution_chart(by_close_justification: dict) -> bytes:
+def generate_resolution_chart(by_close_justification: dict,
+                              title: str = "Incident Resolution") -> bytes:
     """Bar chart of incident resolution classification.
 
     Uses fixed categories: Pending, True Positive, False Positive, Benign Positive
-    — matching the sample report's Incident Status chart.
+    — matching the sample report's Incident Status chart. ``title`` is
+    parameterised for the escalated-only variant in §1.5.
     """
     ordered = ["Pending", "True Positive", "False Positive", "Benign Positive"]
     values = [by_close_justification.get(k, 0) for k in ordered]
@@ -121,18 +134,47 @@ def generate_resolution_chart(by_close_justification: dict) -> bytes:
     for bar, val in zip(bars, values):
         ax.text(bar.get_x() + bar.get_width() / 2, bar.get_height() + 0.3,
                 str(val), ha="center", va="bottom", fontsize=10, fontweight="bold", color=_DARK)
-    ax.set_title("Incident Resolution", fontsize=13, fontweight="bold", color=_DARK, pad=12)
+    ax.set_title(title, fontsize=13, fontweight="bold", color=_DARK, pad=12)
     ax.set_ylabel("Count", fontsize=10, color=_GREY)
     ax.yaxis.set_major_locator(ticker.MaxNLocator(integer=True))
     fig.tight_layout()
     return _to_bytes(fig)
 
 
-def generate_monthly_trend_chart(monthly_trend: dict, end_date: str = "") -> bytes:
-    """Bar chart showing incident escalation counts over the past 12 months.
+def _leading_zero_note(months: list, values: list) -> str:
+    """Caption warning when a series only starts partway through the window.
+
+    The escalated series is only as old as the Jira field that feeds it. If
+    that field was added recently, the earlier months return 0 and the chart
+    would otherwise read as a dramatic escalation ramp-up rather than "we
+    weren't recording this yet". Returns "" when the series starts at the
+    window's first month or is empty throughout — in both cases the leading
+    zeros are genuine.
+    """
+    first_nonzero = next((i for i, v in enumerate(values) if v), None)
+    if not first_nonzero:          # index 0 (starts immediately) or None (all zero)
+        return ""
+    try:
+        label = datetime.strptime(months[first_nonzero], "%Y-%m").strftime("%b %Y")
+    except Exception:
+        label = months[first_nonzero]
+    return f"No escalations were recorded before {label}."
+
+
+def generate_monthly_trend_chart(monthly_trend: dict, end_date: str = "",
+                                 title: str = "Total Number of Incidents "
+                                              "Escalation – Past 12 Months",
+                                 color: str = _BLUE,
+                                 note_on_leading_zeros: bool = False) -> bytes:
+    """Bar chart showing incident counts over the past 12 months.
 
     Always shows 12 months ending at the report period's end month.
     Months with no data show as 0.
+
+    ``note_on_leading_zeros`` adds a caption when the series starts partway
+    through the window — used by the escalated variant, where leading zeros
+    usually mean the Jira field did not exist yet rather than that nothing was
+    escalated. See :func:`_leading_zero_note`.
     """
     if not monthly_trend and not end_date:
         return b""
@@ -166,22 +208,30 @@ def generate_monthly_trend_chart(monthly_trend: dict, end_date: str = "") -> byt
 
     fig, ax = plt.subplots(figsize=(10, 4))
     _setup_style(fig, ax)
-    bars = ax.bar(display_labels, values, color=_BLUE, width=0.6,
+    bars = ax.bar(display_labels, values, color=color, width=0.6,
                   edgecolor="white", linewidth=0.5)
     for bar, val in zip(bars, values):
         if val > 0:
             ax.text(bar.get_x() + bar.get_width() / 2, bar.get_height() + 0.3,
                     str(val), ha="center", va="bottom", fontsize=9,
                     fontweight="bold", color=_DARK)
-    ax.set_title("Total Number of Incidents Escalation \u2013 Past 12 Months",
-                 fontsize=13, fontweight="bold", color=_DARK, pad=12)
+    ax.set_title(title, fontsize=13, fontweight="bold", color=_DARK, pad=12)
     ax.set_ylabel("Incidents", fontsize=10, color=_GREY)
     ax.yaxis.set_major_locator(ticker.MaxNLocator(integer=True))
-    fig.tight_layout()
+
+    note = _leading_zero_note(months, values) if note_on_leading_zeros else ""
+    if note:
+        ax.text(0.0, -0.22, note, transform=ax.transAxes, ha="left", va="top",
+                fontsize=8, style="italic", color=_GREY)
+        fig.subplots_adjust(bottom=0.28)
+    else:
+        fig.tight_layout()
     return _to_bytes(fig)
 
 
-def generate_top_alerts_chart(top_alerts: dict) -> bytes:
+def generate_top_alerts_chart(top_alerts: dict,
+                              title: str = "Top Alerts Triggered",
+                              color: str = _BLUE) -> bytes:
     """Horizontal bar chart of top triggered alerts."""
     if not top_alerts:
         return b""
@@ -191,13 +241,13 @@ def generate_top_alerts_chart(top_alerts: dict) -> bytes:
 
     fig, ax = plt.subplots(figsize=(9, max(3, len(labels) * 0.45 + 1)))
     _setup_style(fig, ax)
-    bars = ax.barh(labels, values, color=_BLUE, height=0.6,
+    bars = ax.barh(labels, values, color=color, height=0.6,
                    edgecolor="white", linewidth=0.5)
     for bar, val in zip(bars, values):
         ax.text(bar.get_width() + 0.3, bar.get_y() + bar.get_height() / 2,
                 str(val), ha="left", va="center", fontsize=9,
                 fontweight="bold", color=_DARK)
-    ax.set_title("Top Alerts Triggered", fontsize=13, fontweight="bold",
+    ax.set_title(title, fontsize=13, fontweight="bold",
                  color=_DARK, pad=12)
     ax.set_xlabel("Count", fontsize=10, color=_GREY)
     ax.xaxis.set_major_locator(ticker.MaxNLocator(integer=True))
@@ -372,7 +422,7 @@ def generate_total_assets_chart(os_breakdown: list) -> bytes:
 
     Takes the AGGREGATED breakdown ``[{OSPlatform, Count}]`` computed over the
     whole fleet by ``device_breakdown.summarize_devices`` — never a row sample.
-    Counting sampled rows here is what made section 1.12 report 200 assets for
+    Counting sampled rows here is what made section 1.13 report 200 assets for
     a 965-device fleet. Centre hole shows the total.
     """
     if not os_breakdown:
@@ -422,7 +472,7 @@ def generate_sensor_health_chart(health_breakdown: list) -> bytes:
     devices and drew a 100%-healthy fleet, hiding the very sensors this
     section exists to surface.
 
-    Renders under section 1.13 "Managed Assets by Sensor Health State".
+    Renders under section 1.14 "Managed Assets by Sensor Health State".
     """
     if not health_breakdown:
         return b""
@@ -489,7 +539,7 @@ def generate_vulnerability_severity_chart(by_severity) -> bytes:
     Defender TVM hunt and the Sentinel fallback return slightly different
     shapes so we normalise here.
 
-    Renders under section 1.14 "Vulnerability Details".
+    Renders under section 1.15 "Vulnerability Details".
     """
     if not by_severity:
         return b""
@@ -554,7 +604,7 @@ def generate_vulnerability_exposed_devices_chart(devices: list) -> bytes:
     Accepts the Defender TVM hunt shape ({"DeviceName", "VulnCount"}) or
     the Sentinel fallback shape ({"device_name", "count"}).
 
-    Renders under section 1.16 "Monthly Vulnerability Exposed Devices".
+    Renders under section 1.17 "Monthly Vulnerability Exposed Devices".
     """
     if not devices:
         return b""
@@ -597,7 +647,61 @@ def generate_vulnerability_exposed_devices_chart(devices: list) -> bytes:
     return _to_bytes(fig)
 
 
-def generate_all_charts(stats: dict, end_date: str = "") -> dict:
+def generate_escalated_charts(escalated: dict, end_date: str = "",
+                              monthly_trend_12m: dict | None = None) -> dict:
+    """The §1.5 charts: the four all-incident breakdowns, escalated only.
+
+    Returns {} when ``escalated`` is unavailable — the escalation field could
+    not be resolved for the project — so the section renders "not configured"
+    instead of four empty charts that would read as "nothing was escalated".
+
+    ``monthly_trend_12m`` is the verified 12-month escalated series when
+    available; the in-period ``escalated["monthly_trend"]`` is the fallback
+    (it only spans the report window, so the chart pads the rest with zeros).
+    """
+    if not escalated or not escalated.get("available"):
+        return {}
+
+    charts: dict = {}
+
+    by_severity = escalated.get("by_severity") or {}
+    if by_severity:
+        try:
+            charts["escalated_severity"] = generate_severity_chart(
+                by_severity, title="Escalated Incidents by Severity")
+        except Exception as e:
+            logger.error(f"Escalated severity chart failed: {e}")
+
+    try:
+        charts["escalated_resolution"] = generate_resolution_chart(
+            escalated.get("by_close_justification") or {},
+            title="Escalated Incident Resolution")
+    except Exception as e:
+        logger.error(f"Escalated resolution chart failed: {e}")
+
+    trend = monthly_trend_12m or escalated.get("monthly_trend") or {}
+    try:
+        charts["escalated_monthly_trend"] = generate_monthly_trend_chart(
+            trend, end_date,
+            title="Escalated Incidents – Past 12 Months",
+            color=_ESCALATED, note_on_leading_zeros=True)
+    except Exception as e:
+        logger.error(f"Escalated monthly trend chart failed: {e}")
+
+    top_alerts = escalated.get("top_alerts") or {}
+    if top_alerts:
+        try:
+            charts["escalated_top_alerts"] = generate_top_alerts_chart(
+                top_alerts, title="Top Alerts – Escalated Incidents",
+                color=_ESCALATED)
+        except Exception as e:
+            logger.error(f"Escalated top alerts chart failed: {e}")
+
+    return {k: v for k, v in charts.items() if v}
+
+
+def generate_all_charts(stats: dict, end_date: str = "",
+                        escalated_trend_12m: dict | None = None) -> dict:
     """Generate all available charts from stats data.
 
     Returns a dict of chart_name -> PNG bytes.
@@ -629,5 +733,10 @@ def generate_all_charts(stats: dict, end_date: str = "") -> dict:
             charts["top_alerts"] = generate_top_alerts_chart(top_alerts)
         except Exception as e:
             logger.error(f"Top alerts chart failed: {e}")
+
+    charts.update(generate_escalated_charts(
+        stats.get("escalated") or {}, end_date,
+        monthly_trend_12m=escalated_trend_12m,
+    ))
 
     return charts
