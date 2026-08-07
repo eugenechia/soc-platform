@@ -381,21 +381,32 @@ def _render_escalated_summary_html(stats: dict, customer_name: str = "") -> str:
     Rendered in Python rather than by the LLM because every figure here is an
     exact count that also has to reconcile against the charts beside it.
 
-    Returns "" when the escalation field is not configured for the customer, so
-    the block vanishes entirely instead of claiming zero escalations.
+    When the escalation field cannot be resolved for the customer, this renders
+    a VISIBLE "pending integration" note rather than nothing. Returning an
+    empty string made an unconfigured field indistinguishable from the feature
+    not being deployed — the section simply looked untouched, with no way for
+    an operator to tell which. The note matches how §1.10-§1.17 report a
+    disconnected source. tools/jira_escalation.py logs which field it resolved,
+    and the Stats page shows it per customer.
     """
     import html as _html
 
     escalated = (stats or {}).get("escalated") or {}
+    heading = ('<h4><a id="escalated-incident-summary"></a>'
+               "Escalated Incident Summary</h4>")
+
     if not escalated.get("available"):
-        return ""
+        return (
+            heading
+            + "<blockquote><p><strong>Data Source Pending Integration</strong> — "
+              "the Jira escalation field is not configured for this project, so "
+              "escalated incident statistics could not be compiled for this "
+              "period.</p></blockquote>"
+        )
 
     total = int(stats.get("total") or 0)
     esc_total = int(escalated.get("total") or 0)
     team = _html.escape((customer_name or "").strip()) or "the customer"
-
-    heading = ('<h4><a id="escalated-incident-summary"></a>'
-               "Escalated Incident Summary</h4>")
 
     if not esc_total:
         return (
@@ -415,8 +426,10 @@ def _render_escalated_summary_html(stats: dict, customer_name: str = "") -> str:
         heading
         + f"<p>A total of {total} alerts were triggered during the reporting "
           f"period. GSOC successfully triaged and escalated {esc_total} "
-          f"potential incidents{rate_txt} to the {team} team. Of these, "
-          f"{closed} have been closed and {pending} remain pending.</p>"
+          f"potential incident{'' if esc_total == 1 else 's'}{rate_txt} to the "
+          f"{team} team. Of these, {closed} "
+          f"{'has' if closed == 1 else 'have'} been closed and {pending} "
+          f"{'remains' if pending == 1 else 'remain'} pending.</p>"
     )
 
 

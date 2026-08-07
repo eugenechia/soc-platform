@@ -242,27 +242,25 @@ def _add_cover_page(doc, customer_name: str, report_date: str,
     run.font.size = Pt(14)
     run.font.color.rgb = _GREY
 
-    # Customer name — primary branding element on the cover. Bumped to 26pt
-    # to match the sample CAM report's customer-name prominence.
-    p = doc.add_paragraph()
-    p.alignment = WD_ALIGN_PARAGRAPH.CENTER
-    run = p.add_run(customer_name or "")
-    run.font.size = Pt(26)
-    run.font.bold = True
-    run.font.color.rgb = _DARK
-
-    # Customer logo directly beneath the name. It used to render up beside the
-    # Logicalis logo, which read as a co-branded lockup rather than "prepared
-    # for this customer" — the SOC team was deleting it and re-pasting it here
-    # by hand. Height-capped only, so wide and square marks both keep their
-    # aspect ratio.
-    if logo_path:
-        cust_buf = _load_image_as_png(logo_path)
-        if cust_buf:
-            cust_para = doc.add_paragraph()
-            cust_para.alignment = WD_ALIGN_PARAGRAPH.CENTER
-            cust_para.paragraph_format.space_before = Pt(10)
-            cust_para.add_run().add_picture(cust_buf, height=Pt(54))
+    # Customer identity — the logo REPLACES the name when one is on file, and
+    # the name is the fallback for customers with no logo uploaded. The logo
+    # previously rendered up beside the Logicalis mark, which read as a
+    # co-branded lockup rather than "prepared for this customer"; the SOC team
+    # was deleting it and re-pasting it here by hand. Height-capped only, so
+    # wide wordmarks and square marks both keep their aspect ratio.
+    cust_buf = _load_image_as_png(logo_path) if logo_path else None
+    if cust_buf:
+        cust_para = doc.add_paragraph()
+        cust_para.alignment = WD_ALIGN_PARAGRAPH.CENTER
+        cust_para.paragraph_format.space_before = Pt(6)
+        cust_para.add_run().add_picture(cust_buf, height=Pt(64))
+    else:
+        p = doc.add_paragraph()
+        p.alignment = WD_ALIGN_PARAGRAPH.CENTER
+        run = p.add_run(customer_name or "")
+        run.font.size = Pt(26)
+        run.font.bold = True
+        run.font.color.rgb = _DARK
 
     doc.add_paragraph()
 

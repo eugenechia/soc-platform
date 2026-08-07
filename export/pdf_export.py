@@ -140,14 +140,14 @@ _PDF_STYLES = """
     color: #1a1a2e;
     margin-bottom: 16px;
   }
-  /* Customer mark under the customer name. Height-capped with max-width so a
-     wide wordmark shrinks to fit rather than spilling past the page, and a
-     square mark is not stretched. */
+  /* Customer mark, shown INSTEAD of the customer name when a logo is on file.
+     Height-capped with max-width so a wide wordmark shrinks to fit rather
+     than spilling past the page, and a square mark is not stretched. */
   .cover-customer-logo {
-    margin-bottom: 40px;
+    margin-bottom: 44px;
   }
   .cover-customer-logo img {
-    height: 72px;
+    height: 80px;
     max-width: 60%;
     object-fit: contain;
   }
@@ -494,21 +494,23 @@ def generate_pdf(markdown_content: str, customer_name: str, report_date: str,
         _suffix = {1: "st", 2: "nd", 3: "rd"}.get(_day % 10, "th")
     issue_date = f"{_day}{_suffix} {_today.strftime('%B %Y')}"
 
-    # Cover branding: the Logicalis mark sits at the top on its own; the
-    # customer's mark goes directly beneath the customer name, under "Prepared
-    # by Logicalis for". Pairing the two logos side by side at the top read as
-    # a co-branded lockup, so the SOC team was moving the customer logo down by
+    # Cover branding: the Logicalis mark sits at the top on its own. Under
+    # "Prepared by Logicalis for", the customer's LOGO replaces the customer
+    # name when one is on file; the name is the fallback for customers with no
+    # logo uploaded. Pairing the two logos side by side at the top read as a
+    # co-branded lockup, so the SOC team was moving the customer logo down by
     # hand. Keep in step with export/docx_export.py:_add_cover_page.
     logos_html = ""
     if logicalis_logo_uri:
         logos_html += f'<img src="{logicalis_logo_uri}" alt="Logicalis">'
 
-    customer_logo_html = ""
     if customer_logo_uri:
-        customer_logo_html = (
+        customer_identity_html = (
             f'<div class="cover-customer-logo">'
             f'<img src="{customer_logo_uri}" alt="{customer_name}"></div>'
         )
+    else:
+        customer_identity_html = f'<div class="cover-customer">{customer_name}</div>'
 
     styles = (
         _PDF_STYLES
@@ -525,8 +527,7 @@ def generate_pdf(markdown_content: str, customer_name: str, report_date: str,
   <div class="cover-page">
     <div class="cover-logos">{logos_html}</div>
     <div class="cover-title">Prepared by Logicalis for</div>
-    <div class="cover-customer">{customer_name}</div>
-    {customer_logo_html}
+    {customer_identity_html}
     <div class="cover-divider"></div>
     <div class="cover-title">Logicalis Managed Security Services</div>
     <div class="cover-report-title">GSOC Monthly Report &mdash; {report_month}</div>
